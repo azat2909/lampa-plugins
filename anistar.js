@@ -1084,7 +1084,7 @@ function AniStarNetwork() {
      * качеств в основном массиве содержит неочевидные URL.
      */
     function parseASPlaylist(html, playerUrl) {
-        html = String(html || '').split('\\n').join(' ').split('\\r').join(' ');
+        html = String(html || '').split('\n').join(' ').split('\r').join(' ');
 
         var starts = [];
         var entryPattern = /title:\s*"([^"]*)",\s*media_id:/g;
@@ -1108,7 +1108,7 @@ function AniStarNetwork() {
             var all = [];
 
             [
-                /(?:^|[^A-Za-z_])files:\\s*\\[([\\s\\S]*?)\\]/,
+                /(?:^|[^A-Za-z_])files:\s*\[([\s\S]*?)\]/,
                 /files_as:\s*\[([\s\S]*?)\]/
             ].forEach(function (pattern) {
                 var found = block.match(pattern);
