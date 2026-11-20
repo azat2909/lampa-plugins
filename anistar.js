@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.27
+ * Версия: 0.4.28
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0427_ready';
+    var READY_FLAG = 'anistar_0428_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.27';
+    var PLUGIN_VERSION = '0.4.28';
 
     var PROXY_URL = '';
 
@@ -759,9 +759,11 @@ function AniStarNetwork() {
             if (searchRequest) searchRequest.clear();
             searchRequest = new AniStarNetwork();
 
+            // DLE штатно формирует пробелы в story через "+". Это надёжнее
+            // для старых поисковых обработчиков AniStar, чем "%20".
+            var encodedQuery = encodeURIComponent(query).replace(/%20/g, '+');
             var searchUrl = new URL('/', BASE_URL).origin +
-                '/?do=search&mode=advanced&subaction=search&story=' +
-                encodeURIComponent(query);
+                '/?do=search&subaction=search&story=' + encodedQuery;
 
             Lampa.Noty.show('Ищем на AniStar: ' + query);
 
@@ -769,18 +771,43 @@ function AniStarNetwork() {
                 if (destroyed) return;
 
                 try {
-                    var parsed = parseCatalog(html, searchUrl);
-                    console.log('[AniStar] Catalog search:', {
+                    var sourceHtml = String(html || '');
+                    var parsed = parseCatalog(sourceHtml, searchUrl);
+                    var debugDoc = new DOMParser().parseFromString(sourceHtml, 'text/html');
+                    var allLinks = debugDoc.querySelectorAll('a[href]');
+                    var animeLikeLinks = [];
+                    var hrefSamples = [];
+
+                    Array.prototype.forEach.call(allLinks, function (link) {
+                        var href = absoluteUrl(link.getAttribute('href'), searchUrl);
+                        if (isAniStarUrl(href) && /\\.html(?:$|[?#])/i.test(href) &&
+                            animeLikeLinks.indexOf(href) < 0) animeLikeLinks.push(href);
+                        if (hrefSamples.length < 8) {
+                            hrefSamples.push(cleanText(link.textContent).slice(0, 45) +
+                                ' → ' + String(link.getAttribute('href') || '').slice(0, 100));
+                        }
+                    });
+
+                    console.log('[AniStar] Catalog search diagnostics:', {
                         query: query,
                         url: searchUrl,
-                        htmlLength: String(html || '').length,
-                        results: parsed.items.length
+                        finalTitle: cleanText(debugDoc.title),
+                        htmlLength: sourceHtml.length,
+                        links: allLinks.length,
+                        parsedTitles: parsed.items.length,
+                        animeLikeLinks: animeLikeLinks.slice(0, 10),
+                        hrefSamples: hrefSamples,
+                        bodyText: cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 700)
                     });
-                    showSearchResults(parsed.items, query);
+
                     if (!parsed.items.length) {
-                        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                        console.warn('[AniStar] Catalog search returned no titles:', cleanText(doc.body && doc.body.textContent).slice(0, 500));
+                        var bodyExcerpt = cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 180);
+                        Lampa.Noty.show('AniStar: ' + allLinks.length + ' ссылок, ' +
+                            animeLikeLinks.length + ' страниц .html. ' +
+                            (bodyExcerpt || 'Ответ пустой'));
                     }
+
+                    showSearchResults(parsed.items, query);
                 } catch (e) {
                     console.error('[AniStar] Catalog search parse error:', e);
                     Lampa.Noty.show('Не удалось обработать результаты поиска AniStar.');
