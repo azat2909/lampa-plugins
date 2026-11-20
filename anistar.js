@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.34
+ * Версия: 0.4.35
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0434_ready';
+    var READY_FLAG = 'anistar_0435_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.34';
+    var PLUGIN_VERSION = '0.4.35';
 
     var PROXY_URL = '';
 
@@ -127,6 +127,7 @@
         '.anistar-search-title { display:flex; align-items:center; gap:1em; padding:.85em 1.1em; margin:.25em 0; border-radius:.35em; background:rgba(255,255,255,.07); min-height:3em; }',
         '.anistar-search-title.focus { background:rgba(255,255,255,.22); outline:2px solid #fff; outline-offset:1px; }',
         '.anistar-search-title__number { opacity:.55; min-width:2em; }',
+        '.anistar-search-title__poster { width:3.6em; height:5.1em; flex:0 0 3.6em; object-fit:cover; border-radius:.25em; background:rgba(255,255,255,.08); }',
         '.anistar-search-title__name { font-size:1.08em; line-height:1.35; }',
         '.anistar-more {',
         ' margin:2em auto;',
@@ -849,12 +850,19 @@ function AniStarCatalog(object) {
                 );
             } else {
                 list.forEach(function (item, index) {
-                    // В результатах поиска показываем именно список тайтлов,
-                    // без постеров и лишней информации — удобно для пульта ТВ.
+                    // Сохраняем компактный список тайтлов, но возвращаем постеры.
                     var row = $('<div class="selector anistar-search-title"></div>');
                     var number = $('<span class="anistar-search-title__number"></span>').text((index + 1) + '.');
+                    if (item.poster) {
+                        var posterImage = $('<img class="anistar-search-title__poster">');
+                        posterImage.attr('src', item.poster);
+                        posterImage.attr('loading', 'lazy');
+                        row.append(number, posterImage);
+                    } else {
+                        row.append(number);
+                    }
                     var name = $('<span class="anistar-search-title__name"></span>').text(item.title || item.name || 'Без названия');
-                    row.append(number, name);
+                    row.append(name);
                     row.on('hover:focus', function () {
                         scrollCardIntoView(this);
                     });
