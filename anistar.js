@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.26
+ * Версия: 0.4.27
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0426_ready';
+    var READY_FLAG = 'anistar_0427_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.26';
+    var PLUGIN_VERSION = '0.4.27';
 
     var PROXY_URL = '';
 
@@ -681,6 +681,148 @@ function AniStarNetwork() {
         root.append(grid);
         scroll.append(root);
 
+        // Поиск открывается поверх каталога через штатные Select/Input Lampa.
+        // Исходная сетка остаётся в DOM, поэтому при возврате сохраняются
+        // уже загруженные страницы, позиция прокрутки и выбранная карточка.
+        var searchMode = false;
+        var searchGrid = null;
+        var savedCatalogFocus = null;
+        var searchRequest = null;
+
+        function restoreCatalogView() {
+            if (!searchMode) return;
+            searchMode = false;
+
+            if (searchGrid) {
+                searchGrid.remove();
+                searchGrid = null;
+            }
+
+            grid.show();
+
+            try {
+                Lampa.Controller.collectionSet(root);
+                if (savedCatalogFocus && savedCatalogFocus.length && savedCatalogFocus.closest('body').length) {
+                    Lampa.Controller.collectionFocus(savedCatalogFocus[0], root);
+                } else {
+                    var first = grid.find('.anistar-card').first();
+                    if (first.length) Lampa.Controller.collectionFocus(first[0], root);
+                }
+            } catch (e) {
+                console.warn('[AniStar] Restore catalog focus:', e);
+            }
+        }
+
+        function showSearchResults(list, query) {
+            if (destroyed) return;
+
+            if (!searchMode) {
+                savedCatalogFocus = root.find('.anistar-card.focus').first();
+                searchMode = true;
+                grid.hide();
+                searchGrid = $('<div class="anistar-grid anistar-search-grid"></div>');
+                root.append(searchGrid);
+            } else {
+                searchGrid.empty();
+            }
+
+            if (!list.length) {
+                searchGrid.append(
+                    $('<div class="anistar-more"></div>').text('По запросу «' + query + '» ничего не найдено')
+                );
+            } else {
+                list.forEach(function (item) {
+                    var card = createCard(item);
+                    card.on('hover:focus', function () {
+                        scrollCardIntoView(this);
+                    });
+                    searchGrid.append(card);
+                });
+            }
+
+            try {
+                Lampa.Controller.collectionSet(searchGrid);
+                var firstResult = searchGrid.find('.anistar-card').first();
+                if (firstResult.length) Lampa.Controller.collectionFocus(firstResult[0], searchGrid);
+            } catch (e) {
+                console.warn('[AniStar] Search collection:', e);
+            }
+        }
+
+        function runCatalogSearch(value) {
+            var query = cleanText(value);
+            if (!query) {
+                Lampa.Noty.show('Введи название аниме для поиска.');
+                return;
+            }
+
+            if (searchRequest) searchRequest.clear();
+            searchRequest = new AniStarNetwork();
+
+            var searchUrl = new URL('/', BASE_URL).origin +
+                '/?do=search&mode=advanced&subaction=search&story=' +
+                encodeURIComponent(query);
+
+            Lampa.Noty.show('Ищем на AniStar: ' + query);
+
+            searchRequest.get(searchUrl, function (html) {
+                if (destroyed) return;
+
+                try {
+                    var parsed = parseCatalog(html, searchUrl);
+                    console.log('[AniStar] Catalog search:', {
+                        query: query,
+                        url: searchUrl,
+                        htmlLength: String(html || '').length,
+                        results: parsed.items.length
+                    });
+                    showSearchResults(parsed.items, query);
+                    if (!parsed.items.length) {
+                        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+                        console.warn('[AniStar] Catalog search returned no titles:', cleanText(doc.body && doc.body.textContent).slice(0, 500));
+                    }
+                } catch (e) {
+                    console.error('[AniStar] Catalog search parse error:', e);
+                    Lampa.Noty.show('Не удалось обработать результаты поиска AniStar.');
+                }
+            }, function (xhr, status) {
+                if (destroyed) return;
+                console.error('[AniStar] Catalog search request failed:', status || xhr);
+                Lampa.Noty.show('Не удалось выполнить поиск AniStar.');
+            });
+        }
+
+        function showAniStarFilter() {
+            if (!Lampa.Select || typeof Lampa.Select.show !== 'function') {
+                Lampa.Noty.show('Меню фильтра недоступно в этой версии Lampa.');
+                return;
+            }
+
+            Lampa.Select.show({
+                title: 'Фильтр',
+                items: [{ title: 'Поиск' }],
+                onBack: function () {
+                    Lampa.Controller.toggle('content');
+                },
+                onSelect: function () {
+                    if (!Lampa.Input || typeof Lampa.Input.edit !== 'function') {
+                        Lampa.Noty.show('Поле поиска недоступно в этой версии Lampa.');
+                        Lampa.Controller.toggle('content');
+                        return;
+                    }
+
+                    Lampa.Input.edit({
+                        title: 'Поиск по AniStar',
+                        value: '',
+                        free: true,
+                        nosave: true
+                    }, function (newValue) {
+                        runCatalogSearch(newValue);
+                    });
+                }
+            });
+        }
+
 
         /* =====================================================
          * 8. ОТРИСОВКА КАРТОЧКИ
@@ -885,9 +1027,13 @@ function AniStarNetwork() {
                 },
                 right: function () {
                     var nav = getNavigator();
-                    if (nav && nav.move) nav.move('right');
+                    if (nav && nav.canmove && nav.canmove('right')) nav.move('right');
+                    else showAniStarFilter();
                 },
-                back: function () { Lampa.Activity.backward(); }
+                back: function () {
+                    if (searchMode) restoreCatalogView();
+                    else Lampa.Activity.backward();
+                }
             };
 
             Lampa.Controller.add('content', controller);
