@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.41
+ * Версия: 0.4.42
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0441_ready';
+    var READY_FLAG = 'anistar_0442_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.41';
+    var PLUGIN_VERSION = '0.4.42';
 
     var PROXY_URL = '';
 
@@ -149,6 +149,9 @@
         '.anistar-detail__poster {',
         ' width:220px;',
         ' max-width:35%;',
+        ' aspect-ratio:2/3;',
+        ' min-height:180px;',
+        ' background:rgba(255,255,255,.08);',
         ' border-radius:.4em;',
         '}',
 
@@ -760,11 +763,98 @@ function requestAniStarSearch(network, query, complete, error) {
         '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
         encodeAniStarQuery(query);
 
-    // GET с CP1251: POST через объект Lampa кодирует кириллицу как UTF-8,
-    // что на AniStar приводит к искажённому тексту запроса.
-    network.get(searchUrl, function (html) {
-        complete(html, searchUrl, 'GET-CP1251');
-    }, error);
+    // DLE разбивает длинную поисковую выдачу на страницы.
+    // Собираем страницы поиска последовательно, иначе часть тайтлов
+    // (например, по популярному запросу Harem) остаётся за первой страницей.
+    var pages = [];
+    var visited = {};
+    var maxPages = 30;
+
+    function nextSearchPage(html, currentUrl) {
+        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+        var links = doc.querySelectorAll(
+            'a[rel~="next"][href], .navigation a[href], .pagination a[href], ' +
+            '.pages a[href], .paginator a[href], .nav-links a[href], ' +
+            'a[href*="search_start="], a[href*="/page/"]'
+        );
+        var currentStart = 0;
+
+        try {
+            currentStart = parseInt(new URL(currentUrl).searchParams.get('search_start') || '0', 10) || 0;
+        } catch (e) {}
+
+        var candidates = [];
+        var explicitNext = '';
+
+        Array.prototype.forEach.call(links, function (link) {
+            var href = absoluteUrl(link.getAttribute('href'), currentUrl);
+            if (!href || !isAniStarUrl(href)) return;
+
+            var parsed;
+            try { parsed = new URL(href); } catch (e) { return; }
+
+            if (parsed.searchParams.get('do') !== 'search' &&
+                parsed.searchParams.get('subaction') !== 'search' &&
+                !/\/page\/\d+\/?$/i.test(parsed.pathname)) return;
+
+            if (normalizeUrl(href) === normalizeUrl(currentUrl) || visited[normalizeUrl(href)]) return;
+
+            var rel = (link.getAttribute('rel') || '').toLowerCase();
+            var cls = (link.className || '').toString().toLowerCase();
+            var label = cleanText(link.textContent).toLowerCase();
+            if (rel.indexOf('next') !== -1 || /next|следующ|далее/.test(cls) ||
+                /следующ|далее/.test(label) || label === '»' || label === '›') {
+                explicitNext = href;
+            }
+
+            var start = parseInt(parsed.searchParams.get('search_start') || '', 10);
+            if (!isNaN(start) && start > currentStart) {
+                candidates.push({ start: start, url: href });
+            }
+        });
+
+        if (explicitNext) return explicitNext;
+        candidates.sort(function (a, b) { return a.start - b.start; });
+        if (candidates.length) return candidates[0].url;
+
+        return '';
+    }
+
+    function loadPage(url, pageNumber) {
+        var normalized = normalizeUrl(url);
+        if (!normalized || visited[normalized] || pageNumber > maxPages) {
+            finish();
+            return;
+        }
+
+        visited[normalized] = true;
+        network.get(url, function (html) {
+            pages.push(String(html || ''));
+            var next = nextSearchPage(html, url);
+            if (next && pageNumber < maxPages) loadPage(next, pageNumber + 1);
+            else finish();
+        }, function (xhr, status) {
+            if (pages.length) finish();
+            else if (typeof error === 'function') error(xhr, status);
+        });
+    }
+
+    function finish() {
+        if (!pages.length) {
+            if (typeof error === 'function') error(null, 'empty search response');
+            return;
+        }
+
+        // Объединяем содержимое страниц в один документ для общего парсера.
+        var combined = '<!doctype html><html><body>' + pages.map(function (html) {
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            return doc.body ? doc.body.innerHTML : html;
+        }).join('\n') + '</body></html>';
+
+        complete(combined, searchUrl, 'GET-CP1251 (' + pages.length + ' страниц)');
+    }
+
+    loadPage(searchUrl, 1);
 }
 
 
@@ -1045,7 +1135,7 @@ function AniStarCatalog(object) {
                     $(this).remove();
 
                     poster.append(
-                        '<div class="anistar-card__placeholder">▶</div>'
+                        '<div class="anistar-card__placeholder"></div>'
                     );
                 });
 
@@ -1056,7 +1146,7 @@ function AniStarCatalog(object) {
             else {
 
                 poster.append(
-                    '<div class="anistar-card__placeholder">▶</div>'
+                    '<div class="anistar-card__placeholder"></div>'
                 );
 
             }
@@ -1577,6 +1667,9 @@ function AniStarCatalog(object) {
         if (item.poster) {
             var image = $('<img>');
             image.attr('src', item.poster);
+            image.on('error', function () {
+                $(this).remove();
+            });
             poster.append(image);
         }
 
