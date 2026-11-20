@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.12
+ * Версия: 0.4.13
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0412_ready';
+    var READY_FLAG = 'anistar_0413_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.12';
+    var PLUGIN_VERSION = '0.4.13';
 
     var PROXY_URL = '';
 
@@ -1449,21 +1449,46 @@ function AniStarNetwork() {
         };
 
         this.start = function () {
-            if (window.Lampa && Lampa.Controller) {
-                try {
-                    // Регистрируем весь экран Activity, чтобы selector-кнопка
-                    // гарантированно попала в коллекцию навигации.
-                    if (typeof Lampa.Controller.clear === 'function') {
-                        Lampa.Controller.clear();
+            if (!window.Lampa || !Lampa.Controller) return;
+
+            try {
+                // Для Activity недостаточно только collectionSet:
+                // экрану нужен собственный контроллер content, как у каталога.
+                var detailController = {
+                    link: this,
+                    toggle: function () {
+                        Lampa.Controller.collectionSet(root);
+                        Lampa.Controller.collectionFocus(watch[0], root);
+                    },
+                    left: function () {
+                        var nav = window.Navigator || Lampa.Navigator;
+                        if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
+                        else Lampa.Controller.toggle('menu');
+                    },
+                    right: function () {
+                        var nav = window.Navigator || Lampa.Navigator;
+                        if (nav && nav.move) nav.move('right');
+                    },
+                    up: function () {
+                        var nav = window.Navigator || Lampa.Navigator;
+                        if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
+                        else Lampa.Controller.toggle('head');
+                    },
+                    down: function () {
+                        var nav = window.Navigator || Lampa.Navigator;
+                        if (nav && nav.move) nav.move('down');
+                    },
+                    back: function () {
+                        Lampa.Activity.backward();
                     }
-                    Lampa.Controller.collectionSet(root);
-                    Lampa.Controller.collectionFocus(watch[0], root);
-                    if (typeof Lampa.Controller.toggle === 'function') {
-                        Lampa.Controller.toggle('content');
-                    }
-                } catch (e) {
-                    console.warn('[AniStar] Не удалось установить фокус кнопки:', e);
-                }
+                };
+
+                Lampa.Controller.add('content', detailController);
+                Lampa.Controller.toggle('content');
+                Lampa.Controller.collectionSet(root);
+                Lampa.Controller.collectionFocus(watch[0], root);
+            } catch (e) {
+                console.warn('[AniStar] Ошибка контроллера экрана:', e);
             }
         };
 
