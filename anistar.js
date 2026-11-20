@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.30
+ * Версия: 0.4.31
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0430_ready';
+    var READY_FLAG = 'anistar_0431_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.30';
+    var PLUGIN_VERSION = '0.4.31';
 
     var PROXY_URL = '';
 
@@ -624,6 +624,32 @@ function AniStarNetwork() {
 
 
     /*
+     * POST-запрос. DLE часто отправляет штатную форму поиска именно POST-методом.
+     */
+    this.post = function (url, data, success, error) {
+        var target = PROXY_URL
+            ? PROXY_URL + encodeURIComponent(url)
+            : url;
+
+        request.native(
+            target,
+            function (response) {
+                if (typeof success === 'function') success(response);
+            },
+            function (xhr, status) {
+                console.error('[AniStar] POST request error:', xhr, status);
+                if (typeof error === 'function') error(xhr, status);
+            },
+            data,
+            {
+                dataType: 'text',
+                timeout: 20000
+            }
+        );
+    };
+
+
+    /*
      * Отмена активных запросов.
      *
      * Здесь clear вызывается правильно:
@@ -645,7 +671,44 @@ function AniStarNetwork() {
      * 7. КОМПОНЕНТ КАТАЛОГА
      * ========================================================= */
 
-    function AniStarCatalog(object) {
+    /*
+ * Поиск DLE: сначала отправляем штатную POST-форму, затем при пустой
+ * выдаче или ошибке пробуем GET-вариант. Оба варианта используют одни
+ * и те же параметры формы и один парсер каталога.
+ */
+function requestAniStarSearch(network, query, complete, error) {
+    var searchUrl = new URL('/', BASE_URL).origin + '/?do=search&mode=advanced&subaction=search&story=' +
+        encodeURIComponent(query).replace(/%20/g, '+');
+    var postData = {
+        do: 'search',
+        mode: 'advanced',
+        subaction: 'search',
+        story: query
+    };
+
+    function getFallback() {
+        network.get(searchUrl, function (html) {
+            complete(html, searchUrl, 'GET');
+        }, error);
+    }
+
+    network.post(searchUrl, postData, function (html) {
+        var hasResults = false;
+        try {
+            hasResults = parseCatalog(html, searchUrl).items.length > 0;
+        } catch (e) {
+            console.warn('[AniStar] POST search response parse check failed:', e);
+        }
+
+        if (hasResults) complete(html, searchUrl, 'POST');
+        else getFallback();
+    }, function () {
+        getFallback();
+    });
+}
+
+
+function AniStarCatalog(object) {
 
         var self = this;
 
@@ -788,15 +851,9 @@ function AniStarNetwork() {
             if (searchRequest) searchRequest.clear();
             searchRequest = new AniStarNetwork();
 
-            // DLE штатно формирует пробелы в story через "+". Это надёжнее
-            // для старых поисковых обработчиков AniStar, чем "%20".
-            var encodedQuery = encodeURIComponent(query).replace(/%20/g, '+');
-            var searchUrl = new URL('/', BASE_URL).origin +
-                '/?do=search&subaction=search&story=' + encodedQuery;
-
             Lampa.Noty.show('Ищем на AniStar: ' + query);
 
-            searchRequest.get(searchUrl, function (html) {
+            requestAniStarSearch(searchRequest, query, function (html, searchUrl, method) {
                 if (destroyed) return;
 
                 try {
@@ -819,6 +876,7 @@ function AniStarNetwork() {
 
                     console.log('[AniStar] Catalog search diagnostics:', {
                         query: query,
+                        method: method,
                         url: searchUrl,
                         finalTitle: cleanText(debugDoc.title),
                         htmlLength: sourceHtml.length,
@@ -831,9 +889,8 @@ function AniStarNetwork() {
 
                     if (!parsed.items.length) {
                         var bodyExcerpt = cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 180);
-                        Lampa.Noty.show('AniStar: ' + allLinks.length + ' ссылок, ' +
-                            animeLikeLinks.length + ' страниц .html. ' +
-                            (bodyExcerpt || 'Ответ пустой'));
+                        Lampa.Noty.show('AniStar (' + method + '): ' + allLinks.length + ' ссылок, ' +
+                            animeLikeLinks.length + ' страниц .html. ' + (bodyExcerpt || 'Ответ пустой'));
                     }
 
                     showSearchResults(parsed.items, query);
@@ -1854,12 +1911,7 @@ function AniStarNetwork() {
                     return;
                 }
 
-                // DLE search endpoint is at the domain root, not inside /anime/.
-                var searchUrl = new URL('/', BASE_URL).origin +
-                    '/?do=search&mode=advanced&subaction=search&story=' +
-                    encodeURIComponent(query);
-
-                searchNetwork.get(searchUrl, function (html) {
+                requestAniStarSearch(searchNetwork, query, function (html, searchUrl, method) {
                     try {
                         var parsed = parseCatalog(html, searchUrl);
                         var debugDoc = new DOMParser().parseFromString(String(html || ''), 'text/html');
@@ -1873,6 +1925,7 @@ function AniStarNetwork() {
                         });
                         console.log('[AniStar] Search diagnostics:', {
                             query: query,
+                            method: method,
                             url: searchUrl,
                             htmlLength: String(html || '').length,
                             pageTitle: cleanText(debugDoc.title),
@@ -1883,22 +1936,8 @@ function AniStarNetwork() {
                         });
                         if (!parsed.items.length && Lampa.Noty && typeof Lampa.Noty.show === 'function') {
                             var debugBody = cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 260);
-                            var debugHrefSamples = [];
-                            Array.prototype.forEach.call(debugLinks, function (link) {
-                                if (debugHrefSamples.length < 6) {
-                                    debugHrefSamples.push(
-                                        cleanText(link.textContent).slice(0, 35) + ' → ' +
-                                        String(link.getAttribute('href') || '').slice(0, 90)
-                                    );
-                                }
-                            });
-                            console.log('[AniStar] Search response details:', {
-                                requestUrl: searchUrl,
-                                bodyText: debugBody,
-                                hrefSamples: debugHrefSamples
-                            });
                             Lampa.Noty.show(
-                                'AniStar HTML ' + String(html || '').length +
+                                'AniStar ' + method + ': HTML ' + String(html || '').length +
                                 '; ссылок ' + debugLinks.length +
                                 '; тайтлов ' + debugAnimeLinks.length +
                                 '. Текст: ' + (debugBody || 'пусто').slice(0, 220)
