@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.39
+ * Версия: 0.4.40
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0439_ready';
+    var READY_FLAG = 'anistar_0440_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.39';
+    var PLUGIN_VERSION = '0.4.40';
 
     var PROXY_URL = '';
 
@@ -865,33 +865,22 @@ function AniStarCatalog(object) {
                     $('<div class="anistar-more"></div>').text('По запросу «' + query + '» ничего не найдено')
                 );
             } else {
-                list.forEach(function (item, index) {
-                    // Сохраняем компактный список тайтлов, но возвращаем постеры.
-                    var row = $('<div class="selector anistar-search-title"></div>');
-                    var number = $('<span class="anistar-search-title__number"></span>').text((index + 1) + '.');
-                    if (item.poster) {
-                        var posterImage = $('<img class="anistar-search-title__poster">');
-                        posterImage.attr('src', item.poster);
-                        posterImage.attr('loading', 'lazy');
-                        row.append(number, posterImage);
-                    } else {
-                        row.append(number);
-                    }
-                    var name = $('<span class="anistar-search-title__name"></span>').text(item.title || item.name || 'Без названия');
-                    row.append(name);
-                    row.on('hover:focus', function () {
+                list.forEach(function (item) {
+                    // Поиск использует те же карточки, что и основной каталог.
+                    // Нормализуем поля, потому что Lampa Search отдаёт poster_path,
+                    // а ссылка AniStar может находиться в anistar_url или id.
+                    var cardItem = $.extend({}, item, {
+                        url: item.url || item.anistar_url || item.id || '',
+                        poster: item.poster || item.anistar_poster || item.poster_path || '',
+                        title: item.title || item.name || 'Без названия',
+                        name: item.name || item.title || 'Без названия'
+                    });
+
+                    var card = createCard(cardItem);
+                    card.on('hover:focus', function () {
                         scrollCardIntoView(this);
                     });
-                    row.on('hover:enter', function () {
-                        Lampa.Activity.push({
-                            url: '',
-                            title: item.title || item.name || 'Аниме',
-                            component: 'anistar_detail',
-                            page: 1,
-                            item: item
-                        });
-                    });
-                    searchGrid.append(row);
+                    searchGrid.append(card);
                 });
             }
 
@@ -1881,57 +1870,23 @@ function AniStarCatalog(object) {
             return root;
         };
 
-        function getDetailNavigator() {
-            return window.Navigator || (window.Lampa && Lampa.Navigator) || null;
-        }
-
-        function focusDetailStart() {
-            Lampa.Controller.collectionSet(root);
-            var firstEpisode = episodeList.find('.anistar-episode.focus').first();
-            if (!firstEpisode.length) firstEpisode = episodeList.find('.anistar-episode').first();
-            var target = firstEpisode.length ? firstEpisode[0] : watch[0];
-            if (target) Lampa.Controller.collectionFocus(target, root);
-        }
-
         this.start = function () {
             if (!window.Lampa || !Lampa.Controller) return;
 
             try {
-                // Используем ту же схему контроллера, что и в рабочем каталоге:
-                // один content-контроллер и одна общая коллекция всего экрана.
-                var detailController = {
-                    link: this,
-                    toggle: function () {
-                        focusDetailStart();
-                    },
-                    left: function () {
-                        var nav = getDetailNavigator();
-                        if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
-                        else Lampa.Controller.toggle('menu');
-                    },
-                    right: function () {
-                        var nav = getDetailNavigator();
-                        if (nav && nav.canmove && nav.canmove('right')) nav.move('right');
-                    },
-                    up: function () {
-                        var nav = getDetailNavigator();
-                        if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
-                        else Lampa.Controller.toggle('head');
-                    },
-                    down: function () {
-                        var nav = getDetailNavigator();
-                        if (nav && nav.canmove && nav.canmove('down')) nav.move('down');
-                    },
-                    back: function () {
-                        Lampa.Activity.backward();
-                    }
-                };
+                // Не подменяем глобальный контроллер content: экран тайтла
+                // использует активный контроллер родительской Activity.
+                // Это важно для возврата в глобальный поиск и каталог —
+                // их контроллер навигации остаётся зарегистрированным.
+                Lampa.Controller.collectionSet(root);
 
-                Lampa.Controller.add('content', detailController);
-                Lampa.Controller.toggle('content');
-                focusDetailStart();
+                var firstEpisode = episodeList.find('.anistar-episode.focus').first();
+                if (!firstEpisode.length) firstEpisode = episodeList.find('.anistar-episode').first();
+
+                var target = firstEpisode.length ? firstEpisode[0] : watch[0];
+                if (target) Lampa.Controller.collectionFocus(target, root);
             } catch (e) {
-                console.warn('[AniStar] Ошибка контроллера экрана:', e);
+                console.warn('[AniStar] Ошибка навигации экрана:', e);
             }
         };
 
@@ -1939,9 +1894,8 @@ function AniStarCatalog(object) {
 
         this.destroy = function () {
             destroyed = true;
-            if (window.Lampa && Lampa.Controller) {
-                try { Lampa.Controller.remove('content'); } catch (e) {}
-            }
+            // Не удаляем общий content-контроллер: он принадлежит Lampa
+            // и может быть нужен экрану поиска/каталога после возврата.
             network.clear();
             root.remove();
         };
