@@ -1,24 +1,32 @@
 
 /*!
- * AniStar для Lampa
- * Версия: 0.2.0
+ * ============================================================
+ * AniStar — плагин каталога аниме для Lampa
+ * ============================================================
  *
- * Каталог аниме с сайта https://anistar.org/anime/
- * Интерфейс использует штатные компоненты и стили Lampa.
+ * Версия: 0.2.1
+ * Источник: https://anistar.org/anime/
  *
- * ВАЖНО О СЕТЕВЫХ ЗАПРОСАХ:
- * Lampa.Reguest.native() вызывается с пятью аргументами:
- * native(url, success, error, postData, settings).
+ * Назначение:
+ * Добавляет каталог «Анистар» в левое меню Lampa.
+ * Загружает HTML сайта AniStar, извлекает названия,
+ * ссылки и постеры аниме.
  *
- * Если сайт не разрешает CORS, браузерная версия Lampa
- * не сможет прочитать HTML напрямую.
- * Для этого потребуется собственный серверный прокси.
+ * ВАЖНО:
+ * 1. Используется штатный интерфейс Lampa.
+ * 2. Собственный интерфейс приложения не создаётся.
+ * 3. Данные извлекаются непосредственно из HTML.
+ * 4. Для прямого запроса сайт должен быть доступен Lampa.
+ * 5. Если запрос блокируется CORS, потребуется прокси.
+ *
+ * ============================================================
  */
+
 (function () {
     'use strict';
 
     /* =========================================================
-     * 1. НАСТРОЙКИ ПЛАГИНА
+     * 1. ОСНОВНЫЕ НАСТРОЙКИ
      * ========================================================= */
 
     var PLUGIN = 'anistar_catalog';
@@ -32,17 +40,22 @@
      * Необязательный адрес собственного прокси.
      *
      * Пока оставляем пустым.
-     * Если понадобится прокси, укажем его адрес здесь.
+     *
+     * Если будет создан Cloudflare Worker, который возвращает
+     * HTML AniStar, здесь можно указать его адрес.
+     *
+     * Например:
+     * var PROXY_URL = 'https://example.workers.dev/?url=';
      */
     var PROXY_URL = '';
 
-    // Иконка каталога в левом меню.
+    // Иконка каталога в левом меню Lampa.
     var ICON =
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
         '<path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-2.1 14.8V7.2L17 12l-7.1 4.8Z"/>' +
         '</svg>';
 
-    // Не допускаем повторную инициализацию.
+    // Защита от повторной инициализации.
     if (window[READY_FLAG]) return;
 
     window[READY_FLAG] = true;
@@ -52,7 +65,15 @@
      * 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
      * ========================================================= */
 
-    // Преобразование относительной ссылки в абсолютную.
+    /*
+     * Преобразование относительной ссылки в абсолютную.
+     *
+     * Например:
+     * /uploads/poster.jpg
+     *
+     * Превратится в:
+     * https://anistar.org/uploads/poster.jpg
+     */
     function absoluteUrl(url, base) {
         if (!url) return '';
 
@@ -63,6 +84,7 @@
         }
     }
 
+
     // Удаление лишних пробелов и переносов строк.
     function cleanText(value) {
         return String(value || '')
@@ -70,7 +92,8 @@
             .trim();
     }
 
-    // Проверка принадлежности ссылки сайту AniStar.
+
+    // Проверяем, что ссылка принадлежит AniStar.
     function isAniStarUrl(url) {
         try {
             var host = new URL(url).hostname;
@@ -83,11 +106,16 @@
         }
     }
 
-    // Нормализация URL для исключения повторов.
+
+    /*
+     * Нормализация URL.
+     *
+     * Удаляем hash, чтобы одна и та же страница
+     * не добавлялась в каталог несколько раз.
+     */
     function normalizeUrl(url) {
         try {
             var parsed = new URL(url);
-
             parsed.hash = '';
 
             return parsed.href;
@@ -98,20 +126,95 @@
     }
 
 
+    /*
+     * Проверка, является ли ссылка страницей тайтла.
+     *
+     * AniStar использует формат публикаций DLE:
+     *
+     * /10847-lazurnoe-nasledie-3-sezon.html
+     *
+     * Поэтому нельзя ограничиваться ссылками /anime/.
+     */
+    function isAnimePageUrl(url) {
+        try {
+            var parsed = new URL(url);
+
+            if (!isAniStarUrl(url)) return false;
+
+            return /^\/\d+-[^/]+\.html$/i.test(
+                parsed.pathname
+            );
+
+        } catch (e) {
+            return false;
+        }
+    }
+
+
+    /*
+     * Извлечение наиболее подходящего адреса изображения.
+     *
+     * Поддерживаются:
+     * src
+     * data-src
+     * data-original
+     * data-lazy-src
+     * data-original-src
+     * srcset
+     */
+    function getImageUrl(image, pageUrl) {
+        if (!image) return '';
+
+        var poster =
+            image.getAttribute('data-src') ||
+            image.getAttribute('data-original') ||
+            image.getAttribute('data-lazy-src') ||
+            image.getAttribute('data-original-src') ||
+            image.getAttribute('src') ||
+            '';
+
+        // Если обычный адрес отсутствует, проверяем srcset.
+        if (!poster && image.getAttribute('srcset')) {
+
+            var srcset = image.getAttribute('srcset')
+                .split(',');
+
+            if (srcset.length) {
+                poster = srcset[0]
+                    .trim()
+                    .split(/\s+/)[0];
+            }
+        }
+
+        // Некоторые сайты используют data-srcset.
+        if (!poster && image.getAttribute('data-srcset')) {
+
+            poster = image.getAttribute('data-srcset')
+                .split(',')[0]
+                .trim()
+                .split(/\s+/)[0];
+        }
+
+        if (!poster) return '';
+
+        return absoluteUrl(poster, pageUrl);
+    }
+
+
     /* =========================================================
      * 3. ПАРСИНГ HTML КАТАЛОГА ANISTAR
      * =========================================================
      *
-     * Получаем HTML сайта и извлекаем:
+     * Основная задача этого блока — найти все ссылки
+     * на страницы аниме и извлечь данные карточек.
      *
-     * - название аниме;
-     * - ссылку на страницу;
-     * - адрес постера;
-     * - ссылку следующей страницы.
+     * ВАЖНО:
+     * Мы не привязываемся к одному CSS-классу.
+     * Сайт может менять HTML-шаблон, поэтому поиск
+     * выполняется по формату ссылок на публикации.
      *
-     * Селекторы пока предусматривают несколько вариантов
-     * HTML-разметки. После проверки в реальном Lampa их
-     * можно будет уточнить.
+     * Поддерживаемый формат:
+     * /12345-nazvanie-anime.html
      */
 
     function parsePage(html, pageUrl) {
@@ -124,217 +227,173 @@
         var results = [];
         var seen = {};
 
-        // Возможные контейнеры карточек аниме.
-        var cardSelectors = [
-            '.shortstory',
-            '.shortstory__item',
-            '.anime-item',
-            '.th-item',
-            '.movie-item',
-            '.poster-item',
-            'article'
-        ].join(',');
-
-        var cards = doc.querySelectorAll(cardSelectors);
-
 
         /*
-         * Если основные контейнеры не обнаружены,
-         * пробуем определить карточки через изображения.
+         * Получаем все ссылки страницы.
+         *
+         * Вместо поиска только по .shortstory или .anime-item
+         * проверяем URL каждой ссылки.
          */
-        if (!cards.length) {
-
-            var images = doc.querySelectorAll('a[href] img');
-            var fallbackCards = [];
-
-            Array.prototype.forEach.call(images, function (img) {
-
-                var parent = img.closest('article, .item, li, div');
-
-                if (
-                    parent &&
-                    fallbackCards.indexOf(parent) === -1
-                ) {
-                    fallbackCards.push(parent);
-                }
-
-            });
-
-            cards = fallbackCards;
-
-        }
+        var links = doc.querySelectorAll('a[href]');
 
 
-        /*
-         * Перебираем найденные карточки.
-         */
-        Array.prototype.forEach.call(cards, function (card) {
+        Array.prototype.forEach.call(links, function (link) {
 
-            var links = card.querySelectorAll('a[href]');
+            // Получаем абсолютный адрес.
+            var href = absoluteUrl(
+                link.getAttribute('href'),
+                pageUrl
+            );
 
-            var image = card.querySelector('img');
+            // Пропускаем ссылки, не принадлежащие AniStar.
+            if (!href || !isAniStarUrl(href)) return;
 
-            var poster = '';
+            // Оставляем только страницы аниме.
+            if (!isAnimePageUrl(href)) return;
 
 
             /*
-             * Получаем адрес постера.
-             *
-             * Проверяем варианты lazy loading:
-             * data-src, data-original, data-lazy-src, src.
+             * Ищем изображение непосредственно внутри ссылки.
              */
-            if (image) {
+            var imageInLink = link.querySelector('img');
 
-                poster =
-                    image.getAttribute('data-src') ||
-                    image.getAttribute('data-original') ||
-                    image.getAttribute('data-lazy-src') ||
-                    image.getAttribute('data-original-src') ||
-                    image.getAttribute('src') ||
-                    '';
 
-                poster = absoluteUrl(poster, pageUrl);
+            /*
+             * Получаем родительский контейнер карточки.
+             *
+             * Проверяем несколько распространённых вариантов
+             * HTML-разметки каталогов DLE и других CMS.
+             */
+            var card = link.closest(
+                '.shortstory, ' +
+                '.shortstory__item, ' +
+                '.base, ' +
+                '.news, ' +
+                '.item, ' +
+                '.anime-item, ' +
+                '.th-item, ' +
+                '.movie-item, ' +
+                '.poster-item, ' +
+                '.card, ' +
+                'article, ' +
+                'li'
+            );
 
+
+            // Если контейнер не найден, используем родителей ссылки.
+            if (!card) {
+                card = link.parentElement &&
+                    (
+                        link.parentElement.parentElement ||
+                        link.parentElement
+                    );
             }
 
 
-            var chosenLink = null;
-            var title = '';
-
-
             /*
-             * Ищем ссылку с названием аниме.
+             * Определяем заголовок.
              *
-             * Ссылки «Смотреть», «Подробнее» и элементы
-             * навигации не должны становиться карточками.
+             * Приоритет:
+             * 1. Атрибут title ссылки.
+             * 2. Текст ссылки.
+             * 3. Alt изображения.
+             * 4. Заголовок внутри карточки.
              */
-            Array.prototype.forEach.call(links, function (link) {
-
-                if (chosenLink) return;
-
-                var href = absoluteUrl(
-                    link.getAttribute('href'),
-                    pageUrl
-                );
-
-                if (!href || !isAniStarUrl(href)) return;
-
-                var linkText = cleanText(
-                    link.getAttribute('title') ||
-                    link.textContent
-                );
-
-                var imageAlt = link.querySelector('img')
-                    ? cleanText(
-                        link.querySelector('img').getAttribute('alt')
-                    )
-                    : '';
-
-                var candidateTitle = linkText || imageAlt;
-
-                if (!candidateTitle) return;
-
-                if (
-                    /^(смотреть|подробнее|читать|перейти|»|›|следующая)$/i.test(candidateTitle)
-                ) {
-                    return;
-                }
-
-                if (
-                    normalizeUrl(href) ===
-                    normalizeUrl(BASE_URL)
-                ) {
-                    return;
-                }
-
-                if (/\/(?:page|index)\//i.test(href)) return;
-
-                chosenLink = link;
-
-                title = candidateTitle;
-
-            });
-
-
-            /*
-             * Дополнительный поиск названия.
-             *
-             * Иногда заголовок располагается в h2/h3,
-             * а ссылка находится внутри этого заголовка.
-             */
-            if (!chosenLink) {
-
-                var heading = card.querySelector(
-                    'h1,h2,h3,h4,.title,.name'
-                );
-
-                if (heading) {
-
-                    var headingLink = heading.querySelector('a[href]');
-
-                    if (headingLink) {
-
-                        var headingHref = absoluteUrl(
-                            headingLink.getAttribute('href'),
-                            pageUrl
-                        );
-
-                        var headingText = cleanText(
-                            heading.textContent
-                        );
-
-                        if (
-                            isAniStarUrl(headingHref) &&
-                            headingText
-                        ) {
-
-                            chosenLink = headingLink;
-
-                            title = headingText;
-
-                        }
-
-                    }
-
-                }
-
-            }
-
-
-            // Пропускаем неподходящие элементы.
-            if (!chosenLink || !title) return;
-
-            if (title.length < 2 || title.length > 200) return;
-
-
-            // Получаем окончательную ссылку на аниме.
-            var itemUrl = normalizeUrl(
-                absoluteUrl(
-                    chosenLink.getAttribute('href'),
-                    pageUrl
+            var title = cleanText(
+                link.getAttribute('title') ||
+                link.textContent ||
+                (
+                    imageInLink &&
+                    imageInLink.getAttribute('alt')
                 )
             );
 
 
-            if (!itemUrl || seen[itemUrl]) return;
+            // Если название не найдено, ищем заголовок рядом.
+            if (!title || title.length < 2) {
+
+                var heading = card && card.querySelector(
+                    'h1, h2, h3, h4, ' +
+                    '.title, .name, ' +
+                    '.shortstory__title, ' +
+                    '.news-title'
+                );
+
+                if (heading) {
+                    title = cleanText(heading.textContent);
+                }
+            }
 
 
-            // Исключаем очевидную рекламу и служебные ссылки.
+            // Определяем изображение карточки.
+            var image = imageInLink ||
+                (card && card.querySelector('img'));
+
+
+            // Если название отсутствует, пробуем alt изображения.
             if (
-                /^(новая крутая аниме игра|смотреть|подробнее)$/i.test(title)
+                (!title || title.length < 2) &&
+                image &&
+                image.getAttribute('alt')
+            ) {
+                title = cleanText(
+                    image.getAttribute('alt')
+                );
+            }
+
+
+            /*
+             * Проверяем корректность названия.
+             */
+            if (
+                !title ||
+                title.length < 2 ||
+                title.length > 220
             ) {
                 return;
             }
 
 
+            /*
+             * Исключаем служебные названия.
+             */
+            if (
+                /^(смотреть|подробнее|читать|перейти|»|›|следующая|предыдущая)$/i.test(title)
+            ) {
+                return;
+            }
+
+            // Исключаем очевидную рекламу.
+            if (/новая крутая аниме игра/i.test(title)) {
+                return;
+            }
+
+
+            // Нормализуем ссылку на страницу аниме.
+            var itemUrl = normalizeUrl(href);
+
+
+            // Удаляем дублирующиеся страницы.
+            if (seen[itemUrl]) return;
+
             seen[itemUrl] = true;
 
 
+            // Получаем адрес постера.
+            var poster = getImageUrl(
+                image,
+                pageUrl
+            );
+
+
             /*
-             * Сохраняем найденное аниме.
+             * Сохраняем найденный тайтл.
              *
-             * В дальнейшем сюда можно добавить:
-             * year, genre, description, rating, episodes.
+             * id     — уникальный идентификатор;
+             * title  — название аниме;
+             * name   — дополнительное поле названия;
+             * url    — ссылка на страницу;
+             * poster — адрес постера.
              */
             results.push({
 
@@ -360,13 +419,12 @@
         var nextUrl = '';
 
         var paginationLinks = doc.querySelectorAll(
-
             '.navigation a[href], ' +
             '.pagination a[href], ' +
             '.pages a[href], ' +
             '.pagenavi a[href], ' +
+            'a[rel~="next"][href], ' +
             'a[href]'
-
         );
 
 
@@ -406,7 +464,9 @@
 
                     text === 'следующая' ||
 
-                    text === 'далее';
+                    text === 'далее' ||
+
+                    text === 'следующая страница';
 
 
                 if (!isNext) return false;
@@ -422,6 +482,8 @@
                     return false;
                 }
 
+
+                // Не допускаем переход на текущую страницу.
                 if (
                     normalizeUrl(candidate) ===
                     normalizeUrl(pageUrl)
@@ -438,6 +500,7 @@
         );
 
 
+        // Возвращаем список тайтлов и следующую страницу.
         return {
 
             results: results,
@@ -458,11 +521,11 @@
         var self = this;
 
 
-        // Сетевой класс Lampa.
+        // Штатный сетевой компонент Lampa.
         var network = new Lampa.Reguest();
 
 
-        // Штатный компонент прокрутки.
+        // Штатный компонент прокрутки Lampa.
         var scroll = new Lampa.Scroll({
 
             mask: true,
@@ -472,7 +535,7 @@
         });
 
 
-        // Корневой контейнер каталога.
+        // Корневой контейнер.
         var root = $(
             '<div class="anistar-catalog"></div>'
         );
@@ -484,36 +547,41 @@
         );
 
 
-        // Кнопка загрузки следующих страниц.
+        // Кнопка загрузки следующей страницы.
         var moreButton = $(
-            '<div class="selector anistar-catalog__more">Загрузить ещё</div>'
+            '<div class="selector anistar-catalog__more">' +
+            'Загрузить ещё' +
+            '</div>'
         );
 
 
-        // URL первой страницы.
+        // Определяем URL начальной страницы.
         var pageUrl = object && object.page_url
             ? object.page_url
             : BASE_URL;
 
 
-        // Уже загруженные тайтлы.
+        // Хранилище уже загруженных тайтлов.
         var loaded = {};
 
 
+        // Состояние компонента.
         var destroyed = false;
-
         var loading = false;
 
+
+        // URL следующей страницы.
         var nextUrl = '';
 
+        // Номер страницы.
         var pageNumber = 1;
 
 
         /*
-         * Формирование URL запроса.
+         * Формирование адреса запроса.
          *
-         * Если PROXY_URL пустой, используем прямой адрес сайта.
-         * Если указан прокси, передаём ему исходный URL.
+         * Если PROXY_URL не указан, обращаемся напрямую.
+         * Если указан — передаём URL прокси.
          */
         function requestUrl(url) {
 
@@ -524,18 +592,22 @@
         }
 
 
-        /*
-         * Вывод уведомления об ошибке.
-         */
+        /* =====================================================
+         * 6. ОБРАБОТКА ОШИБОК
+         * ===================================================== */
+
         function showError(message) {
 
             if (destroyed) return;
 
+            // Отключаем индикатор загрузки.
             self.activity.loader(false);
 
+            // Показываем уведомление Lampa.
             Lampa.Noty.show(
 
-                message || 'Не удалось загрузить каталог AniStar',
+                message ||
+                'Не удалось загрузить каталог AniStar',
 
                 {
                     style: 'error',
@@ -548,11 +620,12 @@
 
 
         /* =====================================================
-         * 6. СОЗДАНИЕ КАРТОЧКИ АНИМЕ
+         * 7. СОЗДАНИЕ КАРТОЧКИ АНИМЕ
          * ===================================================== */
 
         function addCard(item) {
 
+            // Штатная структура карточки Lampa.
             var card = $(
                 '<div class="card card--small selector anistar-card"></div>'
             );
@@ -566,7 +639,9 @@
             );
 
 
-            // Если постер найден, добавляем изображение.
+            /*
+             * Если постер найден, отображаем его.
+             */
             if (item.poster) {
 
                 var img = $(
@@ -583,6 +658,7 @@
 
             else {
 
+                // Заглушка, если постер отсутствует.
                 view.addClass(
                     'anistar-card__no-poster'
                 );
@@ -594,41 +670,47 @@
             title.text(item.title);
 
 
-            // Формируем карточку.
+            // Собираем карточку.
             card.append(view);
 
             card.append(title);
 
 
             /*
-             * Пока открытие страниц аниме не реализовано.
+             * В версии 0.2.1 открытие страницы тайтла
+             * ещё не реализовано.
              *
-             * На следующем этапе здесь будет открываться
-             * полноценная карточка тайтла с описанием и сериями.
+             * Следующим этапом будет добавлена страница:
+             * - описание;
+             * - жанры;
+             * - год;
+             * - список серий;
+             * - видеоплеер Lampa.
              */
             card.on('hover:enter', function () {
 
                 Lampa.Noty.show(
-                    'Страница тайтла будет добавлена на следующем этапе'
+                    'Открытие страницы тайтла будет добавлено на следующем этапе'
                 );
 
             });
 
 
-            // Добавляем карточку в штатную прокрутку.
+            // Добавляем карточку в штатную прокрутку Lampa.
             scroll.append(card);
 
         }
 
 
         /* =====================================================
-         * 7. ОТОБРАЖЕНИЕ СТРАНИЦЫ КАТАЛОГА
+         * 8. ОТОБРАЖЕНИЕ КАТАЛОГА
          * ===================================================== */
 
         function renderPage(data) {
 
             if (destroyed) return;
 
+            // Скрываем индикатор загрузки.
             self.activity.loader(false);
 
             loading = false;
@@ -638,7 +720,8 @@
 
 
             /*
-             * Добавляем найденные аниме.
+             * Добавляем найденные тайтлы.
+             *
              * Повторно уже загруженные карточки не добавляем.
              */
             data.results.forEach(function (item) {
@@ -654,7 +737,7 @@
             });
 
 
-            // Сохраняем адрес следующей страницы.
+            // Сохраняем ссылку на следующую страницу.
             nextUrl = data.next || '';
 
 
@@ -666,7 +749,7 @@
 
                 showError(
                     'HTML AniStar получен, но карточки не распознаны. ' +
-                    'Нужно уточнить CSS-селекторы сайта.'
+                    'Проверьте HTML-разметку сайта и формат ссылок.'
                 );
 
                 return;
@@ -674,9 +757,7 @@
             }
 
 
-            /*
-             * Добавляем блок пагинации только один раз.
-             */
+            // Добавляем блок пагинации.
             if (!footer.parent().length) {
 
                 footer.append(moreButton);
@@ -686,6 +767,7 @@
             }
 
 
+            // Если следующая страница существует.
             if (nextUrl) {
 
                 moreButton.show();
@@ -699,7 +781,11 @@
                 moreButton.hide();
 
                 if (!added) {
-                    Lampa.Noty.show('Больше тайтлов не найдено');
+
+                    Lampa.Noty.show(
+                        'Больше тайтлов не найдено'
+                    );
+
                 }
 
             }
@@ -708,11 +794,12 @@
 
 
         /* =====================================================
-         * 8. ЗАГРУЗКА HTML САЙТА ANISTAR
+         * 9. ЗАГРУЗКА HTML ANISTAR
          * ===================================================== */
 
         function load(url) {
 
+            // Не допускаем параллельных запросов.
             if (loading || destroyed || !url) return;
 
             loading = true;
@@ -721,9 +808,7 @@
 
 
             /*
-             * ВАЖНО!
-             *
-             * Сигнатура Lampa.Reguest.native:
+             * СИГНАТУРА Lampa.Reguest.native():
              *
              * native(
              *     url,
@@ -733,8 +818,8 @@
              *     settings
              * )
              *
-             * Для GET запроса postData = false.
-             * Настройки dataType и timeout передаются пятым аргументом.
+             * Для GET-запроса четвёртый аргумент — false.
+             * Настройки находятся в пятом аргументе.
              */
 
             network.native(
@@ -742,21 +827,23 @@
                 requestUrl(url),
 
 
-                /*
-                 * УСПЕШНАЯ ЗАГРУЗКА
-                 */
+                /* ---------------------------------------------
+                 * УСПЕШНЫЙ ОТВЕТ
+                 * --------------------------------------------- */
+
                 function (html) {
 
                     if (destroyed) return;
 
                     try {
 
+                        // Преобразуем ответ в строку.
                         if (typeof html !== 'string') {
                             html = String(html || '');
                         }
 
 
-                        // Проверяем, что сервер действительно вернул HTML.
+                        // Проверяем, что HTML действительно получен.
                         if (!html || html.length < 100) {
 
                             loading = false;
@@ -770,14 +857,18 @@
                         }
 
 
-                        // Парсим полученный HTML.
-                        var parsed = parsePage(html, url);
+                        // Разбираем HTML.
+                        var parsed = parsePage(
+                            html,
+                            url
+                        );
 
 
+                        // Увеличиваем номер страницы.
                         pageNumber++;
 
 
-                        // Отображаем найденные карточки.
+                        // Отображаем результаты.
                         renderPage(parsed);
 
                     }
@@ -801,9 +892,10 @@
                 },
 
 
-                /*
+                /* ---------------------------------------------
                  * ОШИБКА СЕТЕВОГО ЗАПРОСА
-                 */
+                 * --------------------------------------------- */
+
                 function (xhr, error) {
 
                     loading = false;
@@ -811,6 +903,7 @@
                     if (destroyed) return;
 
 
+                    // Отключаем индикатор загрузки.
                     self.activity.loader(false);
 
 
@@ -821,7 +914,10 @@
                     var reason = '';
 
 
-                    // Получаем подробное описание ошибки Lampa.
+                    /*
+                     * Получаем подробное описание ошибки
+                     * средствами Lampa.Reguest.
+                     */
                     if (network.errorDecode) {
 
                         try {
@@ -838,7 +934,7 @@
                     }
 
 
-                    // Диагностическая информация для разработчика.
+                    // Диагностика для разработчика.
                     console.error(
                         '[AniStar] request failed:',
                         {
@@ -853,9 +949,10 @@
                     /*
                      * Статус 0 не обязательно означает CORS.
                      *
-                     * Это также может быть:
-                     * - ошибка DNS;
-                     * - проблема TLS/SSL;
+                     * Возможные причины:
+                     * - CORS;
+                     * - DNS;
+                     * - TLS/SSL;
                      * - блокировка сайта;
                      * - отсутствие подключения.
                      */
@@ -883,11 +980,11 @@
                 },
 
 
-                // Четвёртый аргумент: POST-данные. Для GET — false.
+                // Четвёртый аргумент — POST-данные. Для GET: false.
                 false,
 
 
-                // Пятый аргумент: настройки запроса.
+                // Пятый аргумент — настройки запроса.
                 {
                     dataType: 'text',
                     timeout: 20000
@@ -899,7 +996,7 @@
 
 
         /* =====================================================
-         * 9. ПАГИНАЦИЯ
+         * 10. ПАГИНАЦИЯ
          * ===================================================== */
 
         moreButton.on('hover:enter', function () {
@@ -914,12 +1011,13 @@
 
 
         /* =====================================================
-         * 10. ЖИЗНЕННЫЙ ЦИКЛ КОМПОНЕНТА
+         * 11. ЖИЗНЕННЫЙ ЦИКЛ КОМПОНЕНТА LAMPA
          * ===================================================== */
 
         // Создание компонента.
         this.create = function () {
 
+            // Добавляем штатную прокрутку.
             root.append(
                 scroll.render()
             );
@@ -978,12 +1076,12 @@
 
 
     /* =========================================================
-     * 11. ДОБАВЛЕНИЕ ПУНКТА В ЛЕВОЕ МЕНЮ LAMPA
+     * 12. ДОБАВЛЕНИЕ ПУНКТА В ЛЕВОЕ МЕНЮ LAMPA
      * ========================================================= */
 
     function addMenuItem() {
 
-        // Находим основной список меню.
+        // Получаем список пунктов левого меню.
         var menu = $('.menu .menu__list').eq(0);
 
 
@@ -998,7 +1096,7 @@
         }
 
 
-        // Не допускаем дублирования пункта.
+        // Проверяем, не добавлен ли пункт ранее.
         if (
             menu.find('.' + PLUGIN + '__menu').length
         ) {
@@ -1027,9 +1125,7 @@
 
 
         /*
-         * Нажатие на «Анистар».
-         *
-         * Открываем зарегистрированный компонент каталога.
+         * Обработка нажатия на пункт «Анистар».
          */
         button.on('hover:enter', function () {
 
@@ -1057,7 +1153,7 @@
 
 
     /* =========================================================
-     * 12. ИНИЦИАЛИЗАЦИЯ ПЛАГИНА
+     * 13. ИНИЦИАЛИЗАЦИЯ ПЛАГИНА
      * ========================================================= */
 
     function init() {
@@ -1089,19 +1185,19 @@
         }
 
 
-        // Добавляем пункт в меню.
+        // Добавляем пункт в левое меню.
         addMenuItem();
 
 
         console.log(
-            '[AniStar] plugin initialized, version 0.2.0'
+            '[AniStar] plugin initialized, version 0.2.1'
         );
 
     }
 
 
     /* =========================================================
-     * 13. ОЖИДАНИЕ ГОТОВНОСТИ LAMPA
+     * 14. ОЖИДАНИЕ ГОТОВНОСТИ LAMPA
      * ========================================================= */
 
     if (window.appready) {
