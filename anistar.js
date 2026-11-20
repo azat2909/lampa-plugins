@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.33
+ * Версия: 0.4.34
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0433_ready';
+    var READY_FLAG = 'anistar_0434_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.33';
+    var PLUGIN_VERSION = '0.4.34';
 
     var PROXY_URL = '';
 
@@ -1741,14 +1741,36 @@ function AniStarCatalog(object) {
                 return;
             }
 
-            network.get(item.url, function (pageHtml) {
+            // Нормализуем ссылку, полученную из результата поиска.
+            // В карточках каталога url уже абсолютный, но поисковая выдача
+            // может содержать относительный адрес или альтернативное поле id.
+            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
+            if (!articleUrl || !isAnimeUrl(articleUrl)) {
+                loading = false;
+                showError('Некорректная ссылка на страницу аниме.');
+                console.warn('[AniStar] Invalid detail URL:', item);
+                return;
+            }
+
+            network.get(articleUrl, function (pageHtml) {
                 if (destroyed) return;
 
                 var playerUrl = getASPlayerUrl(pageHtml);
 
                 if (!playerUrl) {
+                    var failedDoc = new DOMParser().parseFromString(String(pageHtml || ''), 'text/html');
+                    var failedTitle = cleanText(failedDoc.title || '');
+                    var failedText = cleanText(failedDoc.body && failedDoc.body.textContent || '').slice(0, 240);
+                    console.warn('[AniStar] AS iframe missing on article:', {
+                        requestedUrl: articleUrl,
+                        itemUrl: item.url,
+                        itemId: item.id,
+                        htmlLength: String(pageHtml || '').length,
+                        pageTitle: failedTitle,
+                        bodyText: failedText
+                    });
                     loading = false;
-                    showError('На странице не найден iframe Плеера AS.');
+                    showError('Не найден iframe AS. Страница: ' + (failedTitle || articleUrl));
                     return;
                 }
 
