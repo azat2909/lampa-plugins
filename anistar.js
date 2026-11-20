@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.43
+ * Версия: 0.4.41
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0443_ready';
+    var READY_FLAG = 'anistar_0441_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.43';
+    var PLUGIN_VERSION = '0.4.41';
 
     var PROXY_URL = '';
 
@@ -149,9 +149,6 @@
         '.anistar-detail__poster {',
         ' width:220px;',
         ' max-width:35%;',
-        ' aspect-ratio:2/3;',
-        ' min-height:180px;',
-        ' background:rgba(255,255,255,.08);',
         ' border-radius:.4em;',
         '}',
 
@@ -763,98 +760,11 @@ function requestAniStarSearch(network, query, complete, error) {
         '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
         encodeAniStarQuery(query);
 
-    // DLE разбивает длинную поисковую выдачу на страницы.
-    // Собираем страницы поиска последовательно, иначе часть тайтлов
-    // (например, по популярному запросу Harem) остаётся за первой страницей.
-    var pages = [];
-    var visited = {};
-    var maxPages = 30;
-
-    function nextSearchPage(html, currentUrl) {
-        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-        var links = doc.querySelectorAll(
-            'a[rel~="next"][href], .navigation a[href], .pagination a[href], ' +
-            '.pages a[href], .paginator a[href], .nav-links a[href], ' +
-            'a[href*="search_start="], a[href*="/page/"]'
-        );
-        var currentStart = 0;
-
-        try {
-            currentStart = parseInt(new URL(currentUrl).searchParams.get('search_start') || '0', 10) || 0;
-        } catch (e) {}
-
-        var candidates = [];
-        var explicitNext = '';
-
-        Array.prototype.forEach.call(links, function (link) {
-            var href = absoluteUrl(link.getAttribute('href'), currentUrl);
-            if (!href || !isAniStarUrl(href)) return;
-
-            var parsed;
-            try { parsed = new URL(href); } catch (e) { return; }
-
-            if (parsed.searchParams.get('do') !== 'search' &&
-                parsed.searchParams.get('subaction') !== 'search' &&
-                !/\/page\/\d+\/?$/i.test(parsed.pathname)) return;
-
-            if (normalizeUrl(href) === normalizeUrl(currentUrl) || visited[normalizeUrl(href)]) return;
-
-            var rel = (link.getAttribute('rel') || '').toLowerCase();
-            var cls = (link.className || '').toString().toLowerCase();
-            var label = cleanText(link.textContent).toLowerCase();
-            if (rel.indexOf('next') !== -1 || /next|следующ|далее/.test(cls) ||
-                /следующ|далее/.test(label) || label === '»' || label === '›') {
-                explicitNext = href;
-            }
-
-            var start = parseInt(parsed.searchParams.get('search_start') || '', 10);
-            if (!isNaN(start) && start > currentStart) {
-                candidates.push({ start: start, url: href });
-            }
-        });
-
-        if (explicitNext) return explicitNext;
-        candidates.sort(function (a, b) { return a.start - b.start; });
-        if (candidates.length) return candidates[0].url;
-
-        return '';
-    }
-
-    function loadPage(url, pageNumber) {
-        var normalized = normalizeUrl(url);
-        if (!normalized || visited[normalized] || pageNumber > maxPages) {
-            finish();
-            return;
-        }
-
-        visited[normalized] = true;
-        network.get(url, function (html) {
-            pages.push(String(html || ''));
-            var next = nextSearchPage(html, url);
-            if (next && pageNumber < maxPages) loadPage(next, pageNumber + 1);
-            else finish();
-        }, function (xhr, status) {
-            if (pages.length) finish();
-            else if (typeof error === 'function') error(xhr, status);
-        });
-    }
-
-    function finish() {
-        if (!pages.length) {
-            if (typeof error === 'function') error(null, 'empty search response');
-            return;
-        }
-
-        // Объединяем содержимое страниц в один документ для общего парсера.
-        var combined = '<!doctype html><html><body>' + pages.map(function (html) {
-            var doc = new DOMParser().parseFromString(html, 'text/html');
-            return doc.body ? doc.body.innerHTML : html;
-        }).join('\n') + '</body></html>';
-
-        complete(combined, searchUrl, 'GET-CP1251 (' + pages.length + ' страниц)');
-    }
-
-    loadPage(searchUrl, 1);
+    // GET с CP1251: POST через объект Lampa кодирует кириллицу как UTF-8,
+    // что на AniStar приводит к искажённому тексту запроса.
+    network.get(searchUrl, function (html) {
+        complete(html, searchUrl, 'GET-CP1251');
+    }, error);
 }
 
 
@@ -909,10 +819,6 @@ function AniStarCatalog(object) {
         var lastCatalogFocus = null;
         var lastSearchFocus = null;
         var searchRequest = null;
-        var searchResultsItems = [];
-        var searchRenderedCount = 0;
-        var searchBatchSize = 24;
-        var searchBatchLoading = false;
 
         function restoreCatalogView() {
             if (!searchMode) return;
@@ -943,51 +849,6 @@ function AniStarCatalog(object) {
             }
         }
 
-        function renderSearchBatch() {
-            if (destroyed || !searchMode || !searchGrid || searchBatchLoading) return;
-
-            var total = searchResultsItems.length;
-            if (searchRenderedCount >= total) return;
-
-            searchBatchLoading = true;
-            var startIndex = searchRenderedCount;
-            var endIndex = Math.min(startIndex + searchBatchSize, total);
-
-            for (var index = startIndex; index < endIndex; index++) {
-                var item = searchResultsItems[index];
-
-                // Нормализуем поля поисковой выдачи к формату карточки каталога.
-                var cardItem = $.extend({}, item, {
-                    url: item.url || item.anistar_url || item.id || '',
-                    poster: item.poster || item.anistar_poster || item.poster_path || '',
-                    title: item.title || item.name || 'Без названия',
-                    name: item.name || item.title || 'Без названия'
-                });
-
-                var card = createCard(cardItem);
-                card.on('hover:focus', function () {
-                    lastSearchFocus = $(this);
-                    scrollCardIntoView(this);
-
-                    // Как и главная лента, добавляем следующую порцию,
-                    // когда пользователь подходит к концу уже показанных карточек.
-                    var cardIndex = searchGrid.children('.anistar-card').index(this);
-                    var shown = searchGrid.children('.anistar-card').length;
-                    if (cardIndex >= 0 && cardIndex >= shown - 12) {
-                        renderSearchBatch();
-                    }
-                });
-
-                searchGrid.append(card);
-            }
-
-            searchRenderedCount = endIndex;
-            searchBatchLoading = false;
-
-            // Обновляем Navigator после добавления карточек, не сбрасывая фокус.
-            refreshCollection(true);
-        }
-
         function showSearchResults(list, query) {
             if (destroyed) return;
 
@@ -1001,18 +862,29 @@ function AniStarCatalog(object) {
                 searchGrid.empty();
             }
 
-            searchResultsItems = list || [];
-            searchRenderedCount = 0;
-            searchBatchLoading = false;
-
-            if (!searchResultsItems.length) {
+            if (!list.length) {
                 searchGrid.append(
                     $('<div class="anistar-more"></div>').text('По запросу «' + query + '» ничего не найдено')
                 );
             } else {
-                // Сначала отображаем только первую порцию. Остальные тайтлы
-                // появляются по мере перемещения фокуса вниз, как в главном каталоге.
-                renderSearchBatch();
+                list.forEach(function (item) {
+                    // Поиск использует те же карточки, что и основной каталог.
+                    // Нормализуем поля, потому что Lampa Search отдаёт poster_path,
+                    // а ссылка AniStar может находиться в anistar_url или id.
+                    var cardItem = $.extend({}, item, {
+                        url: item.url || item.anistar_url || item.id || '',
+                        poster: item.poster || item.anistar_poster || item.poster_path || '',
+                        title: item.title || item.name || 'Без названия',
+                        name: item.name || item.title || 'Без названия'
+                    });
+
+                    var card = createCard(cardItem);
+                    card.on('hover:focus', function () {
+                        lastSearchFocus = $(this);
+                        scrollCardIntoView(this);
+                    });
+                    searchGrid.append(card);
+                });
             }
 
             try {
@@ -1020,21 +892,23 @@ function AniStarCatalog(object) {
                 // активным уже скрытый контроллер Select. Возвращаем content
                 // ДО установки коллекции результатов, иначе пульт зависает.
                 Lampa.Controller.toggle('content', true);
-                Lampa.Controller.collectionSet(root, false, true);
+                Lampa.Controller.collectionSet(searchGrid, false, true);
                 var firstResult = searchGrid.find('.anistar-card').first();
 
                 if (firstResult.length) {
                     lastSearchFocus = firstResult;
-                    Lampa.Controller.collectionFocus(firstResult[0], root, true);
+                    Lampa.Controller.collectionFocus(firstResult[0], searchGrid, true);
                 } else {
+                    // Даже пустая выдача должна иметь selector в коллекции,
+                    // иначе Navigator сохраняет старую/пустую коллекцию.
                     var emptyAction = $('<div class="selector anistar-more"></div>');
                     emptyAction.text('Ничего не найдено. Нажми OK, чтобы повторить поиск.');
                     emptyAction.on('hover:enter', function () {
                         showAniStarFilter();
                     });
                     searchGrid.append(emptyAction);
-                    Lampa.Controller.collectionSet(root, false, true);
-                    Lampa.Controller.collectionFocus(emptyAction[0], root, true);
+                    Lampa.Controller.collectionSet(searchGrid, false, true);
+                    Lampa.Controller.collectionFocus(emptyAction[0], searchGrid, true);
                 }
             } catch (e) {
                 console.warn('[AniStar] Search collection:', e);
@@ -1171,7 +1045,7 @@ function AniStarCatalog(object) {
                     $(this).remove();
 
                     poster.append(
-                        '<div class="anistar-card__placeholder"></div>'
+                        '<div class="anistar-card__placeholder">▶</div>'
                     );
                 });
 
@@ -1182,7 +1056,7 @@ function AniStarCatalog(object) {
             else {
 
                 poster.append(
-                    '<div class="anistar-card__placeholder"></div>'
+                    '<div class="anistar-card__placeholder">▶</div>'
                 );
 
             }
@@ -1703,9 +1577,6 @@ function AniStarCatalog(object) {
         if (item.poster) {
             var image = $('<img>');
             image.attr('src', item.poster);
-            image.on('error', function () {
-                $(this).remove();
-            });
             poster.append(image);
         }
 
