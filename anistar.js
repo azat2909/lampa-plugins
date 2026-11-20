@@ -2,548 +2,650 @@
 (function () {
     'use strict';
 
-    var PLUGIN_FLAG = 'plugin_anistar_ready';
-    var CATALOG_COMPONENT = 'anistar_catalog';
-    var EPISODES_COMPONENT = 'anistar_episodes';
-    var SITE_URL = 'https://anistar.org/';
-    var CARD_URL_RE = /^https?:\/\/(?:www\.)?anistar\.org\/\d+-[^/]+\.html(?:[?#].*)?$/i;
+    var PLUGIN = 'anistar_lampa_ready';
+    var BASE = 'https://anistar.org/';
+    var LIST = 'anistar_list';
+    var DETAILS = 'anistar_details';
 
-    if (window[PLUGIN_FLAG]) return;
-    window[PLUGIN_FLAG] = true;
+    if (window[PLUGIN]) return;
 
-    function absoluteUrl(value) {
-        if (!value) return '';
+    window[PLUGIN] = true;
+
+    // --------------------------------------------------
+    // Вспомогательные функции
+    // --------------------------------------------------
+
+    function absoluteUrl(url) {
         try {
-            return new URL(value, SITE_URL).href;
-        } catch (error) {
-            var link = document.createElement('a');
-            link.href = SITE_URL;
-            link.href = value;
-            return link.href || '';
+            var result = new URL(url, BASE);
+
+            if (result.protocol !== 'https:' && result.protocol !== 'http:') {
+                return '';
+            }
+
+            if (!/(^|\.)anistar\.org$/i.test(result.hostname)) {
+                return '';
+            }
+
+            return result.href;
+        }
+        catch (e) {
+            return '';
         }
     }
 
-    function textOf(node) {
-        return (node && node.textContent ? node.textContent : '')
+    function getText(node) {
+        return (node && node.textContent || '')
             .replace(/\s+/g, ' ')
             .trim();
     }
 
+    function parseDocument(html) {
+        return new DOMParser().parseFromString(
+            String(html || ''),
+            'text/html'
+        );
+    }
+
     function escapeHtml(value) {
-        return String(value || '').replace(/[&<>"']/g, function (char) {
+        return String(value || '').replace(/[&<>"']/g, function (ch) {
             return {
                 '&': '&amp;',
                 '<': '&lt;',
                 '>': '&gt;',
                 '"': '&quot;',
                 "'": '&#39;'
-            }[char];
+            }[ch];
         });
     }
 
-    function parseHtml(html) {
-        return new DOMParser().parseFromString(String(html || ''), 'text/html');
+    function getImage(block) {
+        if (!block) return '';
+
+        var img = block.querySelector('img');
+
+        if (!img) return '';
+
+        return absoluteUrl(
+            img.getAttribute('data-src') ||
+            img.getAttribute('data-original') ||
+            img.getAttribute('src') ||
+            ''
+        );
     }
 
-    function findCardContainer(anchor) {
-        var node = anchor;
-        var depth = 0;
-
-        while (node && node.parentElement && depth < 6) {
-            node = node.parentElement;
-            depth++;
-
-            if (node.matches && node.matches('article, .shortstory, .shortstory__item, .movie-item, .item')) {
-                return node;
-            }
-        }
-
-        return anchor.parentElement && anchor.parentElement.parentElement
-            ? anchor.parentElement.parentElement
-            : anchor.parentElement;
+    function isAnimeUrl(url) {
+        return /\/\d+-[^/]+\.html(?:$|[?#])/i.test(url);
     }
 
-    // Получение карточек аниме с сайта AniStar
+    // --------------------------------------------------
+    // Парсер каталога
+    // --------------------------------------------------
+
     function parseCatalog(html) {
-        var doc = parseHtml(html);
-        var byUrl = {};
+        var doc = parseDocument(html);
+        var items = [];
+        var seen = {};
 
-        Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (anchor) {
-            var url = absoluteUrl(anchor.getAttribute('href'));
-            if (!url || !CARD_URL_RE.test(url)) return;
+        Array.prototype.forEach.call(
+            doc.querySelectorAll('a[href]'),
+            function (a) {
+                var url = absoluteUrl(a.getAttribute('href'));
 
-            var title = textOf(anchor);
-            var container = findCardContainer(anchor);
-            var image = container && container.querySelector('img');
+                if (!url || !isAnimeUrl(url)) return;
+                if (seen[url]) return;
 
-            var poster = image
-                ? (image.getAttribute('data-src') ||
-                   image.getAttribute('data-original') ||
-                   image.getAttribute('data-lazy-src') ||
-                   image.getAttribute('src') || '')
-                : '';
+                var title = getText(a);
 
-            if (!byUrl[url]) {
-                byUrl[url] = {
-                    title: '',
+                // Пропускаем кнопки без названия.
+                if (!title || /^смотреть$/i.test(title)) {
+                    var parent = a.closest(
+                        'article, .shortstory, .shortstory__title, .item, .post'
+                    );
+
+                    var heading = parent && parent.querySelector(
+                        'h1, h2, h3, .title, .shortstory__title'
+                    );
+
+                    title = getText(heading);
+                }
+
+                if (!title || title.length < 2 || title.length > 200) {
+                    return;
+                }
+
+                if (/^(главная|новинки|аниме|манга|дорамы)$/i.test(title)) {
+                    return;
+                }
+
+                var block = a.closest(
+                    'article, .shortstory, .item, .movie-item, .post'
+                ) || a.parentElement;
+
+                var poster = getImage(block);
+
+                seen[url] = true;
+
+                items.push({
+                    title: title,
                     url: url,
-                    poster: '',
-                    description: ''
-                };
+                    poster: poster
+                });
             }
+        );
 
-            if (title && !/^(смотреть|подробнее|читать далее)$/i.test(title) &&
-                (!byUrl[url].title || title.length > byUrl[url].title.length)) {
-                byUrl[url].title = title;
-            }
-
-            if (poster && !byUrl[url].poster) {
-                byUrl[url].poster = absoluteUrl(poster);
-            }
-
-            var description = container && container.querySelector(
-                '.shortstory__text, .shortstory__desc, .description'
-            );
-
-            if (description && !byUrl[url].description) {
-                byUrl[url].description = textOf(description);
-            }
-        });
-
-        return Object.keys(byUrl).map(function (url) {
-            var item = byUrl[url];
-
-            if (!item.title) {
-                item.title = url.split('/').pop()
-                    .replace(/^\d+-/, '')
-                    .replace(/\.html.*$/i, '')
-                    .replace(/-/g, ' ');
-            }
-
-            return item;
-        });
+        return items;
     }
 
-    // Получение списка серий
-    function parseEpisodes(html) {
-        var doc = parseHtml(html);
+    // --------------------------------------------------
+    // Парсер связанных сезонов и частей
+    // --------------------------------------------------
+
+    function parseRelated(html, currentUrl) {
+        var doc = parseDocument(html);
         var result = [];
         var seen = {};
 
-        Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (anchor) {
-            var title = textOf(anchor);
-            var url = absoluteUrl(anchor.getAttribute('href'));
-            var match = title.match(/серия\s*(\d+)/i);
+        var allLinks = doc.querySelectorAll('a[href]');
 
-            if (!match || !url || seen[url]) return;
+        Array.prototype.forEach.call(allLinks, function (a) {
+            var url = absoluteUrl(a.getAttribute('href'));
+            var title = getText(a);
+
+            if (!url || !title) return;
+            if (url === currentUrl) return;
+            if (!isAnimeUrl(url)) return;
+            if (seen[url]) return;
+
+            var parentText = getText(a.parentElement);
+
+            // На AniStar связанные части часто имеют вид #1, #2 и т.д.
+            var isRelated =
+                /^#\s*\d+/.test(parentText) ||
+                /^#\s*\d+/.test(title) ||
+                /серия состоит из|в каком порядке лучше смотреть/i.test(
+                    parentText
+                );
+
+            if (!isRelated) return;
 
             seen[url] = true;
 
             result.push({
-                title: title,
-                number: parseInt(match[1], 10),
+                title: title.replace(/^#\s*\d+\s*/, '').trim() || title,
                 url: url
             });
-        });
-
-        result.sort(function (a, b) {
-            return b.number - a.number;
         });
 
         return result;
     }
 
-    function notify(message) {
-        if (window.Lampa && Lampa.Noty) {
-            Lampa.Noty.show(message);
-        }
-    }
+    // --------------------------------------------------
+    // Загрузка HTML
+    // --------------------------------------------------
 
     function requestHtml(url, success, failure) {
         var request = new Lampa.Reguest();
 
-        request.native(url, function (html) {
-            success(String(html || ''), request);
-        }, function (error) {
-            if (failure) failure(error, request);
-        }, {
-            dataType: 'text'
-        });
+        request.native(
+            url,
+            function (html) {
+                success(html);
+            },
+            function () {
+                if (failure) failure();
+            },
+            {
+                dataType: 'text'
+            }
+        );
 
         return request;
     }
 
-    // Открытие экрана серий
-    function openEpisodes(anime) {
+    function showError(message) {
+        Lampa.Noty.show(message || 'Не удалось загрузить AniStar');
+    }
+
+    // --------------------------------------------------
+    // Открытие карточки аниме
+    // --------------------------------------------------
+
+    function openDetails(item) {
         Lampa.Activity.push({
             url: '',
-            title: anime.title,
-            component: EPISODES_COMPONENT,
-            anime: anime,
+            title: item.title,
+            component: DETAILS,
             data: {
-                anime: anime
+                anime: item
             },
             page: 1
         });
     }
 
-    // Отображение каталога
-    function renderCatalogCards(root, items) {
-        var list = root.find('.anistar-catalog__items');
-        list.empty();
+    // --------------------------------------------------
+    // Экран каталога
+    // --------------------------------------------------
 
-        items.forEach(function (item) {
-            var poster = item.poster
-                ? '<img class="anistar-card__poster" src="' +
-                    escapeHtml(item.poster) + '" alt="">'
-                : '<div class="anistar-card__poster anistar-card__poster--empty">AniStar</div>';
+    function ListScreen(object) {
+        var self = this;
+        var scroll = new Lampa.Scroll({
+            mask: true,
+            over: true
+        });
 
-            var card = $(
-                '<div class="anistar-card">' +
-                    '<div class="anistar-card__image">' +
-                        poster +
-                    '</div>' +
-                    '<div class="anistar-card__info">' +
-                        '<div class="anistar-card__title">' +
-                            escapeHtml(item.title) +
-                        '</div>' +
-                        '<div class="anistar-card__source">AniStar</div>' +
-                        '<div class="selector anistar-card__watch">▶ Смотреть</div>' +
-                    '</div>' +
-                '</div>'
+        var request = null;
+        var alive = true;
+
+        var pageUrl = object.data && object.data.pageUrl
+            ? object.data.pageUrl
+            : BASE;
+
+        this.create = function () {
+            self.activity.loader(true);
+
+            request = requestHtml(
+                pageUrl,
+                function (html) {
+                    if (!alive) return;
+
+                    self.activity.loader(false);
+
+                    var items = parseCatalog(html);
+
+                    if (!items.length) {
+                        showError(
+                            'Не удалось найти карточки аниме на странице'
+                        );
+
+                        self.activity.empty();
+                        return;
+                    }
+
+                    items.forEach(function (item) {
+                        var card = $(
+                            '<div class="selector anistar-item">' +
+                                '<div class="anistar-poster">' +
+                                    (item.poster
+                                        ? '<img src="' +
+                                            escapeHtml(item.poster) +
+                                            '" loading="lazy">'
+                                        : '') +
+                                '</div>' +
+                                '<div class="anistar-info">' +
+                                    '<div class="anistar-title">' +
+                                        escapeHtml(item.title) +
+                                    '</div>' +
+                                    '<div class="anistar-subtitle">' +
+                                        'AniStar' +
+                                    '</div>' +
+                                '</div>' +
+                            '</div>'
+                        );
+
+                        card.on('hover:enter', function () {
+                            openDetails(item);
+                        });
+
+                        scroll.append(card);
+                    });
+
+                    // Поиск следующей страницы.
+                    var next = null;
+
+                    Array.prototype.forEach.call(
+                        parseDocument(html).querySelectorAll('a[href]'),
+                        function (a) {
+                            var text = getText(a);
+
+                            if (text === '»' || /^следующ/i.test(text)) {
+                                next = absoluteUrl(a.getAttribute('href'));
+                            }
+                        }
+                    );
+
+                    if (next && next !== pageUrl) {
+                        var nextButton = $(
+                            '<div class="selector anistar-next">' +
+                                'Следующая страница →' +
+                            '</div>'
+                        );
+
+                        nextButton.on('hover:enter', function () {
+                            Lampa.Activity.push({
+                                url: '',
+                                title: 'Анистар',
+                                component: LIST,
+                                data: {
+                                    pageUrl: next
+                                },
+                                page: 1
+                            });
+                        });
+
+                        scroll.append(nextButton);
+                    }
+                },
+                function () {
+                    if (!alive) return;
+
+                    self.activity.loader(false);
+                    showError('Ошибка загрузки каталога AniStar');
+                }
             );
 
-            card.find('.anistar-card__watch').on('hover:enter', function () {
-                openEpisodes(item);
-            });
+            return this.render();
+        };
 
-            card.on('hover:enter', function () {
-                openEpisodes(item);
-            });
+        this.start = function () {};
 
-            list.append(card);
-        });
+        this.stop = function () {};
+
+        this.render = function () {
+            return scroll.render();
+        };
+
+        this.destroy = function () {
+            alive = false;
+
+            if (request) request.clear();
+
+            scroll.destroy();
+        };
     }
 
-    // Регистрация компонентов Lampa
-    function registerComponents() {
+    // --------------------------------------------------
+    // Экран информации об аниме
+    // --------------------------------------------------
 
-        Lampa.Component.add(CATALOG_COMPONENT, {
-            template: `
-                <div class="anistar-screen">
-                    <div class="anistar-screen__heading">
-                        Каталог AniStar
-                    </div>
+    function DetailsScreen(object) {
+        var self = this;
 
-                    <div class="anistar-catalog__status">
-                        Загрузка каталога…
-                    </div>
-
-                    <div class="anistar-catalog__items"></div>
-                </div>
-            `,
-
-            data: function () {
-                return {};
-            },
-
-            mounted: function () {
-                var root = $(this.$el);
-                var status = root.find('.anistar-catalog__status');
-
-                var request = requestHtml(
-                    SITE_URL,
-                    function (html) {
-                        var items = parseCatalog(html);
-
-                        if (!items.length) {
-                            status.text(
-                                'Не удалось найти карточки аниме. Возможно, AniStar изменил разметку сайта.'
-                            );
-                            return;
-                        }
-
-                        status.remove();
-                        renderCatalogCards(root, items);
-                    },
-                    function () {
-                        status.text(
-                            'Ошибка загрузки каталога AniStar. Проверьте подключение к сайту.'
-                        );
-                    }
-                );
-
-                this.$anistarRequest = request;
-            },
-
-            destroyed: function () {
-                if (this.$anistarRequest) {
-                    this.$anistarRequest.clear();
-                }
-            }
+        var scroll = new Lampa.Scroll({
+            mask: true,
+            over: true
         });
 
-        // Экран серий
-        Lampa.Component.add(EPISODES_COMPONENT, {
-            template: `
-                <div class="anistar-screen">
-                    <div class="anistar-screen__heading">
-                        {{anime.title}}
-                    </div>
+        var request = null;
+        var alive = true;
 
-                    <div class="anistar-episodes__status">
-                        Загрузка списка серий…
-                    </div>
+        var data = object.data || {};
+        var anime = data.anime || {};
 
-                    <div class="anistar-episodes__items"></div>
+        this.create = function () {
+            if (!anime.url) {
+                showError('Не найдена ссылка на аниме');
+                self.activity.empty();
+                return this.render();
+            }
 
-                    <div class="anistar-episodes__note">
-                        Ссылки, найденные на AniStar, могут вести на раздачи файлов.
-                        Воспроизведение через плеер Lampa будет добавлено отдельно.
-                    </div>
-                </div>
-            `,
+            self.activity.loader(true);
 
-            data: function () {
-                return {
-                    anime: this.anime || (this.data && this.data.anime) || {}
-                };
-            },
+            request = requestHtml(
+                anime.url,
+                function (html) {
+                    if (!alive) return;
 
-            mounted: function () {
-                var component = this;
-                var root = $(this.$el);
-                var status = root.find('.anistar-episodes__status');
-                var anime = this.anime || {};
+                    self.activity.loader(false);
 
-                if (!anime.url) {
-                    status.text('Не найдена ссылка на страницу аниме.');
-                    return;
-                }
+                    var doc = parseDocument(html);
 
-                var request = requestHtml(
-                    anime.url,
-                    function (html) {
-                        var doc = parseHtml(html);
-                        var episodes = parseEpisodes(html);
-                        var heading = textOf(doc.querySelector('h1'));
-                        var list = root.find('.anistar-episodes__items');
+                    var heading = doc.querySelector('h1');
+                    var intro = doc.querySelector(
+                        '.full-text, .fullstory, .description, .shortstory__text'
+                    );
 
-                        if (heading) {
-                            root.find('.anistar-screen__heading').text(heading);
-                        }
+                    var title = getText(heading) || anime.title;
+                    var description = getText(intro);
 
-                        if (!episodes.length) {
-                            status.text('Список серий на странице не найден.');
-                            return;
-                        }
+                    var header = $(
+                        '<div class="anistar-details-title">' +
+                            escapeHtml(title) +
+                        '</div>'
+                    );
 
-                        status.remove();
+                    scroll.append(header);
 
-                        episodes.forEach(function (episode) {
+                    if (anime.poster) {
+                        scroll.append($(
+                            '<div class="anistar-details-poster">' +
+                                '<img src="' +
+                                escapeHtml(anime.poster) +
+                                '" loading="lazy">' +
+                            '</div>'
+                        ));
+                    }
+
+                    if (description) {
+                        scroll.append($(
+                            '<div class="anistar-description">' +
+                                escapeHtml(description.slice(0, 1500)) +
+                            '</div>'
+                        ));
+                    }
+
+                    var related = parseRelated(html, anime.url);
+
+                    if (related.length) {
+                        scroll.append($(
+                            '<div class="anistar-section-title">' +
+                                'Связанные сезоны и части' +
+                            '</div>'
+                        ));
+
+                        related.forEach(function (part) {
                             var row = $(
-                                '<div class="selector anistar-episode">' +
-                                    '<span class="anistar-episode__title">' +
-                                        escapeHtml(episode.title) +
-                                    '</span>' +
-                                    '<span class="anistar-episode__arrow">›</span>' +
+                                '<div class="selector anistar-related">' +
+                                    escapeHtml(part.title) +
                                 '</div>'
                             );
 
                             row.on('hover:enter', function () {
-                                notify(
-                                    'Серия найдена на AniStar. Подключение воспроизведения будет следующим этапом.'
-                                );
+                                openDetails({
+                                    title: part.title,
+                                    url: part.url,
+                                    poster: ''
+                                });
                             });
 
-                            list.append(row);
+                            scroll.append(row);
                         });
-                    },
-                    function () {
-                        status.text('Ошибка загрузки страницы аниме.');
                     }
-                );
 
-                component.$anistarRequest = request;
-            },
+                    // Открытие оригинальной страницы AniStar.
+                    var siteButton = $(
+                        '<div class="selector anistar-open-site">' +
+                            'Открыть страницу AniStar' +
+                        '</div>'
+                    );
 
-            destroyed: function () {
-                if (this.$anistarRequest) {
-                    this.$anistarRequest.clear();
+                    siteButton.on('hover:enter', function () {
+                        if (Lampa.Platform && Lampa.Platform.open) {
+                            Lampa.Platform.open(anime.url);
+                        }
+                        else {
+                            window.open(anime.url, '_blank');
+                        }
+                    });
+
+                    scroll.append(siteButton);
+                },
+                function () {
+                    if (!alive) return;
+
+                    self.activity.loader(false);
+                    showError('Ошибка загрузки страницы аниме');
                 }
-            }
-        });
+            );
+
+            return this.render();
+        };
+
+        this.start = function () {};
+
+        this.stop = function () {};
+
+        this.render = function () {
+            return scroll.render();
+        };
+
+        this.destroy = function () {
+            alive = false;
+
+            if (request) request.clear();
+
+            scroll.destroy();
+        };
     }
 
-    // Добавление пункта в левое меню
-    function addMenuItem() {
-        var menu = $('.menu .menu__list').eq(0);
+    // --------------------------------------------------
+    // Стили
+    // --------------------------------------------------
 
-        if (!menu.length || menu.find('.anistar-menu-item').length) {
+    function addStyles() {
+        if ($('#anistar-plugin-styles').length) return;
+
+        $('head').append(
+            '<style id="anistar-plugin-styles">' +
+
+            '.anistar-item {' +
+                'display:flex;' +
+                'align-items:center;' +
+                'padding:1em;' +
+                'margin:.4em 0;' +
+                'border-radius:.4em;' +
+                'background:rgba(255,255,255,.04);' +
+            '}' +
+
+            '.anistar-poster {' +
+                'width:5em;' +
+                'min-width:5em;' +
+                'height:7em;' +
+                'margin-right:1em;' +
+                'overflow:hidden;' +
+                'border-radius:.3em;' +
+                'background:rgba(255,255,255,.08);' +
+            '}' +
+
+            '.anistar-poster img {' +
+                'width:100%;' +
+                'height:100%;' +
+                'object-fit:cover;' +
+            '}' +
+
+            '.anistar-info {' +
+                'min-width:0;' +
+                'flex:1;' +
+            '}' +
+
+            '.anistar-title {' +
+                'font-size:1.05em;' +
+                'font-weight:600;' +
+            '}' +
+
+            '.anistar-subtitle {' +
+                'opacity:.5;' +
+                'font-size:.85em;' +
+                'margin-top:.5em;' +
+            '}' +
+
+            '.anistar-next, .anistar-related, .anistar-open-site {' +
+                'padding:1em;' +
+                'margin:.5em 0;' +
+                'border-radius:.3em;' +
+                'background:rgba(255,255,255,.06);' +
+            '}' +
+
+            '.anistar-details-title {' +
+                'font-size:1.3em;' +
+                'font-weight:600;' +
+                'margin:1em 0;' +
+            '}' +
+
+            '.anistar-details-poster {' +
+                'width:10em;' +
+                'max-height:15em;' +
+                'overflow:hidden;' +
+                'margin:1em 0;' +
+            '}' +
+
+            '.anistar-details-poster img {' +
+                'width:100%;' +
+                'height:auto;' +
+            '}' +
+
+            '.anistar-description {' +
+                'opacity:.8;' +
+                'line-height:1.5;' +
+                'margin:1em 0;' +
+            '}' +
+
+            '.anistar-section-title {' +
+                'font-size:1.1em;' +
+                'font-weight:600;' +
+                'margin:1.5em 0 .7em;' +
+            '}' +
+
+            '</style>'
+        );
+    }
+
+    // --------------------------------------------------
+    // Инициализация
+    // --------------------------------------------------
+
+    function init() {
+        if (!window.Lampa || !Lampa.Component || !Lampa.Reguest) {
             return;
         }
 
-        var item = $(
+        if (!Lampa.Component.get(LIST)) {
+            Lampa.Component.add(LIST, ListScreen);
+        }
+
+        if (!Lampa.Component.get(DETAILS)) {
+            Lampa.Component.add(DETAILS, DetailsScreen);
+        }
+
+        addStyles();
+
+        if ($('.menu .menu__list .anistar-menu-item').length) {
+            return;
+        }
+
+        var menuItem = $(
             '<li class="menu__item selector anistar-menu-item">' +
                 '<div class="menu__ico">' +
-                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
-                        '<path fill="currentColor" d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm2 3v12h12V6H6zm2 2h8v2H8V8zm0 4h8v2H8v-2z"/>' +
+                    '<svg xmlns="http://www.w3.org/2000/svg" ' +
+                        'viewBox="0 0 24 24">' +
+                        '<path fill="currentColor" d="' +
+                        'M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm2 3v12h12V6H6z' +
+                        '"/>' +
                     '</svg>' +
                 '</div>' +
                 '<div class="menu__text">Анистар</div>' +
             '</li>'
         );
 
-        item.on('hover:enter', function () {
+        menuItem.on('hover:enter', function () {
             Lampa.Activity.push({
                 url: '',
                 title: 'Анистар',
-                component: CATALOG_COMPONENT,
-                data: {},
+                component: LIST,
+                data: {
+                    pageUrl: BASE
+                },
                 page: 1
             });
         });
 
-        menu.append(item);
-    }
-
-    // Стили каталога
-    function addStyles() {
-        if (document.getElementById('anistar-plugin-styles')) {
-            return;
-        }
-
-        var css = `
-            .anistar-screen {
-                box-sizing: border-box;
-                width: 100%;
-                padding: 1.2em 1.5em 3em;
-                overflow-y: auto;
-            }
-
-            .anistar-screen__heading {
-                font-size: 1.45em;
-                font-weight: 600;
-                margin: 0 0 1em;
-            }
-
-            .anistar-catalog__status,
-            .anistar-episodes__status {
-                opacity: .7;
-                padding: 1em 0;
-            }
-
-            .anistar-card {
-                display: flex;
-                align-items: center;
-                gap: 1.1em;
-                padding: .7em;
-                margin: 0 0 .7em;
-                border-radius: .45em;
-                background: rgba(255,255,255,.045);
-            }
-
-            .anistar-card__image {
-                flex: 0 0 6em;
-                width: 6em;
-                height: 8.5em;
-                overflow: hidden;
-                border-radius: .25em;
-                background: rgba(255,255,255,.08);
-            }
-
-            .anistar-card__poster {
-                display: block;
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-            }
-
-            .anistar-card__poster--empty {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                opacity: .5;
-                font-size: .8em;
-            }
-
-            .anistar-card__info {
-                min-width: 0;
-                flex: 1;
-            }
-
-            .anistar-card__title {
-                font-size: 1.05em;
-                font-weight: 600;
-                line-height: 1.35;
-            }
-
-            .anistar-card__source {
-                opacity: .55;
-                font-size: .8em;
-                margin-top: .35em;
-            }
-
-            .anistar-card__watch {
-                display: inline-block;
-                margin-top: .75em;
-                padding: .45em .9em;
-                border-radius: .3em;
-                background: rgba(255,255,255,.12);
-            }
-
-            .anistar-episode {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: .9em 1em;
-                margin: .35em 0;
-                border-radius: .35em;
-                background: rgba(255,255,255,.055);
-            }
-
-            .anistar-episode__arrow {
-                opacity: .55;
-                font-size: 1.4em;
-            }
-
-            .anistar-episodes__note {
-                opacity: .55;
-                font-size: .82em;
-                line-height: 1.4;
-                margin-top: 1.2em;
-            }
-        `;
-
-        var style = document.createElement('style');
-        style.id = 'anistar-plugin-styles';
-        style.textContent = css;
-
-        document.head.appendChild(style);
-    }
-
-    // Запуск плагина
-    function init() {
-        if (!window.Lampa || !Lampa.Component || !Lampa.Activity) {
-            console.error('AniStar: API Lampa недоступен');
-            return;
-        }
-
-        try {
-            registerComponents();
-            addStyles();
-            addMenuItem();
-
-            console.log('AniStar: плагин инициализирован');
-        } catch (error) {
-            console.error('AniStar: ошибка инициализации', error);
-            notify('Ошибка инициализации плагина Анистар');
-        }
+        $('.menu .menu__list').eq(0).append(menuItem);
     }
 
     if (window.appready) {
         init();
-    } else {
+    }
+    else {
         Lampa.Listener.follow('app', function (event) {
             if (event.type === 'ready') {
                 init();
