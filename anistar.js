@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0422_ready';
+    var READY_FLAG = 'anistar_0423_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.22';
+    var PLUGIN_VERSION = '0.4.23';
 
     var PROXY_URL = '';
 
@@ -1654,7 +1654,7 @@ function AniStarNetwork() {
 
                 // DLE search endpoint is at the domain root, not inside /anime/.
                 var searchUrl = new URL('/', BASE_URL).origin +
-                    '/?do=search&subaction=search&story=' +
+                    '/?do=search&mode=advanced&subaction=search&story=' +
                     encodeURIComponent(query);
 
                 searchNetwork.get(searchUrl, function (html) {
