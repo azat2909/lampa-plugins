@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.28
+ * Версия: 0.4.29
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0428_ready';
+    var READY_FLAG = 'anistar_0429_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.28';
+    var PLUGIN_VERSION = '0.4.29';
 
     var PROXY_URL = '';
 
@@ -123,6 +123,7 @@
         ' z-index:2;',
         '}',
 
+        '.anistar-more.focus { outline:3px solid #fff; outline-offset:3px; }',
         '.anistar-more {',
         ' margin:2em auto;',
         ' padding:1em 2em;',
@@ -701,6 +702,11 @@ function AniStarNetwork() {
             grid.show();
 
             try {
+                // Input.edit возвращает управление тому контроллеру,
+                // из которого была открыта клавиатура (в нашем случае Select).
+                // Сам Select к этому моменту уже закрыт, поэтому принудительно
+                // возвращаем активный контроллер каталога.
+                Lampa.Controller.toggle('content', true);
                 Lampa.Controller.collectionSet(root);
                 if (savedCatalogFocus && savedCatalogFocus.length && savedCatalogFocus.closest('body').length) {
                     Lampa.Controller.collectionFocus(savedCatalogFocus[0], root);
@@ -741,9 +747,27 @@ function AniStarNetwork() {
             }
 
             try {
+                // После закрытия экранной клавиатуры Lampa может оставить
+                // активным уже скрытый контроллер Select. Возвращаем content
+                // ДО установки коллекции результатов, иначе пульт зависает.
+                Lampa.Controller.toggle('content', true);
                 Lampa.Controller.collectionSet(searchGrid);
                 var firstResult = searchGrid.find('.anistar-card').first();
-                if (firstResult.length) Lampa.Controller.collectionFocus(firstResult[0], searchGrid);
+
+                if (firstResult.length) {
+                    Lampa.Controller.collectionFocus(firstResult[0], searchGrid);
+                } else {
+                    // Даже пустая выдача должна иметь selector в коллекции,
+                    // иначе Navigator сохраняет старую/пустую коллекцию.
+                    var emptyAction = $('<div class="selector anistar-more"></div>');
+                    emptyAction.text('Ничего не найдено. Нажми OK, чтобы повторить поиск.');
+                    emptyAction.on('hover:enter', function () {
+                        showAniStarFilter();
+                    });
+                    searchGrid.append(emptyAction);
+                    Lampa.Controller.collectionSet(searchGrid);
+                    Lampa.Controller.collectionFocus(emptyAction[0], searchGrid);
+                }
             } catch (e) {
                 console.warn('[AniStar] Search collection:', e);
             }
