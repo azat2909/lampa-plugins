@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_049_ready';
+    var READY_FLAG = 'anistar_0410_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.9';
+    var PLUGIN_VERSION = '0.4.10';
 
     var PROXY_URL = '';
 
@@ -1229,25 +1229,63 @@ function AniStarNetwork() {
 
 
         function getASPlayerUrl(pageHtml) {
-            var doc = new DOMParser().parseFromString(String(pageHtml || ''), 'text/html');
-            var iframe = doc.querySelector('.video_as#vid_2 iframe[src]');
+            var html = String(pageHtml || '');
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var candidates = [];
 
-            if (!iframe) {
-                var frames = doc.querySelectorAll('.video_as iframe[src]');
-                Array.prototype.some.call(frames, function (frame) {
-                    var src = frame.getAttribute('src') || '';
-                    if (/videoas_p2p_new\.php/i.test(src)) {
-                        iframe = frame;
-                        return true;
+            /*
+             * Разметка AniStar меняется: iframe AS не всегда находится
+             * внутри .video_as#vid_2. Поэтому проверяем все iframe,
+             * включая варианты с lazy-load атрибутами.
+             */
+            var frames = doc.querySelectorAll('iframe');
+            Array.prototype.forEach.call(frames, function (frame) {
+                var attrs = [
+                    frame.getAttribute('src'),
+                    frame.getAttribute('data-src'),
+                    frame.getAttribute('data-lazy-src'),
+                    frame.getAttribute('data-original')
+                ];
+
+                attrs.forEach(function (value) {
+                    if (value && /videoas_p2p_new\\.php/i.test(value)) {
+                        candidates.push(value);
                     }
-                    return false;
                 });
+            });
+
+            /*
+             * Резервный поиск непосредственно в исходном HTML:
+             * помогает, если DOMParser не распознал нестандартную
+             * или отложенно загружаемую разметку iframe.
+             */
+            if (!candidates.length) {
+                var iframePattern = /<iframe\\b[^>]*>/gi;
+                var iframeMatch;
+
+                while ((iframeMatch = iframePattern.exec(html))) {
+                    var tag = iframeMatch[0];
+                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original)\\s*=\\s*(['"])(.*?)\\1/ig;
+                    var attrMatch;
+
+                    while ((attrMatch = attrPattern.exec(tag))) {
+                        if (/videoas_p2p_new\\.php/i.test(attrMatch[2])) {
+                            candidates.push(attrMatch[2]);
+                        }
+                    }
+                }
             }
 
-            if (!iframe) return '';
+            if (!candidates.length) {
+                console.warn('[AniStar] AS iframe not found. HTML length:', html.length);
+                return '';
+            }
 
-            var src = iframe.getAttribute('src') || '';
-            if (!/videoas_p2p_new\.php/i.test(src)) return '';
+            var src = String(candidates[0])
+                .replace(/&amp;/g, '&')
+                .replace(/&#38;/g, '&')
+                .replace(/\\u0026/gi, '&')
+                .trim();
 
             return absoluteUrl(src, item.url);
         }
