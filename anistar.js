@@ -479,37 +479,99 @@
     }
 
 
-    /* =========================================================
-     * 6. СЕТЕВОЙ ЗАПРОС
-     * ========================================================= */
+    
+/* =========================================================
+ * 6. СЕТЕВОЙ ЗАПРОС — ИСПРАВЛЕННАЯ ВЕРСИЯ
+ * =========================================================
+ *
+ * ВАЖНО:
+ * Не используем request.get().
+ *
+ * В некоторых сборках Lampa Request.get() вызывает
+ * необъявленную функцию clear(), что приводит к ошибке:
+ *
+ * ReferenceError: clear is not defined
+ *
+ * Используем request.native(), который поддерживает
+ * Android TV и не вызывает проблемный метод get().
+ */
 
-    function AniStarNetwork() {
+function AniStarNetwork() {
 
-        var request = new Lampa.Reguest();
+    // Создаём штатный сетевой объект Lampa.
+    var request = new Lampa.Reguest();
 
-        this.get = function (url, success, error) {
 
-            var target = PROXY_URL
-                ? PROXY_URL + encodeURIComponent(url)
-                : url;
+    /*
+     * GET-запрос к AniStar.
+     */
+    this.get = function (url, success, error) {
 
-            /*
-             * Используем штатный GET-метод Lampa.
-             * Сигнатура соответствует руководству плагинов.
-             */
-            request.get(
-                target,
-                success,
-                error
-            );
+        // Если задан прокси, используем его.
+        var target = PROXY_URL
+            ? PROXY_URL + encodeURIComponent(url)
+            : url;
 
-        };
 
-        this.clear = function () {
+        /*
+         * Используем native вместо get.
+         *
+         * Аргументы:
+         * 1. URL;
+         * 2. Успешный callback;
+         * 3. Callback ошибки;
+         * 4. POST-данные (false для GET);
+         * 5. Настройки запроса.
+         */
+        request.native(
+
+            target,
+
+            function (data) {
+                if (typeof success === 'function') {
+                    success(data);
+                }
+            },
+
+            function (xhr, status) {
+                console.error(
+                    '[AniStar] Request error:',
+                    xhr,
+                    status
+                );
+
+                if (typeof error === 'function') {
+                    error(xhr, status);
+                }
+            },
+
+            false,
+
+            {
+                dataType: 'text',
+                timeout: 20000
+            }
+
+        );
+
+    };
+
+
+    /*
+     * Отмена активных запросов.
+     *
+     * Здесь clear вызывается правильно:
+     * через экземпляр request.
+     */
+    this.clear = function () {
+
+        if (request && typeof request.clear === 'function') {
             request.clear();
-        };
+        }
 
-    }
+    };
+
+}
 
 
     /* =========================================================
