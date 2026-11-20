@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.14
+ * Версия: 0.4.15
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0414_ready';
+    var READY_FLAG = 'anistar_0415_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.14';
+    var PLUGIN_VERSION = '0.4.15';
 
     var PROXY_URL = '';
 
@@ -1299,7 +1299,7 @@ function AniStarNetwork() {
                 // Важно: здесь именно \\s (пробельный символ), а не \\\\s.
                 // Ищем URL AS независимо от того, находится он в iframe,
                 // ссылке или JavaScript-переменной.
-                var playerPattern = /[^"'<>\\s]*videoas_p2p_new\.php[^"'<>\\s]*/ig;
+                var playerPattern = /[^"'<>\s]*videoas_p2p_new\.php[^"'<>\s]*/ig;
                 var playerMatch;
 
                 while ((playerMatch = playerPattern.exec(searchable))) {
