@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.3
+ * Версия: 0.4.4
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_043_ready';
+    var READY_FLAG = 'anistar_044_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.3';
+    var PLUGIN_VERSION = '0.4.4';
 
     var PROXY_URL = '';
 
@@ -750,9 +750,19 @@ function AniStarNetwork() {
         function refreshCollection(keepFocus) {
             if (!window.Lampa || !Lampa.Controller) return;
             try {
+                // Сохраняем DOM-элемент до сброса коллекции:
+                // Controller.clear() может снять с него класс focus.
                 var current = keepFocus ? root.find('.anistar-card.focus').first() : $();
                 if (!current.length) current = root.find('.anistar-card').first();
+
+                // После добавления новых карточек Navigator должен
+                // пересобрать список selectable-элементов.
+                if (typeof Lampa.Controller.clear === 'function') {
+                    Lampa.Controller.clear();
+                }
+
                 Lampa.Controller.collectionSet(root);
+
                 if (current.length) {
                     Lampa.Controller.collectionFocus(current[0], root);
                 }
@@ -826,7 +836,10 @@ function AniStarNetwork() {
 
             loading = true;
 
-            self.activity.loader(true);
+            // Полноэкранный loader нужен только при первом открытии.
+            // При догрузке он перекрывает каталог и мешает навигации пультом.
+            var initialLoad = items.length === 0;
+            if (initialLoad) self.activity.loader(true);
 
 
             network.get(
@@ -840,7 +853,7 @@ function AniStarNetwork() {
 
                     loading = false;
 
-                    self.activity.loader(false);
+                    if (initialLoad) self.activity.loader(false);
 
 
                     try {
@@ -912,7 +925,9 @@ function AniStarNetwork() {
 
                     loading = false;
 
-                    self.activity.loader(false);
+                    // Разрешаем повторную попытку при следующем достижении края.
+                    lastAutoLoadCount = -1;
+                    if (initialLoad) self.activity.loader(false);
 
                     console.error(
                         '[AniStar] Network error:',
