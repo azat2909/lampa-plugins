@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.17
+ * Версия: 0.4.18
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0417_ready';
+    var READY_FLAG = 'anistar_0418_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.17';
+    var PLUGIN_VERSION = '0.4.18';
 
     var PROXY_URL = '';
 
@@ -1628,22 +1628,33 @@ function AniStarNetwork() {
 
             params: {
                 lazy: true,
+                align_left: true,
                 card_view: 6,
-                noimage: true
+                noimage: true,
+                object: {
+                    source: 'anistar'
+                }
             },
 
             search: function (params, oncomplete) {
                 var query = String(params && params.query || '').trim();
 
-                if (query.length < 3) {
+                // Lampa в некоторых сценариях передаёт query уже URL-кодированным.
+                // Нормализуем его и кодируем ровно один раз, включая голосовой ввод.
+                try {
+                    query = decodeURIComponent(query.replace(/\+/g, '%20'));
+                } catch (e) {}
+
+                query = query.trim();
+
+                if (!query) {
                     oncomplete([]);
                     return;
                 }
 
                 var searchUrl = BASE_URL +
-                    'index.php?do=search&story=' +
-                    query +
-                    '&subaction=search';
+                    'index.php?do=search&subaction=search&story=' +
+                    encodeURIComponent(query);
 
                 searchNetwork.get(searchUrl, function (html) {
                     try {
@@ -1661,16 +1672,22 @@ function AniStarNetwork() {
                             };
                         });
 
+                        console.log('[AniStar] Search completed:', query, results.length);
+
                         oncomplete(results.length ? [{
                             title: 'AniStar',
-                            results: results
+                            results: results,
+                            page: 1,
+                            total_pages: 1,
+                            total_results: results.length
                         }] : []);
                     }
                     catch (e) {
                         console.error('[AniStar] Search parse error', e);
                         oncomplete([]);
                     }
-                }, function () {
+                }, function (xhr, status) {
+                    console.error('[AniStar] Search request failed:', status || xhr);
                     oncomplete([]);
                 });
             },
