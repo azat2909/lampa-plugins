@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0429_ready';
+    var READY_FLAG = 'anistar_0430_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.29';
+    var PLUGIN_VERSION = '0.4.30';
 
     var PROXY_URL = '';
 
@@ -273,10 +273,15 @@
 
     function isAniStarUrl(url) {
         try {
-            var host = new URL(url).hostname;
+            var host = new URL(url).hostname.toLowerCase();
 
+            // AniStar выдаёт публикации не только на anistar.org:
+            // актуальные зеркала работают на поддоменах astar.bz
+            // (например, v32.astar.bz). Считаем их тем же источником.
             return host === SITE_HOST ||
-                host === 'www.' + SITE_HOST;
+                host === 'www.' + SITE_HOST ||
+                host === 'astar.bz' ||
+                /\\.astar\\.bz$/i.test(host);
         } catch (e) {
             return false;
         }
