@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.13
+ * Версия: 0.4.14
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0413_ready';
+    var READY_FLAG = 'anistar_0414_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.13';
+    var PLUGIN_VERSION = '0.4.14';
 
     var PROXY_URL = '';
 
@@ -1288,10 +1288,21 @@ function AniStarNetwork() {
              * не попадая в атрибут iframe после разбора DOM.
              */
             if (!candidates.length) {
-                var playerPattern = /[^"'<>\\s]*videoas_p2p_new\\.php[^"'<>\\s]*/ig;
+                // В некоторых ответах URL iframe приходит как экранированная
+                // строка скрипта или HTML-сущность, поэтому нормализуем копию.
+                var searchable = html
+                    .replace(/\\\\\//g, '/')
+                    .replace(/&amp;/g, '&')
+                    .replace(/&#38;/g, '&')
+                    .replace(/\\\\u0026/gi, '&');
+
+                // Важно: здесь именно \\s (пробельный символ), а не \\\\s.
+                // Ищем URL AS независимо от того, находится он в iframe,
+                // ссылке или JavaScript-переменной.
+                var playerPattern = /[^"'<>\\s]*videoas_p2p_new\.php[^"'<>\\s]*/ig;
                 var playerMatch;
 
-                while ((playerMatch = playerPattern.exec(html))) {
+                while ((playerMatch = playerPattern.exec(searchable))) {
                     candidates.push(playerMatch[0]);
                 }
             }
