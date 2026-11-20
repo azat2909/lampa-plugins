@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.11
+ * Версия: 0.4.12
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0411_ready';
+    var READY_FLAG = 'anistar_0412_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.11';
+    var PLUGIN_VERSION = '0.4.12';
 
     var PROXY_URL = '';
 
@@ -188,6 +188,12 @@
         ' background:rgba(255,255,255,.12);',
         ' border-radius:.4em;',
         ' width:max-content;',
+        '}',
+        '.anistar-detail__link.focus {',
+        ' background:rgba(255,255,255,.30);',
+        ' outline:3px solid rgba(255,255,255,.95);',
+        ' outline-offset:2px;',
+        ' color:#fff;',
         '}',
 
         '@media (max-width:700px) {',
@@ -1445,9 +1451,19 @@ function AniStarNetwork() {
         this.start = function () {
             if (window.Lampa && Lampa.Controller) {
                 try {
-                    Lampa.Controller.collectionSet(info);
-                    Lampa.Controller.collectionFocus(watch[0], info);
-                } catch (e) {}
+                    // Регистрируем весь экран Activity, чтобы selector-кнопка
+                    // гарантированно попала в коллекцию навигации.
+                    if (typeof Lampa.Controller.clear === 'function') {
+                        Lampa.Controller.clear();
+                    }
+                    Lampa.Controller.collectionSet(root);
+                    Lampa.Controller.collectionFocus(watch[0], root);
+                    if (typeof Lampa.Controller.toggle === 'function') {
+                        Lampa.Controller.toggle('content');
+                    }
+                } catch (e) {
+                    console.warn('[AniStar] Не удалось установить фокус кнопки:', e);
+                }
             }
         };
 
