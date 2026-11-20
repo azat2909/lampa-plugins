@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_048_ready';
+    var READY_FLAG = 'anistar_049_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.8';
+    var PLUGIN_VERSION = '0.4.9';
 
     var PROXY_URL = '';
 
@@ -163,6 +163,25 @@
         ' margin-bottom:1em;',
         '}',
 
+        '.anistar-episodes {',
+        ' margin-top:1.5em;',
+        ' display:flex;',
+        ' flex-direction:column;',
+        ' gap:.55em;',
+        '}',
+        '.anistar-episode {',
+        ' padding:1em 1.2em;',
+        ' border-radius:.4em;',
+        ' background:rgba(255,255,255,.10);',
+        '}',
+        '.anistar-episode.focus {',
+        ' background:rgba(255,255,255,.24);',
+        ' outline:2px solid #fff;',
+        '}',
+        '.anistar-detail__status {',
+        ' margin-top:1em;',
+        ' opacity:.7;',
+        '}',
         '.anistar-detail__link {',
         ' margin-top:1.5em;',
         ' padding:1em;',
@@ -400,9 +419,9 @@
 
                 id: url,
 
-                title: title,
+                title: cleanAnimeTitle(title),
 
-                name: title,
+                name: cleanAnimeTitle(title),
 
                 url: url,
 
@@ -1047,141 +1066,327 @@ function AniStarNetwork() {
      * этапом разработки.
      */
 
-    function AniStarDetail(object) {
-
-        var self = this;
-
-        var network = new AniStarNetwork();
-
-        var item = object.item || {};
-
-        var destroyed = false;
-
-        var root = $(
-            '<div class="anistar-screen"></div>'
-        );
+    /*
+     * Удаляем HTML-сущности и экранирование, которые AniStar
+     * использует в JS-массиве потоков.
+     */
+    function decodePlayerText(value) {
+        var text = String(value || '').replace(/\\\//g, '/');
+        var node = document.createElement('textarea');
+        node.innerHTML = text;
+        return node.value;
+    }
 
 
-        var detail = $(
-            '<div class="anistar-detail"></div>'
-        );
+    /*
+     * Извлекаем только HLS-потоки из Плеера AS.
+     * files_as проверяется вместе с files: у AniStar часть
+     * качеств в основном массиве содержит неочевидные URL.
+     */
+    function parseASPlaylist(html, playerUrl) {
+        html = String(html || '').replace(/\\r?\\n/g, ' ');
 
+        var starts = [];
+        var entryPattern = /title:\s*"([^"]*)",\s*media_id:/g;
+        var match;
 
-        var poster = $(
-            '<div class="anistar-detail__poster"></div>'
-        );
-
-
-        var info = $(
-            '<div class="anistar-detail__info"></div>'
-        );
-
-
-        var title = $(
-            '<div class="anistar-detail__title"></div>'
-        );
-
-        title.text(item.title || 'Аниме');
-
-
-        if (item.poster) {
-
-            var image = $('<img>');
-
-            image.attr('src', item.poster);
-
-            poster.append(image);
-
+        while ((match = entryPattern.exec(html))) {
+            starts.push({
+                index: match.index,
+                title: decodePlayerText(match[1])
+            });
         }
 
+        var result = [];
 
-        var description = $(
-            '<div class="anistar-detail__description">' +
-            'Страница аниме на AniStar' +
-            '</div>'
-        );
-
-
-        /*
-         * Кнопка открытия страницы источника.
-         *
-         * Пока список серий ещё не извлекается.
-         */
-        var open = $(
-            '<div class="selector anistar-detail__link">' +
-            'Открыть страницу AniStar' +
-            '</div>'
-        );
-
-
-        open.on('hover:enter', function () {
-
-            if (!item.url) return;
-
-            if (window.Lampa && Lampa.Android) {
-                // Внешний переход не выполняем автоматически.
-            }
-
-            Lampa.Noty.show(
-                'Ссылка на страницу: ' + item.url
+        starts.forEach(function (entry, index) {
+            var block = html.substring(
+                entry.index,
+                starts[index + 1] ? starts[index + 1].index : html.length
             );
 
+            var all = [];
+
+            [
+                /(?<![A-Za-z_])files:\s*\[([\s\S]*?)\]/,
+                /files_as:\s*\[([\s\S]*?)\]/
+            ].forEach(function (pattern) {
+                var found = block.match(pattern);
+                if (!found) return;
+
+                var filePattern = /title:\s*"(\d+)",\s*file:\s*"([^"]+)"/g;
+                var fileMatch;
+
+                while ((fileMatch = filePattern.exec(found[1]))) {
+                    var url = decodePlayerText(fileMatch[2])
+                        .replace(/&amp;/g, '&')
+                        .trim();
+
+                    if (!url) continue;
+
+                    all.push({
+                        quality: parseInt(fileMatch[1], 10),
+                        url: absoluteUrl(url, playerUrl),
+                        hls: /\.m3u8(?:$|\?)/i.test(url)
+                    });
+                }
+            });
+
+            // Для каждого качества предпочитаем настоящий m3u8.
+            var qualities = {};
+            all.forEach(function (file) {
+                if (!file.url || !/^https?:/i.test(file.url)) return;
+
+                if (!qualities[file.quality] || (file.hls && !qualities[file.quality].hls)) {
+                    qualities[file.quality] = file;
+                }
+            });
+
+            var available = Object.keys(qualities).map(function (quality) {
+                return qualities[quality];
+            }).sort(function (a, b) {
+                return b.quality - a.quality;
+            });
+
+            if (!available.length) return;
+
+            var numberMatch = entry.title.match(/\d+/);
+            var number = numberMatch ? parseInt(numberMatch[0], 10) : index + 1;
+
+            result.push({
+                number: number,
+                title: entry.title || ('Серия ' + number),
+                files: available
+            });
         });
 
+        result.sort(function (a, b) {
+            return a.number - b.number;
+        });
+
+        return result;
+    }
+
+
+    function AniStarDetail(object) {
+        var self = this;
+        var network = new AniStarNetwork();
+        var item = object.item || {};
+        var destroyed = false;
+        var loading = false;
+        var episodes = [];
+
+        var root = $('<div class="anistar-screen"></div>');
+        var detail = $('<div class="anistar-detail"></div>');
+        var poster = $('<div class="anistar-detail__poster"></div>');
+        var info = $('<div class="anistar-detail__info"></div>');
+        var title = $('<div class="anistar-detail__title"></div>');
+        var description = $('<div class="anistar-detail__description"></div>');
+        var status = $('<div class="anistar-detail__status"></div>');
+        var episodeList = $('<div class="anistar-episodes"></div>');
+
+        title.text(cleanAnimeTitle(item.title || 'Аниме'));
+        description.text('Выбери серию для просмотра.');
+        status.text('Загружаем список серий из Плеера AS…');
+
+        if (item.poster) {
+            var image = $('<img>');
+            image.attr('src', item.poster);
+            poster.append(image);
+        }
 
         info.append(title);
-
         info.append(description);
-
-        info.append(open);
-
-
+        info.append(status);
+        info.append(episodeList);
         detail.append(poster);
-
         detail.append(info);
-
         root.append(detail);
 
 
+        function showError(message) {
+            if (destroyed) return;
+            status.text(message);
+            Lampa.Noty.show(message);
+        }
+
+
+        function getASPlayerUrl(pageHtml) {
+            var doc = new DOMParser().parseFromString(String(pageHtml || ''), 'text/html');
+            var iframe = doc.querySelector('.video_as#vid_2 iframe[src]');
+
+            if (!iframe) {
+                var frames = doc.querySelectorAll('.video_as iframe[src]');
+                Array.prototype.some.call(frames, function (frame) {
+                    var src = frame.getAttribute('src') || '';
+                    if (/videoas_p2p_new\.php/i.test(src)) {
+                        iframe = frame;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+
+            if (!iframe) return '';
+
+            var src = iframe.getAttribute('src') || '';
+            if (!/videoas_p2p_new\.php/i.test(src)) return '';
+
+            return absoluteUrl(src, item.url);
+        }
+
+
+        function renderEpisodes() {
+            episodeList.empty();
+
+            if (!episodes.length) {
+                status.text('В Плеере AS не удалось найти доступные серии.');
+                return;
+            }
+
+            status.text('Доступно серий: ' + episodes.length + '. Выбери серию.');
+
+            episodes.forEach(function (episode) {
+                var row = $('<div class="selector anistar-episode"></div>');
+                var best = episode.files[0];
+
+                row.text(
+                    'Серия ' + episode.number +
+                    (episode.title && !/^\s*\d+\s*$/.test(episode.title)
+                        ? ' — ' + episode.title
+                        : '') +
+                    '  ·  ' + best.quality + 'p'
+                );
+
+                row.on('hover:enter', function () {
+                    playEpisode(episode);
+                });
+
+                episodeList.append(row);
+            });
+
+            if (window.Lampa && Lampa.Controller) {
+                try {
+                    Lampa.Controller.collectionSet(episodeList);
+                    var first = episodeList.find('.anistar-episode').first();
+                    if (first.length) Lampa.Controller.collectionFocus(first[0], episodeList);
+                } catch (e) {
+                    console.warn('[AniStar] Episode focus:', e);
+                }
+            }
+        }
+
+
+        function playEpisode(episode) {
+            if (!episode || !episode.files || !episode.files.length) {
+                Lampa.Noty.show('Для этой серии нет доступного видеопотока.');
+                return;
+            }
+
+            if (!window.Lampa || !Lampa.Player || typeof Lampa.Player.play !== 'function') {
+                Lampa.Noty.show('В этой версии Lampa недоступен штатный видеоплеер.');
+                return;
+            }
+
+            var files = {};
+            episode.files.forEach(function (file) {
+                files[file.quality + 'p'] = file.url;
+            });
+
+            var preferred = String(Lampa.Storage.get('video_quality_default', '1080')) + 'p';
+            var selected = files[preferred] || episode.files[0].url;
+
+            var playlist = episodes.map(function (entry) {
+                var entryFiles = {};
+                entry.files.forEach(function (file) {
+                    entryFiles[file.quality + 'p'] = file.url;
+                });
+
+                var quality = String(Lampa.Storage.get('video_quality_default', '1080')) + 'p';
+
+                return {
+                    url: entryFiles[quality] || entry.files[0].url,
+                    quality: entryFiles,
+                    title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + entry.number
+                };
+            });
+
+            var current = {
+                url: selected,
+                quality: files,
+                title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + episode.number,
+                playlist: playlist.length > 1 ? playlist : undefined
+            };
+
+            console.log('[AniStar] Play AS episode:', episode.number, selected);
+            Lampa.Player.play(current);
+            if (typeof Lampa.Player.playlist === 'function') {
+                Lampa.Player.playlist(playlist);
+            }
+        }
+
+
+        function loadEpisodes() {
+            if (loading || destroyed) return;
+            loading = true;
+
+            if (!item.url) {
+                loading = false;
+                showError('Не найдена ссылка на страницу аниме.');
+                return;
+            }
+
+            network.get(item.url, function (pageHtml) {
+                if (destroyed) return;
+
+                var playerUrl = getASPlayerUrl(pageHtml);
+
+                if (!playerUrl) {
+                    loading = false;
+                    showError('На странице не найден iframe Плеера AS.');
+                    return;
+                }
+
+                network.get(playerUrl, function (playerHtml) {
+                    if (destroyed) return;
+
+                    episodes = parseASPlaylist(playerHtml, playerUrl);
+                    loading = false;
+                    renderEpisodes();
+                }, function () {
+                    loading = false;
+                    showError('Не удалось загрузить данные Плеера AS.');
+                });
+            }, function () {
+                loading = false;
+                showError('Не удалось загрузить страницу AniStar.');
+            });
+        }
+
+
         this.create = function () {
-
+            loadEpisodes();
             return this.render();
-
         };
-
 
         this.render = function () {
-
             return root;
-
         };
-
 
         this.start = function () {};
 
-
         this.stop = function () {};
 
-
         this.destroy = function () {
-
             destroyed = true;
-
             network.clear();
-
             root.remove();
-
         };
-
 
         this.empty = function () {
-
             self.activity.loader(false);
-
             self.activity.empty();
-
         };
-
     }
 
 
