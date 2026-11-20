@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.15
+ * Версия: 0.4.16
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0415_ready';
+    var READY_FLAG = 'anistar_0416_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.15';
+    var PLUGIN_VERSION = '0.4.16';
 
     var PROXY_URL = '';
 
@@ -1192,6 +1192,7 @@ function AniStarNetwork() {
         var destroyed = false;
         var loading = false;
         var episodes = [];
+        var playerHeaders = null;
 
         var root = $('<div class="anistar-screen"></div>');
         var detail = $('<div class="anistar-detail"></div>');
@@ -1393,7 +1394,8 @@ function AniStarNetwork() {
                 return {
                     url: entryFiles[quality] || entry.files[0].url,
                     quality: entryFiles,
-                    title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + entry.number
+                    title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + entry.number,
+                    headers: playerHeaders || undefined
                 };
             });
 
@@ -1401,6 +1403,7 @@ function AniStarNetwork() {
                 url: selected,
                 quality: files,
                 title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + episode.number,
+                headers: playerHeaders || undefined,
                 playlist: playlist.length > 1 ? playlist : undefined
             };
 
@@ -1432,6 +1435,21 @@ function AniStarNetwork() {
                     showError('На странице не найден iframe Плеера AS.');
                     return;
                 }
+
+                // Поток AS может проверять Referer iframe-страницы.
+                // Сохраняем заголовки для передачи дальше в выбранный Lampa-плеер.
+                var userAgent = '';
+                try {
+                    userAgent = window.navigator && window.navigator.userAgent
+                        ? window.navigator.userAgent
+                        : '';
+                } catch (e) {}
+
+                playerHeaders = {
+                    Referer: playerUrl,
+                    Origin: 'https://anistar.org'
+                };
+                if (userAgent) playerHeaders['User-Agent'] = userAgent;
 
                 network.get(playerUrl, function (playerHtml) {
                     if (destroyed) return;
