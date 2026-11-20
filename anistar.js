@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.16
+ * Версия: 0.4.17
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0416_ready';
+    var READY_FLAG = 'anistar_0417_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.16';
+    var PLUGIN_VERSION = '0.4.17';
 
     var PROXY_URL = '';
 
@@ -1607,7 +1607,107 @@ function AniStarNetwork() {
 
 
     /* =========================================================
-     * 15. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
+     * 15. ИСТОЧНИК ПОИСКА LAMPA
+     * ========================================================= */
+
+    var searchSourceRegistered = false;
+    var searchNetwork = null;
+
+    function addSearchSource() {
+        if (searchSourceRegistered) return;
+
+        if (!Lampa.Search || typeof Lampa.Search.addSource !== 'function') {
+            console.warn('[AniStar] Lampa.Search.addSource is unavailable');
+            return;
+        }
+
+        searchNetwork = new AniStarNetwork();
+
+        Lampa.Search.addSource({
+            title: 'AniStar',
+
+            params: {
+                lazy: true,
+                card_view: 6,
+                noimage: true
+            },
+
+            search: function (params, oncomplete) {
+                var query = String(params && params.query || '').trim();
+
+                if (query.length < 3) {
+                    oncomplete([]);
+                    return;
+                }
+
+                var searchUrl = BASE_URL +
+                    'index.php?do=search&story=' +
+                    query +
+                    '&subaction=search';
+
+                searchNetwork.get(searchUrl, function (html) {
+                    try {
+                        var parsed = parseCatalog(html, searchUrl);
+                        var results = parsed.items.map(function (item) {
+                            return {
+                                id: item.url,
+                                title: item.title,
+                                name: item.title,
+                                poster_path: item.poster || '',
+                                poster: item.poster || '',
+                                source: 'anistar',
+                                anistar_url: item.url,
+                                anistar_poster: item.poster || ''
+                            };
+                        });
+
+                        oncomplete(results.length ? [{
+                            title: 'AniStar',
+                            results: results
+                        }] : []);
+                    }
+                    catch (e) {
+                        console.error('[AniStar] Search parse error', e);
+                        oncomplete([]);
+                    }
+                }, function () {
+                    oncomplete([]);
+                });
+            },
+
+            onCancel: function () {
+                if (searchNetwork) searchNetwork.clear();
+            },
+
+            onSelect: function (event, done) {
+                var selected = event && (event.item_data || event.element) || {};
+
+                Lampa.Activity.push({
+                    url: '',
+                    title: selected.title || selected.name || 'AniStar',
+                    component: 'anistar_detail',
+                    page: 1,
+                    item: {
+                        id: selected.anistar_url || selected.id,
+                        url: selected.anistar_url || selected.id,
+                        title: selected.title || selected.name || 'Аниме',
+                        name: selected.title || selected.name || 'Аниме',
+                        poster: selected.anistar_poster || selected.poster || selected.poster_path || ''
+                    }
+                });
+
+                if (typeof done === 'function') done();
+            }
+        });
+
+        searchSourceRegistered = true;
+
+        console.log('[AniStar] Search source registered');
+    }
+
+
+    /* =========================================================
+     * 16. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
      * ========================================================= */
 
     function init() {
@@ -1661,6 +1761,9 @@ function AniStarNetwork() {
         // Добавляем пункт меню.
         addMenu();
 
+        // Регистрируем AniStar как отдельный источник глобального поиска Lampa.
+        addSearchSource();
+
 
         console.log(
             '[AniStar] Initialized. Version: ' +
@@ -1671,7 +1774,7 @@ function AniStarNetwork() {
 
 
     /* =========================================================
-     * 16. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
+     * 17. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
      * ========================================================= */
 
     if (window.appready) {
