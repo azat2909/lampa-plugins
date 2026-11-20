@@ -434,6 +434,7 @@
         );
 
         var numbered = [];
+        var hasPageLinks = false;
 
         Array.prototype.forEach.call(pagination, function (link) {
             var href = absoluteUrl(link.getAttribute('href'), pageUrl);
@@ -444,6 +445,8 @@
                 var match = parsedUrl.pathname.match(/\/anime\/page\/(\d+)\/?$/i);
                 var pageNumber = match ? parseInt(match[1], 10) :
                     (/\/anime\/?$/i.test(parsedUrl.pathname) ? 1 : 0);
+
+                if (pageNumber > 0) hasPageLinks = true;
 
                 if (pageNumber > currentPage) {
                     numbered.push({ number: pageNumber, url: href });
@@ -466,7 +469,7 @@
         // На AniStar используется стандартный путь /anime/page/N/.
         // Если шаблон страницы не отдал ссылку в DOM, строим адрес
         // следующей страницы самостоятельно, не останавливая каталог.
-        if (!next) {
+        if (!next && !hasPageLinks) {
             try {
                 var basePath = new URL(BASE_URL).origin + '/anime/';
                 next = basePath + 'page/' + (currentPage + 1) + '/';
