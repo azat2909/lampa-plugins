@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.38
+ * Версия: 0.4.39
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0438_ready';
+    var READY_FLAG = 'anistar_0439_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.38';
+    var PLUGIN_VERSION = '0.4.39';
 
     var PROXY_URL = '';
 
@@ -127,7 +127,7 @@
         '.anistar-search-title { display:flex; align-items:center; gap:1em; padding:.85em 1.1em; margin:.25em 0; border-radius:.35em; background:rgba(255,255,255,.07); min-height:3em; }',
         '.anistar-search-title.focus { background:rgba(255,255,255,.22); outline:2px solid #fff; outline-offset:1px; }',
         '.anistar-search-title__number { opacity:.55; min-width:2em; }',
-        '.anistar-search-title__poster { width:3.6em; height:5.1em; flex:0 0 3.6em; object-fit:cover; border-radius:.25em; background:rgba(255,255,255,.08); }',
+        '.anistar-search-title__poster { display:block; width:6em; height:9em; min-width:6em; min-height:9em; max-width:6em; max-height:9em; flex:0 0 6em; aspect-ratio:2/3; object-fit:cover; border-radius:.3em; background:rgba(255,255,255,.08); }',
         '.anistar-search-title__name { font-size:1.08em; line-height:1.35; }',
         '.anistar-more {',
         ' margin:2em auto;',
@@ -1733,9 +1733,12 @@ function AniStarCatalog(object) {
 
             if (window.Lampa && Lampa.Controller) {
                 try {
-                    Lampa.Controller.collectionSet(episodeList);
+                    // Регистрируем весь экран, а не только список серий:
+                    // так пульт сохраняет единый контекст навигации между
+                    // кнопкой «Смотреть» и динамически добавленными сериями.
+                    Lampa.Controller.collectionSet(root);
                     var first = episodeList.find('.anistar-episode').first();
-                    if (first.length) Lampa.Controller.collectionFocus(first[0], episodeList);
+                    if (first.length) Lampa.Controller.collectionFocus(first[0], root);
                 } catch (e) {
                     console.warn('[AniStar] Episode focus:', e);
                 }
@@ -1878,35 +1881,46 @@ function AniStarCatalog(object) {
             return root;
         };
 
+        function getDetailNavigator() {
+            return window.Navigator || (window.Lampa && Lampa.Navigator) || null;
+        }
+
+        function focusDetailStart() {
+            Lampa.Controller.collectionSet(root);
+            var firstEpisode = episodeList.find('.anistar-episode.focus').first();
+            if (!firstEpisode.length) firstEpisode = episodeList.find('.anistar-episode').first();
+            var target = firstEpisode.length ? firstEpisode[0] : watch[0];
+            if (target) Lampa.Controller.collectionFocus(target, root);
+        }
+
         this.start = function () {
             if (!window.Lampa || !Lampa.Controller) return;
 
             try {
-                // Для Activity недостаточно только collectionSet:
-                // экрану нужен собственный контроллер content, как у каталога.
+                // Используем ту же схему контроллера, что и в рабочем каталоге:
+                // один content-контроллер и одна общая коллекция всего экрана.
                 var detailController = {
                     link: this,
                     toggle: function () {
-                        Lampa.Controller.collectionSet(root);
-                        Lampa.Controller.collectionFocus(watch[0], root);
+                        focusDetailStart();
                     },
                     left: function () {
-                        var nav = window.Navigator || Lampa.Navigator;
+                        var nav = getDetailNavigator();
                         if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
                         else Lampa.Controller.toggle('menu');
                     },
                     right: function () {
-                        var nav = window.Navigator || Lampa.Navigator;
-                        if (nav && nav.move) nav.move('right');
+                        var nav = getDetailNavigator();
+                        if (nav && nav.canmove && nav.canmove('right')) nav.move('right');
                     },
                     up: function () {
-                        var nav = window.Navigator || Lampa.Navigator;
+                        var nav = getDetailNavigator();
                         if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
                         else Lampa.Controller.toggle('head');
                     },
                     down: function () {
-                        var nav = window.Navigator || Lampa.Navigator;
-                        if (nav && nav.move) nav.move('down');
+                        var nav = getDetailNavigator();
+                        if (nav && nav.canmove && nav.canmove('down')) nav.move('down');
                     },
                     back: function () {
                         Lampa.Activity.backward();
@@ -1915,8 +1929,7 @@ function AniStarCatalog(object) {
 
                 Lampa.Controller.add('content', detailController);
                 Lampa.Controller.toggle('content');
-                Lampa.Controller.collectionSet(root);
-                Lampa.Controller.collectionFocus(watch[0], root);
+                focusDetailStart();
             } catch (e) {
                 console.warn('[AniStar] Ошибка контроллера экрана:', e);
             }
@@ -1926,6 +1939,9 @@ function AniStarCatalog(object) {
 
         this.destroy = function () {
             destroyed = true;
+            if (window.Lampa && Lampa.Controller) {
+                try { Lampa.Controller.remove('content'); } catch (e) {}
+            }
             network.clear();
             root.remove();
         };
