@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.31
+ * Версия: 0.4.32
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0431_ready';
+    var READY_FLAG = 'anistar_0432_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.31';
+    var PLUGIN_VERSION = '0.4.32';
 
     var PROXY_URL = '';
 
@@ -124,6 +124,10 @@
         '}',
 
         '.anistar-more.focus { outline:3px solid #fff; outline-offset:3px; }',
+        '.anistar-search-title { display:flex; align-items:center; gap:1em; padding:.85em 1.1em; margin:.25em 0; border-radius:.35em; background:rgba(255,255,255,.07); min-height:3em; }',
+        '.anistar-search-title.focus { background:rgba(255,255,255,.22); outline:2px solid #fff; outline-offset:1px; }',
+        '.anistar-search-title__number { opacity:.55; min-width:2em; }',
+        '.anistar-search-title__name { font-size:1.08em; line-height:1.35; }',
         '.anistar-more {',
         ' margin:2em auto;',
         ' padding:1em 2em;',
@@ -677,12 +681,13 @@ function AniStarNetwork() {
  * и те же параметры формы и один парсер каталога.
  */
 function requestAniStarSearch(network, query, complete, error) {
-    var searchUrl = new URL('/', BASE_URL).origin + '/?do=search&mode=advanced&subaction=search&story=' +
+    var searchUrl = new URL('/', BASE_URL).origin + '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
         encodeURIComponent(query).replace(/%20/g, '+');
     var postData = {
         do: 'search',
         mode: 'advanced',
         subaction: 'search',
+        titleonly: '3',
         story: query
     };
 
@@ -805,12 +810,26 @@ function AniStarCatalog(object) {
                     $('<div class="anistar-more"></div>').text('По запросу «' + query + '» ничего не найдено')
                 );
             } else {
-                list.forEach(function (item) {
-                    var card = createCard(item);
-                    card.on('hover:focus', function () {
+                list.forEach(function (item, index) {
+                    // В результатах поиска показываем именно список тайтлов,
+                    // без постеров и лишней информации — удобно для пульта ТВ.
+                    var row = $('<div class="selector anistar-search-title"></div>');
+                    var number = $('<span class="anistar-search-title__number"></span>').text((index + 1) + '.');
+                    var name = $('<span class="anistar-search-title__name"></span>').text(item.title || item.name || 'Без названия');
+                    row.append(number, name);
+                    row.on('hover:focus', function () {
                         scrollCardIntoView(this);
                     });
-                    searchGrid.append(card);
+                    row.on('hover:enter', function () {
+                        Lampa.Activity.push({
+                            url: '',
+                            title: item.title || item.name || 'Аниме',
+                            component: 'anistar_detail',
+                            page: 1,
+                            item: item
+                        });
+                    });
+                    searchGrid.append(row);
                 });
             }
 
@@ -820,7 +839,7 @@ function AniStarCatalog(object) {
                 // ДО установки коллекции результатов, иначе пульт зависает.
                 Lampa.Controller.toggle('content', true);
                 Lampa.Controller.collectionSet(searchGrid);
-                var firstResult = searchGrid.find('.anistar-card').first();
+                var firstResult = searchGrid.find('.anistar-search-title').first();
 
                 if (firstResult.length) {
                     Lampa.Controller.collectionFocus(firstResult[0], searchGrid);
