@@ -1,222 +1,208 @@
 
 /*!
+ * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.0
- * Источник: https://anistar.org/anime/
- * Совместимость: Lampa 3.x / Android TV
+ * Версия: 0.3.0 (исправленная)
+ * ============================================================
  *
- * Каталог, навигация пультом, постеры и пагинация.
+ * Источник: https://anistar.org/anime/
+ * Платформа: Lampa 3.x / Android TV
+ *
+ * Исправления:
+ * - Исправлена инициализация плагина.
+ * - Исправлена проверка адресов аниме.
+ * - Улучшен поиск названий и постеров.
+ * - Исправлена загрузка каталога.
+ * - Добавлена безопасная обработка Activity.
+ * - Исправлена пагинация.
+ * - Добавлена защита от повторной загрузки.
+ * - Улучшена навигация пультом.
+ *
+ * Используется штатная Activity Lampa.
+ * ============================================================
  */
+
 (function () {
     'use strict';
 
+    /* =========================================================
+     * 1. НАСТРОЙКИ
+     * ========================================================= */
+
     var PLUGIN_ID = 'anistar_catalog';
     var DETAIL_ID = 'anistar_detail';
-    var READY_FLAG = 'anistar_040_ready';
+    var READY_FLAG = 'anistar_030_fixed_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    // Оставьте пустым, если прокси не используется.
-    // Если AniStar блокирует запросы по CORS, понадобится прокси.
+    var PLUGIN_VERSION = '0.3.0';
+
+    // Оставить пустым, если прокси не используется.
     var PROXY_URL = '';
 
     if (window[READY_FLAG]) return;
 
-    // Не ставим флаг до успешной регистрации компонентов.
-    if (!window.Lampa || !Lampa.Component || !Lampa.Activity) {
-        Lampa.Listener.follow('app', function (event) {
-            if (event.type === 'ready') init();
-        });
-        return;
-    }
+    /* =========================================================
+     * 2. CSS
+     * ========================================================= */
 
-    function init() {
-        if (window[READY_FLAG]) return;
+    var css = [
+        '.anistar-screen {',
+        ' width:100%;',
+        ' box-sizing:border-box;',
+        ' padding:0 2.5em 3em;',
+        '}',
 
-        if (!Lampa.Component || !Lampa.Activity || !Lampa.Reguest) {
-            console.error('[AniStar] API Lampa недоступен');
-            return;
-        }
+        '.anistar-grid {',
+        ' display:grid;',
+        ' grid-template-columns:repeat(7,minmax(0,1fr));',
+        ' gap:1.5em 1em;',
+        ' width:100%;',
+        ' align-items:start;',
+        '}',
 
-        addStyles();
+        '.anistar-card {',
+        ' position:relative;',
+        ' min-width:0;',
+        ' width:100%;',
+        ' cursor:pointer;',
+        ' box-sizing:border-box;',
+        '}',
 
-        if (!Lampa.Component.get(PLUGIN_ID)) {
-            Lampa.Component.add(PLUGIN_ID, AniStarCatalog);
-        }
+        '.anistar-card__poster {',
+        ' position:relative;',
+        ' width:100%;',
+        ' aspect-ratio:2/3;',
+        ' overflow:hidden;',
+        ' border-radius:.35em;',
+        ' background:rgba(255,255,255,.08);',
+        '}',
 
-        if (!Lampa.Component.get(DETAIL_ID)) {
-            Lampa.Component.add(DETAIL_ID, AniStarDetail);
-        }
+        '.anistar-card__poster img {',
+        ' width:100%;',
+        ' height:100%;',
+        ' object-fit:cover;',
+        ' display:block;',
+        '}',
 
-        addMenu();
+        '.anistar-card__placeholder {',
+        ' width:100%;',
+        ' height:100%;',
+        ' display:flex;',
+        ' align-items:center;',
+        ' justify-content:center;',
+        ' font-size:2em;',
+        ' opacity:.4;',
+        '}',
 
-        window[READY_FLAG] = true;
-        console.log('[AniStar] Запущен. Версия 0.4.0');
-    }
+        '.anistar-card__title {',
+        ' margin-top:.55em;',
+        ' font-size:1em;',
+        ' line-height:1.3;',
+        ' overflow:hidden;',
+        ' display:-webkit-box;',
+        ' -webkit-line-clamp:2;',
+        ' -webkit-box-orient:vertical;',
+        '}',
 
-    // ---------------------------------------------------------
-    // СТИЛИ
-    // ---------------------------------------------------------
+        '.anistar-card.focus {',
+        ' transform:scale(1.04);',
+        ' z-index:2;',
+        '}',
+
+        '.anistar-card.focus .anistar-card__poster {',
+        ' outline:3px solid #fff;',
+        ' outline-offset:3px;',
+        '}',
+
+        '.anistar-more {',
+        ' margin:2em auto;',
+        ' padding:1em 2em;',
+        ' text-align:center;',
+        ' width:max-content;',
+        ' max-width:100%;',
+        ' border-radius:.4em;',
+        ' background:rgba(255,255,255,.12);',
+        '}',
+
+        '.anistar-message {',
+        ' padding:2em;',
+        ' opacity:.8;',
+        '}',
+
+        '.anistar-detail {',
+        ' display:flex;',
+        ' gap:2em;',
+        ' padding:2em;',
+        ' align-items:flex-start;',
+        '}',
+
+        '.anistar-detail__poster {',
+        ' width:220px;',
+        ' max-width:35%;',
+        ' flex-shrink:0;',
+        '}',
+
+        '.anistar-detail__poster img {',
+        ' display:block;',
+        ' width:100%;',
+        ' border-radius:.4em;',
+        '}',
+
+        '.anistar-detail__info {',
+        ' flex:1;',
+        ' min-width:0;',
+        '}',
+
+        '.anistar-detail__title {',
+        ' font-size:1.5em;',
+        ' font-weight:bold;',
+        ' margin-bottom:1em;',
+        '}',
+
+        '.anistar-detail__link {',
+        ' margin-top:1.5em;',
+        ' padding:1em;',
+        ' background:rgba(255,255,255,.12);',
+        ' border-radius:.4em;',
+        ' width:max-content;',
+        '}',
+
+        '@media (max-width:1200px) {',
+        ' .anistar-grid {',
+        '  grid-template-columns:repeat(5,minmax(0,1fr));',
+        ' }',
+        '}',
+
+        '@media (max-width:700px) {',
+        ' .anistar-screen { padding:0 1em 2em; }',
+        ' .anistar-grid {',
+        '  grid-template-columns:repeat(3,minmax(0,1fr));',
+        '  gap:1em .6em;',
+        ' }',
+        ' .anistar-detail { flex-direction:column; }',
+        ' .anistar-detail__poster {',
+        '  max-width:70%;',
+        '  width:180px;',
+        ' }',
+        '}'
+    ].join('\n');
 
     function addStyles() {
         if (document.getElementById('anistar_styles')) return;
 
-        var css = `
-            .anistar-screen {
-                width: 100%;
-                box-sizing: border-box;
-                padding: 0 2.5em 3em;
-            }
-
-            .anistar-grid {
-                display: grid;
-                grid-template-columns: repeat(7, minmax(0, 1fr));
-                gap: 1.5em 1em;
-                width: 100%;
-                align-items: start;
-            }
-
-            .anistar-card {
-                min-width: 0;
-                cursor: pointer;
-                box-sizing: border-box;
-            }
-
-            .anistar-card__poster {
-                width: 100%;
-                aspect-ratio: 2 / 3;
-                overflow: hidden;
-                border-radius: .4em;
-                background: rgba(255,255,255,.08);
-            }
-
-            .anistar-card__poster img {
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
-                display: block;
-            }
-
-            .anistar-card__placeholder {
-                width: 100%;
-                height: 100%;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 2em;
-                opacity: .4;
-            }
-
-            .anistar-card__title {
-                margin-top: .55em;
-                font-size: 1em;
-                line-height: 1.3;
-                overflow: hidden;
-                display: -webkit-box;
-                -webkit-line-clamp: 2;
-                -webkit-box-orient: vertical;
-            }
-
-            .anistar-card.focus {
-                transform: scale(1.04);
-                z-index: 2;
-            }
-
-            .anistar-card.focus .anistar-card__poster {
-                outline: 3px solid #fff;
-                outline-offset: 3px;
-            }
-
-            .anistar-more {
-                margin: 2em auto;
-                padding: 1em 2em;
-                text-align: center;
-                width: max-content;
-                max-width: 100%;
-                border-radius: .4em;
-                background: rgba(255,255,255,.12);
-            }
-
-            .anistar-message {
-                padding: 2em;
-                opacity: .8;
-            }
-
-            .anistar-detail {
-                display: flex;
-                gap: 2em;
-                padding: 2em;
-                align-items: flex-start;
-            }
-
-            .anistar-detail__poster {
-                width: 220px;
-                max-width: 35%;
-                flex-shrink: 0;
-            }
-
-            .anistar-detail__poster img {
-                display: block;
-                width: 100%;
-                border-radius: .4em;
-            }
-
-            .anistar-detail__info {
-                flex: 1;
-                min-width: 0;
-            }
-
-            .anistar-detail__title {
-                font-size: 1.5em;
-                font-weight: bold;
-                margin-bottom: 1em;
-            }
-
-            .anistar-detail__link {
-                margin-top: 1.5em;
-                padding: 1em;
-                background: rgba(255,255,255,.12);
-                border-radius: .4em;
-                width: max-content;
-            }
-
-            @media (max-width: 1200px) {
-                .anistar-grid {
-                    grid-template-columns: repeat(5, minmax(0, 1fr));
-                }
-            }
-
-            @media (max-width: 700px) {
-                .anistar-screen {
-                    padding: 0 1em 2em;
-                }
-
-                .anistar-grid {
-                    grid-template-columns: repeat(3, minmax(0, 1fr));
-                    gap: 1em .6em;
-                }
-
-                .anistar-detail {
-                    flex-direction: column;
-                }
-
-                .anistar-detail__poster {
-                    max-width: 70%;
-                    width: 180px;
-                }
-            }
-        `;
-
         var style = document.createElement('style');
         style.id = 'anistar_styles';
+        style.type = 'text/css';
         style.textContent = css;
+
         document.head.appendChild(style);
     }
 
-    // ---------------------------------------------------------
-    // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+     * ========================================================= */
 
     function cleanText(value) {
         return String(value || '')
@@ -246,7 +232,7 @@
 
     function isAniStarUrl(url) {
         try {
-            var host = new URL(url).hostname;
+            var host = new URL(url).hostname.toLowerCase();
 
             return host === SITE_HOST ||
                 host === 'www.' + SITE_HOST;
@@ -255,19 +241,29 @@
         }
     }
 
+    /*
+     * Проверяем адрес страницы аниме.
+     *
+     * У AniStar адреса имеют вид:
+     * /10938-nazvanie-anime.html
+     *
+     * Проверяем только домен и расширение .html,
+     * чтобы не зависеть от длины и символов названия.
+     */
     function isAnimeUrl(url) {
-        if (!isAniStarUrl(url)) return false;
-
         try {
-            var path = new URL(url).pathname;
+            var parsed = new URL(url);
 
-            // Страницы публикаций AniStar.
-            return /\.html$/i.test(path) &&
-                path !== '/index.html';
+            return isAniStarUrl(url) &&
+                /^\/\d+-.+\.html$/i.test(parsed.pathname);
         } catch (e) {
             return false;
         }
     }
+
+    /* =========================================================
+     * 4. ПОЛУЧЕНИЕ ПОСТЕРА
+     * ========================================================= */
 
     function getPoster(image, base) {
         if (!image) return '';
@@ -277,6 +273,7 @@
             image.getAttribute('data-original') ||
             image.getAttribute('data-lazy-src') ||
             image.getAttribute('data-original-src') ||
+            image.getAttribute('data-image') ||
             image.getAttribute('src') ||
             '';
 
@@ -293,14 +290,45 @@
             }
         }
 
-        if (/^(data:|blob:)/i.test(src)) return '';
+        if (!src || /^(data:|blob:)/i.test(src)) return '';
 
         return absoluteUrl(src, base);
     }
 
-    // ---------------------------------------------------------
-    // ПАРСИНГ КАТАЛОГА
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 5. ПОИСК КОНТЕЙНЕРА КАРТОЧКИ
+     * ========================================================= */
+
+    function findCard(link) {
+        var card = link.closest(
+            '.shortstory, .dle-news, .news, .item, ' +
+            '.anime-item, .movie-item, article, li'
+        );
+
+        if (card) return card;
+
+        /*
+         * Если классы сайта изменились, поднимаемся
+         * на несколько уровней вверх и ищем изображение.
+         */
+        var parent = link;
+
+        for (var i = 0; i < 4; i++) {
+            if (!parent || !parent.parentElement) break;
+
+            parent = parent.parentElement;
+
+            if (parent.querySelector('img')) {
+                return parent;
+            }
+        }
+
+        return link.parentElement || link;
+    }
+
+    /* =========================================================
+     * 6. ПАРСЕР КАТАЛОГА
+     * ========================================================= */
 
     function parseCatalog(html, pageUrl) {
         var doc = new DOMParser().parseFromString(
@@ -325,36 +353,50 @@
 
             if (seen[url]) return;
 
-            var card = link.closest(
-                '.shortstory, .base, .news, .item, ' +
-                '.anime-item, .movie-item, article, li'
-            );
+            var card = findCard(link);
 
-            if (!card) card = link.parentElement;
-
-            var image =
-                link.querySelector('img') ||
-                (card && card.querySelector('img'));
-
-            var heading = card && card.querySelector(
-                'h1, h2, h3, h4, .title, .name'
-            );
-
+            /*
+             * Сначала ищем заголовок в ссылке.
+             */
             var title = cleanText(
                 link.getAttribute('title') ||
-                (heading && heading.textContent) ||
-                (image && image.getAttribute('alt')) ||
                 link.textContent
             );
 
-            // Отсекаем пустые и служебные ссылки.
-            if (!title || title.length < 2 || title.length > 220) {
+            /*
+             * Затем ищем заголовок в контейнере карточки.
+             */
+            var heading = card.querySelector(
+                'h1,h2,h3,h4,.title,.name,.shortstory-title'
+            );
+
+            if ((!title || title.length < 2) && heading) {
+                title = cleanText(heading.textContent);
+            }
+
+            /*
+             * Изображение может находиться не внутри ссылки,
+             * а рядом с ней в общем контейнере.
+             */
+            var image =
+                link.querySelector('img') ||
+                card.querySelector('img');
+
+            if ((!title || title.length < 2) && image) {
+                title = cleanText(
+                    image.getAttribute('alt') ||
+                    image.getAttribute('title')
+                );
+            }
+
+            if (!title || title.length < 2) return;
+            if (title.length > 220) return;
+
+            if (/^(смотреть|подробнее|читать|перейти|следующая)$/i.test(title)) {
                 return;
             }
 
-            if (/^(смотреть|подробнее|читать|перейти|далее)$/i.test(title)) {
-                return;
-            }
+            var poster = getPoster(image, pageUrl);
 
             seen[url] = true;
 
@@ -363,24 +405,34 @@
                 title: title,
                 name: title,
                 url: url,
-                poster: getPoster(image, pageUrl)
+                poster: poster
             });
         });
 
-        // Поиск следующей страницы.
+        /* =====================================================
+         * ПОИСК СЛЕДУЮЩЕЙ СТРАНИЦЫ
+         * ===================================================== */
+
         var next = '';
 
         var pagination = doc.querySelectorAll(
             '.navigation a[href], ' +
             '.pagination a[href], ' +
             '.pages a[href], ' +
+            '.nav-links a[href], ' +
             'a[rel~="next"]'
         );
 
         Array.prototype.some.call(pagination, function (link) {
             var text = cleanText(link.textContent).toLowerCase();
-            var rel = (link.getAttribute('rel') || '').toLowerCase();
-            var cls = String(link.className || '').toLowerCase();
+
+            var rel = (
+                link.getAttribute('rel') || ''
+            ).toLowerCase();
+
+            var cls = (
+                link.className || ''
+            ).toString().toLowerCase();
 
             var isNext =
                 rel.indexOf('next') !== -1 ||
@@ -406,15 +458,59 @@
             return true;
         });
 
+        /*
+         * Дополнительная проверка пагинации:
+         * если сайт использует только числовые страницы,
+         * ищем ссылку на следующий номер страницы.
+         */
+        if (!next) {
+            var currentPage = 1;
+
+            var current = doc.querySelector(
+                '.navigation .current, ' +
+                '.pagination .current, ' +
+                '.pages .current'
+            );
+
+            if (current) {
+                currentPage = parseInt(
+                    cleanText(current.textContent),
+                    10
+                ) || 1;
+            }
+
+            Array.prototype.some.call(
+                pagination,
+                function (link) {
+                    var number = parseInt(
+                        cleanText(link.textContent),
+                        10
+                    );
+
+                    if (number !== currentPage + 1) return false;
+
+                    var href = absoluteUrl(
+                        link.getAttribute('href'),
+                        pageUrl
+                    );
+
+                    if (!href || !isAniStarUrl(href)) return false;
+
+                    next = href;
+                    return true;
+                }
+            );
+        }
+
         return {
             items: items,
             next: next
         };
     }
 
-    // ---------------------------------------------------------
-    // СЕТЕВОЙ ЗАПРОС
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 7. СЕТЕВОЙ ЗАПРОС
+     * ========================================================= */
 
     function AniStarNetwork() {
         var request = new Lampa.Reguest();
@@ -424,20 +520,56 @@
                 ? PROXY_URL + encodeURIComponent(url)
                 : url;
 
-            request.get(target, success, error);
+            try {
+                request.get(
+                    target,
+                    success,
+                    error
+                );
+            } catch (e) {
+                console.error('[AniStar] Request error:', e);
+
+                if (error) error(e);
+            }
         };
 
         this.clear = function () {
-            if (request && request.clear) request.clear();
+            if (request && typeof request.clear === 'function') {
+                request.clear();
+            }
         };
     }
 
-    // ---------------------------------------------------------
-    // КАТАЛОГ
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 8. БЕЗОПАСНАЯ РАБОТА С ACTIVITY
+     * ========================================================= */
+
+    function activityLoader(component, state) {
+        if (
+            component &&
+            component.activity &&
+            typeof component.activity.loader === 'function'
+        ) {
+            component.activity.loader(state);
+        }
+    }
+
+    function showError(message) {
+        if (window.Lampa && Lampa.Noty) {
+            Lampa.Noty.show(message);
+        } else {
+            console.warn('[AniStar]', message);
+        }
+    }
+
+    /* =========================================================
+     * 9. КОМПОНЕНТ КАТАЛОГА
+     * ========================================================= */
 
     function AniStarCatalog(object) {
         var self = this;
+
+        object = object || {};
 
         var network = new AniStarNetwork();
 
@@ -451,16 +583,22 @@
         var items = [];
 
         var root = $('<div class="anistar-screen"></div>');
-        var grid = $('<div class="anistar-grid"></div>');
 
         var message = $('<div class="anistar-message"></div>');
-        var more = $('<div class="selector anistar-more">Загрузить ещё</div>');
+        var grid = $('<div class="anistar-grid"></div>');
+
+        var more = $(
+            '<div class="selector anistar-more">' +
+            'Загрузить ещё' +
+            '</div>'
+        );
 
         root.append(message);
         root.append(grid);
         root.append(more);
 
         more.hide();
+        message.hide();
 
         function showMessage(text) {
             message.text(text);
@@ -471,11 +609,22 @@
             message.hide();
         }
 
-        // Создание одной карточки.
+        /* =====================================================
+         * СОЗДАНИЕ КАРТОЧКИ
+         * ===================================================== */
+
         function createCard(item) {
-            var card = $('<div class="selector anistar-card"></div>');
-            var poster = $('<div class="anistar-card__poster"></div>');
-            var title = $('<div class="anistar-card__title"></div>');
+            var card = $(
+                '<div class="selector anistar-card"></div>'
+            );
+
+            var poster = $(
+                '<div class="anistar-card__poster"></div>'
+            );
+
+            var title = $(
+                '<div class="anistar-card__title"></div>'
+            );
 
             if (item.poster) {
                 var img = $('<img loading="lazy">');
@@ -485,9 +634,12 @@
 
                 img.on('error', function () {
                     $(this).remove();
-                    poster.append(
-                        '<div class="anistar-card__placeholder">▶</div>'
-                    );
+
+                    if (!poster.find('.anistar-card__placeholder').length) {
+                        poster.append(
+                            '<div class="anistar-card__placeholder">▶</div>'
+                        );
+                    }
                 });
 
                 poster.append(img);
@@ -502,8 +654,12 @@
             card.append(poster);
             card.append(title);
 
-            // OK на пульте открывает страницу тайтла.
+            /*
+             * Открываем экран информации по кнопке OK.
+             */
             card.on('hover:enter', function () {
+                if (destroyed) return;
+
                 Lampa.Activity.push({
                     url: '',
                     title: item.title,
@@ -516,6 +672,10 @@
             return card;
         }
 
+        /* =====================================================
+         * ДОБАВЛЕНИЕ КАРТОЧЕК
+         * ===================================================== */
+
         function renderItems(list) {
             list.forEach(function (item) {
                 if (!item.url || loaded[item.url]) return;
@@ -527,15 +687,22 @@
             });
         }
 
+        /* =====================================================
+         * ЗАГРУЗКА СТРАНИЦЫ
+         * ===================================================== */
+
         function load(url) {
             if (loading || destroyed || !url) return;
 
             loading = true;
-            showMessage('Загрузка каталога AniStar…');
 
-            if (self.activity && self.activity.loader) {
-                self.activity.loader(true);
-            }
+            showMessage(
+                items.length
+                    ? 'Загрузка следующей страницы…'
+                    : 'Загрузка каталога AniStar…'
+            );
+
+            activityLoader(self, true);
 
             network.get(
                 url,
@@ -544,23 +711,19 @@
                     if (destroyed) return;
 
                     loading = false;
-
-                    if (self.activity && self.activity.loader) {
-                        self.activity.loader(false);
-                    }
+                    activityLoader(self, false);
 
                     try {
                         var parsed = parseCatalog(html, url);
 
                         if (!parsed.items.length && !items.length) {
                             showMessage(
-                                'Не удалось найти карточки AniStar. ' +
-                                'Возможно, сайт изменил разметку ' +
-                                'или запрос заблокирован.'
+                                'Каталог получен, но карточки не найдены. ' +
+                                'Проверьте доступность сайта и разметку.'
                             );
 
                             console.warn(
-                                '[AniStar] Получен ответ, но карточки не найдены'
+                                '[AniStar] HTML получен, карточки не найдены.'
                             );
 
                             return;
@@ -586,8 +749,11 @@
                         );
 
                     } catch (e) {
-                        console.error('[AniStar] Ошибка парсинга:', e);
-                        showMessage('Ошибка обработки каталога AniStar.');
+                        console.error('[AniStar] Parse error:', e);
+
+                        showMessage(
+                            'Ошибка обработки каталога AniStar.'
+                        );
                     }
                 },
 
@@ -595,33 +761,40 @@
                     if (destroyed) return;
 
                     loading = false;
+                    activityLoader(self, false);
 
-                    if (self.activity && self.activity.loader) {
-                        self.activity.loader(false);
-                    }
-
-                    console.error('[AniStar] Ошибка сети:', error);
+                    console.error('[AniStar] Network error:', error);
 
                     showMessage(
                         'Не удалось загрузить AniStar. ' +
-                        'Возможна блокировка CORS.'
+                        'Возможно, сайт блокирует запрос.'
                     );
                 }
             );
         }
 
-        // Пагинация.
+        /* =====================================================
+         * ПАГИНАЦИЯ
+         * ===================================================== */
+
         more.on('hover:enter', function () {
-            if (!nextUrl || loading) return;
+            if (!nextUrl || loading || destroyed) return;
 
             var url = nextUrl;
+
+            // Сбрасываем адрес, чтобы исключить двойное нажатие.
             nextUrl = '';
 
             load(url);
         });
 
+        /* =====================================================
+         * ЖИЗНЕННЫЙ ЦИКЛ
+         * ===================================================== */
+
         this.create = function () {
             load(pageUrl);
+
             return this.render();
         };
 
@@ -635,26 +808,31 @@
 
         this.destroy = function () {
             destroyed = true;
+
             network.clear();
+
             root.remove();
         };
 
         this.empty = function () {
-            if (self.activity && self.activity.loader) {
-                self.activity.loader(false);
-            }
+            activityLoader(self, false);
 
-            if (self.activity && self.activity.empty) {
+            if (
+                self.activity &&
+                typeof self.activity.empty === 'function'
+            ) {
                 self.activity.empty();
             }
         };
     }
 
-    // ---------------------------------------------------------
-    // ЭКРАН ТАЙТЛА
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 10. ЭКРАН ИНФОРМАЦИИ О ТАЙТЛЕ
+     * ========================================================= */
 
     function AniStarDetail(object) {
+        object = object || {};
+
         var item = object.item || {};
 
         var root = $('<div class="anistar-screen"></div>');
@@ -664,12 +842,15 @@
         var info = $('<div class="anistar-detail__info"></div>');
 
         var title = $('<div class="anistar-detail__title"></div>');
+
         title.text(item.title || 'Аниме');
 
         if (item.poster) {
             var image = $('<img>');
+
             image.attr('src', item.poster);
             image.attr('alt', item.title || '');
+
             poster.append(image);
         }
 
@@ -682,15 +863,14 @@
             '</div>'
         );
 
-        // Открываем ссылку через штатный механизм Lampa.
+        /*
+         * Пока воспроизведение видео в плеере Lampa
+         * не подключено. Кнопка показывает адрес страницы.
+         */
         open.on('hover:enter', function () {
             if (!item.url) return;
 
-            if (Lampa.Android && Lampa.Android.openUrl) {
-                Lampa.Android.openUrl(item.url);
-            } else {
-                Lampa.Noty.show(item.url);
-            }
+            showError('Страница AniStar: ' + item.url);
         });
 
         info.append(title);
@@ -711,6 +891,7 @@
         };
 
         this.start = function () {};
+
         this.stop = function () {};
 
         this.destroy = function () {
@@ -718,25 +899,30 @@
         };
 
         this.empty = function () {
-            if (this.activity && this.activity.empty) {
+            if (
+                this.activity &&
+                typeof this.activity.empty === 'function'
+            ) {
                 this.activity.empty();
             }
         };
     }
 
-    // ---------------------------------------------------------
-    // ПУНКТ ЛЕВОГО МЕНЮ
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 11. ПУНКТ ЛЕВОГО МЕНЮ
+     * ========================================================= */
 
     function addMenu() {
         var menu = $('.menu .menu__list').eq(0);
 
         if (!menu.length) {
-            console.warn('[AniStar] Не найдено левое меню');
-            return;
+            console.warn('[AniStar] Левое меню пока недоступно');
+            return false;
         }
 
-        if (menu.find('.anistar-menu-item').length) return;
+        if (menu.find('.anistar-menu-item').length) {
+            return true;
+        }
 
         var button = $(
             '<li class="menu__item selector anistar-menu-item">' +
@@ -760,18 +946,90 @@
         });
 
         menu.append(button);
+
+        return true;
     }
 
-    // ---------------------------------------------------------
-    // ЗАПУСК
-    // ---------------------------------------------------------
+    /* =========================================================
+     * 12. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
+     * ========================================================= */
+
+    function init() {
+        if (window[READY_FLAG]) return;
+
+        if (
+            !window.Lampa ||
+            !Lampa.Component ||
+            !Lampa.Activity ||
+            !Lampa.Reguest
+        ) {
+            console.error(
+                '[AniStar] Необходимые API Lampa недоступны.'
+            );
+
+            return;
+        }
+
+        try {
+            addStyles();
+
+            /*
+             * Регистрируем каталог.
+             */
+            if (!Lampa.Component.get(PLUGIN_ID)) {
+                Lampa.Component.add(
+                    PLUGIN_ID,
+                    AniStarCatalog
+                );
+            }
+
+            /*
+             * Регистрируем экран тайтла.
+             */
+            if (!Lampa.Component.get(DETAIL_ID)) {
+                Lampa.Component.add(
+                    DETAIL_ID,
+                    AniStarDetail
+                );
+            }
+
+            /*
+             * Добавляем пункт меню.
+             */
+            addMenu();
+
+            /*
+             * Флаг устанавливаем только после регистрации.
+             */
+            window[READY_FLAG] = true;
+
+            console.log(
+                '[AniStar] Initialized. Version: ' +
+                PLUGIN_VERSION
+            );
+
+        } catch (e) {
+            console.error('[AniStar] Init error:', e);
+            showError('Ошибка запуска плагина AniStar.');
+        }
+    }
+
+    /* =========================================================
+     * 13. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
+     * ========================================================= */
 
     if (window.appready) {
         init();
-    } else {
+    } else if (window.Lampa && Lampa.Listener) {
         Lampa.Listener.follow('app', function (event) {
-            if (event.type === 'ready') init();
+            if (event.type === 'ready') {
+                init();
+            }
         });
+    } else {
+        console.error(
+            '[AniStar] Не удалось дождаться готовности Lampa.'
+        );
     }
 
 })();
