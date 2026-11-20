@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_047_ready';
+    var READY_FLAG = 'anistar_048_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.7';
+    var PLUGIN_VERSION = '0.4.8';
 
     var PROXY_URL = '';
 
@@ -984,6 +984,10 @@ function AniStarNetwork() {
          * ===================================================== */
 
         this.create = function () {
+
+            // Lampa.Scroll должен получить высоту области Activity.
+            // Без minus() на TV viewport не рассчитывается корректно.
+            scroll.minus();
 
             load(pageUrl);
 
