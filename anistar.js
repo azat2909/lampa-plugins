@@ -1,8 +1,7 @@
-
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.2
+ * Версия: 0.4.3
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -30,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_042_ready';
+    var READY_FLAG = 'anistar_043_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.2';
+    var PLUGIN_VERSION = '0.4.3';
 
     var PROXY_URL = '';
 
@@ -773,6 +772,12 @@ function AniStarNetwork() {
             }
         }
 
+        function getNavigator() {
+            // В Lampa Navigator доступен как глобальный объект,
+            // а не во всех сборках как Lampa.Navigator.
+            return window.Navigator || (window.Lampa && Lampa.Navigator) || null;
+        }
+
         function createController() {
             if (!window.Lampa || !Lampa.Controller) return;
 
@@ -786,15 +791,23 @@ function AniStarNetwork() {
                     } catch (e) {}
                 },
                 left: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove('left')) Lampa.Navigator.move('left');
+                    var nav = getNavigator();
+                    if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
                     else Lampa.Controller.toggle('menu');
                 },
                 up: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove('up')) Lampa.Navigator.move('up');
+                    var nav = getNavigator();
+                    if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
                     else Lampa.Controller.toggle('head');
                 },
-                down: function () { if (Lampa.Navigator) Lampa.Navigator.move('down'); },
-                right: function () { if (Lampa.Navigator) Lampa.Navigator.move('right'); },
+                down: function () {
+                    var nav = getNavigator();
+                    if (nav && nav.move) nav.move('down');
+                },
+                right: function () {
+                    var nav = getNavigator();
+                    if (nav && nav.move) nav.move('right');
+                },
                 back: function () { Lampa.Activity.backward(); }
             };
 
@@ -1282,3 +1295,7 @@ function AniStarNetwork() {
     }
 
 })();
+
+
+
+
