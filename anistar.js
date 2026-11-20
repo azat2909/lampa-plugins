@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.32
+ * Версия: 0.4.33
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0432_ready';
+    var READY_FLAG = 'anistar_0433_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.32';
+    var PLUGIN_VERSION = '0.4.33';
 
     var PROXY_URL = '';
 
@@ -680,36 +680,74 @@ function AniStarNetwork() {
  * выдаче или ошибке пробуем GET-вариант. Оба варианта используют одни
  * и те же параметры формы и один парсер каталога.
  */
-function requestAniStarSearch(network, query, complete, error) {
-    var searchUrl = new URL('/', BASE_URL).origin + '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
-        encodeURIComponent(query).replace(/%20/g, '+');
-    var postData = {
-        do: 'search',
-        mode: 'advanced',
-        subaction: 'search',
-        titleonly: '3',
-        story: query
+/*
+ * AniStar принимает параметры поиска в кодировке Windows-1251.
+ * encodeURIComponent() отправляет UTF-8, из-за чего сайт видел
+ * кириллицу как «РњРѕ...». Кодируем строку в байты CP1251 вручную.
+ */
+function encodeAniStarQuery(value) {
+    var special = {
+        '\u0402': 0x80, '\u0403': 0x81, '\u201A': 0x82, '\u0453': 0x83,
+        '\u201E': 0x84, '\u2026': 0x85, '\u2020': 0x86, '\u2021': 0x87,
+        '\u20AC': 0x88, '\u2030': 0x89, '\u0409': 0x8A, '\u2039': 0x8B,
+        '\u040A': 0x8C, '\u040C': 0x8D, '\u040B': 0x8E, '\u040F': 0x8F,
+        '\u0452': 0x90, '\u2018': 0x91, '\u2019': 0x92, '\u201C': 0x93,
+        '\u201D': 0x94, '\u2022': 0x95, '\u2013': 0x96, '\u2014': 0x97,
+        '\u2122': 0x99, '\u0459': 0x9A, '\u203A': 0x9B, '\u045A': 0x9C,
+        '\u045C': 0x9D, '\u045B': 0x9E, '\u045F': 0x9F, '\u00A0': 0xA0,
+        '\u040E': 0xA1, '\u045E': 0xA2, '\u0408': 0xA3, '\u0490': 0xA5,
+        '\u0401': 0xA8, '\u0404': 0xAA, '\u0407': 0xAF, '\u0406': 0xB2,
+        '\u0456': 0xB3, '\u0491': 0xB4, '\u0451': 0xB8, '\u0454': 0xBA,
+        '\u0458': 0xBC, '\u0405': 0xBD, '\u0455': 0xBE, '\u0457': 0xBF
     };
+    var result = '';
+    var text = String(value || '');
 
-    function getFallback() {
-        network.get(searchUrl, function (html) {
-            complete(html, searchUrl, 'GET');
-        }, error);
-    }
+    for (var i = 0; i < text.length; i++) {
+        var code = text.charCodeAt(i);
+        var byte;
 
-    network.post(searchUrl, postData, function (html) {
-        var hasResults = false;
-        try {
-            hasResults = parseCatalog(html, searchUrl).items.length > 0;
-        } catch (e) {
-            console.warn('[AniStar] POST search response parse check failed:', e);
+        if (code === 0x20) {
+            result += '+';
+            continue;
+        }
+        if (code >= 0x41 && code <= 0x5A ||
+            code >= 0x61 && code <= 0x7A ||
+            code >= 0x30 && code <= 0x39 ||
+            code === 0x2D || code === 0x2E || code === 0x5F || code === 0x7E) {
+            result += text.charAt(i);
+            continue;
+        }
+        if (code >= 0x0410 && code <= 0x044F) {
+            byte = code - 0x350;
+        } else if (Object.prototype.hasOwnProperty.call(special, text.charAt(i))) {
+            byte = special[text.charAt(i)];
         }
 
-        if (hasResults) complete(html, searchUrl, 'POST');
-        else getFallback();
-    }, function () {
-        getFallback();
-    });
+        if (typeof byte === 'number') {
+            result += '%' + ('0' + byte.toString(16).toUpperCase()).slice(-2);
+        } else {
+            var encoded = encodeURIComponent(text.charAt(i));
+            result += encoded.replace(/%[0-9a-f]{2}/gi, function (part) {
+                return part.toUpperCase();
+            });
+        }
+    }
+
+    return result;
+}
+
+
+function requestAniStarSearch(network, query, complete, error) {
+    var searchUrl = new URL('/', BASE_URL).origin +
+        '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
+        encodeAniStarQuery(query);
+
+    // GET с CP1251: POST через объект Lampa кодирует кириллицу как UTF-8,
+    // что на AniStar приводит к искажённому тексту запроса.
+    network.get(searchUrl, function (html) {
+        complete(html, searchUrl, 'GET-CP1251');
+    }, error);
 }
 
 
