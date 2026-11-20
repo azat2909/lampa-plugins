@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.5
+ * Версия: 0.4.6
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_045_ready';
+    var READY_FLAG = 'anistar_046_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.5';
+    var PLUGIN_VERSION = '0.4.6';
 
     var PROXY_URL = '';
 
@@ -744,6 +744,10 @@ function AniStarNetwork() {
 
                 var card = createCard(item);
                 card.on('hover:focus', function () {
+                    // Lampa меняет focus-класс, но для произвольной DOM-сетки
+                    // не всегда прокручивает Activity вместе с ним.
+                    // Явно держим сфокусированную карточку в видимой области.
+                    scrollCardIntoView(this);
                     maybeLoadNext(this);
                 });
                 grid.append(card);
@@ -759,6 +763,46 @@ function AniStarNetwork() {
 
         var controller = null;
         var lastAutoLoadCount = -1;
+
+        function scrollCardIntoView(card) {
+            if (!card) return;
+
+            try {
+                if (typeof card.scrollIntoView === 'function') {
+                    card.scrollIntoView({
+                        block: 'nearest',
+                        inline: 'nearest',
+                        behavior: 'auto'
+                    });
+                    return;
+                }
+            } catch (e) {}
+
+            // Запасной вариант для старых Android WebView.
+            try {
+                var node = card;
+                while (node && node !== document.body && node !== document.documentElement) {
+                    var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                    var overflowY = style ? style.overflowY : '';
+                    if (node.scrollHeight > node.clientHeight &&
+                        (overflowY === 'auto' || overflowY === 'scroll')) {
+                        var cardRect = card.getBoundingClientRect();
+                        var nodeRect = node.getBoundingClientRect();
+
+                        if (cardRect.bottom > nodeRect.bottom) {
+                            node.scrollTop += cardRect.bottom - nodeRect.bottom;
+                        } else if (cardRect.top < nodeRect.top) {
+                            node.scrollTop -= nodeRect.top - cardRect.top;
+                        }
+                        return;
+                    }
+                    node = node.parentElement;
+                }
+
+                // Последний fallback — прокрутка окна.
+                card.scrollIntoView(false);
+            } catch (e) {}
+        }
 
         function refreshCollection(keepFocus) {
             if (!window.Lampa || !Lampa.Controller) return;
