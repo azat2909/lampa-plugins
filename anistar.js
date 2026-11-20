@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.24
+ * Версия: 0.4.25
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0424_ready';
+    var READY_FLAG = 'anistar_0425_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.24';
+    var PLUGIN_VERSION = '0.4.25';
 
     var PROXY_URL = '';
 
@@ -1660,6 +1660,33 @@ function AniStarNetwork() {
                 searchNetwork.get(searchUrl, function (html) {
                     try {
                         var parsed = parseCatalog(html, searchUrl);
+                        var debugDoc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+                        var debugLinks = debugDoc.querySelectorAll('a[href]');
+                        var debugAnimeLinks = [];
+                        Array.prototype.forEach.call(debugLinks, function (link) {
+                            var href = absoluteUrl(link.getAttribute('href'), searchUrl);
+                            if (isAnimeUrl(href) && debugAnimeLinks.indexOf(href) < 0) {
+                                debugAnimeLinks.push(href);
+                            }
+                        });
+                        console.log('[AniStar] Search diagnostics:', {
+                            query: query,
+                            url: searchUrl,
+                            htmlLength: String(html || '').length,
+                            pageTitle: cleanText(debugDoc.title),
+                            links: debugLinks.length,
+                            animeLinks: debugAnimeLinks.length,
+                            samples: debugAnimeLinks.slice(0, 5),
+                            bodyText: cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 500)
+                        });
+                        if (!parsed.items.length && Lampa.Noty && typeof Lampa.Noty.show === 'function') {
+                            Lampa.Noty.show(
+                                'AniStar: HTML ' + String(html || '').length +
+                                ' симв.; ссылок ' + debugLinks.length +
+                                '; ссылок на тайтлы ' + debugAnimeLinks.length +
+                                '. Заголовок: ' + (cleanText(debugDoc.title) || 'нет')
+                            );
+                        }
                         var results = parsed.items.map(function (item) {
                             return {
                                 id: item.url,
