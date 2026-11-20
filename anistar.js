@@ -1248,7 +1248,7 @@ function AniStarNetwork() {
                 ];
 
                 attrs.forEach(function (value) {
-                    if (value && /videoas_p2p_new\\.php/i.test(value)) {
+                    if (value && /videoas_p2p_new\.php/i.test(value)) {
                         candidates.push(value);
                     }
                 });
@@ -1260,16 +1260,16 @@ function AniStarNetwork() {
              * или отложенно загружаемую разметку iframe.
              */
             if (!candidates.length) {
-                var iframePattern = /<iframe\\b[^>]*>/gi;
+                var iframePattern = /<iframe\b[^>]*>/gi;
                 var iframeMatch;
 
                 while ((iframeMatch = iframePattern.exec(html))) {
                     var tag = iframeMatch[0];
-                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original)\\s*=\\s*(['"])(.*?)\\1/ig;
+                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original)\s*=\s*(['"])(.*?)\1/ig;
                     var attrMatch;
 
                     while ((attrMatch = attrPattern.exec(tag))) {
-                        if (/videoas_p2p_new\\.php/i.test(attrMatch[2])) {
+                        if (/videoas_p2p_new\.php/i.test(attrMatch[2])) {
                             candidates.push(attrMatch[2]);
                         }
                     }
@@ -1284,7 +1284,7 @@ function AniStarNetwork() {
             var src = String(candidates[0])
                 .replace(/&amp;/g, '&')
                 .replace(/&#38;/g, '&')
-                .replace(/\\u0026/gi, '&')
+                .replace(/\u0026/gi, '&')
                 .trim();
 
             return absoluteUrl(src, item.url);
