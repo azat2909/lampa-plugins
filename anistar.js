@@ -4,15 +4,47 @@
 
     var PLUGIN_FLAG = 'plugin_anistar_ready';
     var BASE_URL = 'https://anistar.org/';
-    var CATALOG_COMPONENT = 'anistar_catalog';
-    var DETAIL_COMPONENT = 'anistar_detail';
+    var CATALOG = 'anistar_catalog';
+    var DETAILS = 'anistar_details';
 
     if (window[PLUGIN_FLAG]) return;
-    window[PLUGIN_FLAG] = true;
+
+    var initialized = false;
 
     // --------------------------------------------------
-    // Общие функции
+    // URL и текст
     // --------------------------------------------------
+
+    function absoluteUrl(value) {
+        try {
+            var url = new URL(value, BASE_URL);
+            var host = url.hostname.toLowerCase();
+
+            if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+                return '';
+            }
+
+            if (host !== 'anistar.org' && host !== 'www.anistar.org') {
+                return '';
+            }
+
+            return url.href;
+        }
+        catch (e) {
+            return '';
+        }
+    }
+
+    function isAnimeUrl(value) {
+        try {
+            var url = new URL(value);
+
+            return /^\/\d+-[^/]+\.html$/i.test(url.pathname);
+        }
+        catch (e) {
+            return false;
+        }
+    }
 
     function textOf(element) {
         return (element && element.textContent || '')
@@ -21,47 +53,15 @@
     }
 
     function escapeHtml(value) {
-        return String(value || '').replace(/[&<>"']/g, function (char) {
+        return String(value || '').replace(/[&<>"']/g, function (ch) {
             return {
                 '&': '&amp;',
                 '<': '&lt;',
                 '>': '&gt;',
                 '"': '&quot;',
                 "'": '&#39;'
-            }[char];
+            }[ch];
         });
-    }
-
-    function absoluteUrl(value) {
-        try {
-            var url = new URL(value, BASE_URL);
-
-            if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-                return '';
-            }
-
-            var host = url.hostname.toLowerCase();
-
-            if (host !== 'anistar.org' && host !== 'www.anistar.org') {
-                return '';
-            }
-
-            return url.href;
-        }
-        catch (error) {
-            return '';
-        }
-    }
-
-    function isAnimeUrl(url) {
-        try {
-            var parsed = new URL(url);
-
-            return /^\/\d+-[^/]+\.html$/i.test(parsed.pathname);
-        }
-        catch (error) {
-            return false;
-        }
     }
 
     function parseDocument(html) {
@@ -74,27 +74,50 @@
     function getImageUrl(img) {
         if (!img) return '';
 
-        return absoluteUrl(
+        var value =
             img.getAttribute('data-src') ||
             img.getAttribute('data-original') ||
             img.getAttribute('data-lazy-src') ||
             img.getAttribute('src') ||
-            ''
+            '';
+
+        return absoluteUrl(value);
+    }
+
+    function isActionText(text) {
+        return /^(смотреть|смотреть онлайн|подробнее|читать далее|image|изображение|перейти)$/i.test(
+            String(text || '').trim()
         );
     }
 
-    function getCardContainer(anchor) {
-        var current = anchor;
+    // --------------------------------------------------
+    // Поиск контейнера карточки
+    // --------------------------------------------------
+
+    function findCardContainer(anchor) {
+        var selectors = [
+            'article',
+            '.shortstory',
+            '.shortstory-item',
+            '.shortstory__item',
+            '.movie-item',
+            '.item',
+            '.post',
+            '.news-item'
+        ].join(',');
+
+        var parent = anchor.closest(selectors);
+
+        if (parent) return parent;
+
+        var current = anchor.parentElement;
         var depth = 0;
 
-        while (current && depth < 6) {
-            if (
-                current.matches &&
-                current.matches(
-                    'article, .shortstory, .shortstory-item, ' +
-                    '.movie-item, .item, .post, .news-item'
-                )
-            ) {
+        while (current && depth < 5) {
+            var links = current.querySelectorAll('a[href]');
+            var images = current.querySelectorAll('img');
+
+            if (links.length >= 2 || images.length > 0) {
                 return current;
             }
 
@@ -105,83 +128,14 @@
         return anchor.parentElement || anchor;
     }
 
-    function findCardTitle(anchor, container) {
-        var title = textOf(anchor);
-
-        if (
-            title &&
-            !/^(смотреть|image|изображение|подробнее|читать далее)$/i.test(title)
-        ) {
-            return title;
-        }
-
-        var heading = container.querySelector(
-            'h1, h2, h3, h4, .title, .shortstory__title, .news-title'
-        );
-
-        title = textOf(heading);
-
-        if (
-            title &&
-            !/^(смотреть|image|изображение)$/i.test(title)
-        ) {
-            return title;
-        }
-
-        // Ищем текстовую ссылку на ту же страницу.
-        var links = container.querySelectorAll('a[href]');
-
-        for (var i = 0; i < links.length; i++) {
-            var link = links[i];
-            var href = absoluteUrl(link.getAttribute('href'));
-
-            if (href !== absoluteUrl(anchor.getAttribute('href'))) {
-                continue;
-            }
-
-            title = textOf(link);
-
-            if (
-                title &&
-                !/^(смотреть|image|изображение|подробнее)$/i.test(title)
-            ) {
-                return title;
-            }
-        }
-
-        return '';
-    }
-
-    function findCardPoster(anchor, container) {
-        var image = container.querySelector('img');
-        var poster = getImageUrl(image);
-
-        if (poster) return poster;
-
-        var href = absoluteUrl(anchor.getAttribute('href'));
-        var links = container.querySelectorAll('a[href]');
-
-        for (var i = 0; i < links.length; i++) {
-            if (absoluteUrl(links[i].getAttribute('href')) !== href) {
-                continue;
-            }
-
-            poster = getImageUrl(links[i].querySelector('img'));
-
-            if (poster) return poster;
-        }
-
-        return '';
-    }
-
     // --------------------------------------------------
     // Парсер каталога
     // --------------------------------------------------
 
     function parseCatalog(html) {
         var doc = parseDocument(html);
-        var items = [];
-        var found = {};
+        var groups = Object.create(null);
+        var order = [];
 
         var links = doc.querySelectorAll('a[href]');
 
@@ -189,65 +143,155 @@
             var url = absoluteUrl(anchor.getAttribute('href'));
 
             if (!url || !isAnimeUrl(url)) return;
-            if (found[url]) return;
 
-            var container = getCardContainer(anchor);
-            var title = findCardTitle(anchor, container);
+            if (!groups[url]) {
+                groups[url] = {
+                    url: url,
+                    title: '',
+                    poster: '',
+                    container: null
+                };
 
-            if (!title) return;
-            if (title.length < 2 || title.length > 200) return;
+                order.push(url);
+            }
 
-            if (/^(главная|новинки|аниме|манга|дорамы)$/i.test(title)) {
+            var group = groups[url];
+            var title = textOf(anchor);
+
+            if (
+                title &&
+                !isActionText(title) &&
+                title.length >= 2 &&
+                title.length <= 200
+            ) {
+                if (
+                    !group.title ||
+                    title.length > group.title.length
+                ) {
+                    group.title = title;
+                }
+            }
+
+            // Сначала ищем изображение непосредственно в ссылке.
+            if (!group.poster) {
+                group.poster = getImageUrl(
+                    anchor.querySelector('img')
+                );
+            }
+
+            // Запоминаем контейнер карточки для дополнительного поиска.
+            if (!group.container) {
+                group.container = findCardContainer(anchor);
+            }
+        });
+
+        var result = [];
+
+        order.forEach(function (url) {
+            var group = groups[url];
+            var container = group.container;
+
+            // Если заголовок не найден в ссылках, ищем его в карточке.
+            if (container && !group.title) {
+                var heading = container.querySelector(
+                    'h1, h2, h3, h4, .title, ' +
+                    '.shortstory__title, .news-title'
+                );
+
+                var headingText = textOf(heading);
+
+                if (
+                    headingText &&
+                    !isActionText(headingText)
+                ) {
+                    group.title = headingText;
+                }
+            }
+
+            // Ищем постер в контейнере.
+            if (container && !group.poster) {
+                var images = container.querySelectorAll('img');
+
+                for (var i = 0; i < images.length; i++) {
+                    var imageUrl = getImageUrl(images[i]);
+
+                    if (imageUrl) {
+                        group.poster = imageUrl;
+                        break;
+                    }
+                }
+            }
+
+            if (!group.title) return;
+
+            if (
+                /^(главная|новинки|аниме|манга|дорамы|смотреть)$/i.test(
+                    group.title
+                )
+            ) {
                 return;
             }
 
-            found[url] = true;
-
-            items.push({
-                title: title,
-                url: url,
-                poster: findCardPoster(anchor, container)
+            result.push({
+                title: group.title,
+                url: group.url,
+                poster: group.poster
             });
         });
 
-        return items;
+        return result;
     }
 
     // --------------------------------------------------
-    // Поиск следующей страницы
+    // Поиск следующей страницы каталога
     // --------------------------------------------------
 
     function findNextPage(html, currentUrl) {
         var doc = parseDocument(html);
-        var links = doc.querySelectorAll(
-            'a[rel="next"], .pagination a, .navigation a, a[href]'
-        );
-
         var current = absoluteUrl(currentUrl);
 
-        // Сначала ищем rel="next".
         var relNext = doc.querySelector('a[rel="next"]');
 
         if (relNext) {
-            var relUrl = absoluteUrl(relNext.getAttribute('href'));
+            var relUrl = absoluteUrl(
+                relNext.getAttribute('href')
+            );
 
-            if (relUrl && relUrl !== current) return relUrl;
+            if (relUrl && relUrl !== current) {
+                return relUrl;
+            }
         }
 
-        // Затем ищем кнопку следующей страницы.
-        for (var i = 0; i < links.length; i++) {
-            var link = links[i];
-            var label = textOf(link).toLowerCase();
+        var containers = doc.querySelectorAll(
+            '.pagination, .navigation, .nav-links, .pages'
+        );
 
-            if (
-                label === '»' ||
-                label === '›' ||
-                label === '>' ||
-                label === 'следующая' ||
-                label === 'далее' ||
-                label === 'следующая страница'
-            ) {
-                var nextUrl = absoluteUrl(link.getAttribute('href'));
+        var searchRoot = containers.length
+            ? containers
+            : [doc];
+
+        for (var c = 0; c < searchRoot.length; c++) {
+            var links = searchRoot[c].querySelectorAll
+                ? searchRoot[c].querySelectorAll('a[href]')
+                : [];
+
+            for (var i = 0; i < links.length; i++) {
+                var label = textOf(links[i]).toLowerCase();
+
+                if (
+                    label !== '»' &&
+                    label !== '›' &&
+                    label !== '>' &&
+                    label !== 'следующая' &&
+                    label !== 'далее' &&
+                    label !== 'следующая страница'
+                ) {
+                    continue;
+                }
+
+                var nextUrl = absoluteUrl(
+                    links[i].getAttribute('href')
+                );
 
                 if (nextUrl && nextUrl !== current) {
                     return nextUrl;
@@ -259,14 +303,62 @@
     }
 
     // --------------------------------------------------
+    // Описание аниме
+    // --------------------------------------------------
+
+    function findDescription(doc) {
+        var selectors = [
+            '.full-text',
+            '.fullstory',
+            '.full-story',
+            '.description',
+            '.shortstory__text',
+            '.shortstory'
+        ];
+
+        for (var i = 0; i < selectors.length; i++) {
+            var element = doc.querySelector(selectors[i]);
+            var value = textOf(element);
+
+            if (value && value.length > 30) {
+                return value;
+            }
+        }
+
+        return '';
+    }
+
+    function findPagePoster(doc) {
+        var selectors = [
+            '.fullstory img',
+            '.full-text img',
+            '.full-story img',
+            '.poster img',
+            'article img'
+        ];
+
+        for (var i = 0; i < selectors.length; i++) {
+            var image = doc.querySelector(selectors[i]);
+            var url = getImageUrl(image);
+
+            if (url) return url;
+        }
+
+        return '';
+    }
+
+    // --------------------------------------------------
     // Связанные сезоны и части
     // --------------------------------------------------
 
     function parseRelated(html, currentUrl) {
         var doc = parseDocument(html);
-        var result = [];
-        var found = {};
+        var current = absoluteUrl(currentUrl);
 
+        var result = [];
+        var seen = Object.create(null);
+
+        // Находим текстовый блок «Серия состоит из».
         var walker = doc.createTreeWalker(
             doc.body,
             NodeFilter.SHOW_TEXT,
@@ -286,12 +378,21 @@
 
         if (!marker) return result;
 
-        // Поднимаемся до контейнера, в котором находятся связанные ссылки.
+        // Ищем ближайший контейнер с несколькими ссылками на аниме.
         var container = marker;
         var depth = 0;
 
         while (container && depth < 5) {
-            if (container.querySelectorAll('a[href]').length > 0) break;
+            var links = container.querySelectorAll('a[href]');
+            var count = 0;
+
+            Array.prototype.forEach.call(links, function (a) {
+                var url = absoluteUrl(a.getAttribute('href'));
+
+                if (url && isAnimeUrl(url)) count++;
+            });
+
+            if (count > 0) break;
 
             container = container.parentElement;
             depth++;
@@ -299,19 +400,17 @@
 
         if (!container) return result;
 
-        var links = container.querySelectorAll('a[href]');
-        var current = absoluteUrl(currentUrl);
+        var relatedLinks = container.querySelectorAll('a[href]');
 
-        Array.prototype.forEach.call(links, function (anchor) {
+        Array.prototype.forEach.call(relatedLinks, function (anchor) {
             var url = absoluteUrl(anchor.getAttribute('href'));
             var title = textOf(anchor);
 
             if (!url || !title) return;
-            if (url === current) return;
             if (!isAnimeUrl(url)) return;
-            if (found[url]) return;
+            if (url === current || seen[url]) return;
 
-            found[url] = true;
+            seen[url] = true;
 
             result.push({
                 title: title.replace(/^#\s*\d+\s*/, '').trim() || title,
@@ -346,7 +445,10 @@
     }
 
     function clearRequest(request) {
-        if (request && typeof request.clear === 'function') {
+        if (
+            request &&
+            typeof request.clear === 'function'
+        ) {
             request.clear();
         }
     }
@@ -360,7 +462,10 @@
     function openExternal(url) {
         if (!url) return;
 
-        if (Lampa.Platform && typeof Lampa.Platform.open === 'function') {
+        if (
+            Lampa.Platform &&
+            typeof Lampa.Platform.open === 'function'
+        ) {
             Lampa.Platform.open(url);
         }
         else {
@@ -369,14 +474,14 @@
     }
 
     // --------------------------------------------------
-    // Открытие карточки
+    // Открытие страницы аниме
     // --------------------------------------------------
 
-    function openDetail(item) {
+    function openDetails(item) {
         Lampa.Activity.push({
             url: '',
             title: item.title,
-            component: DETAIL_COMPONENT,
+            component: DETAILS,
             data: {
                 anime: item
             },
@@ -385,11 +490,12 @@
     }
 
     // --------------------------------------------------
-    // Экран каталога
+    // Компонент каталога
     // --------------------------------------------------
 
     function CatalogScreen(object) {
         var self = this;
+
         var scroll = new Lampa.Scroll({
             mask: true,
             over: true
@@ -398,10 +504,10 @@
         var request = null;
         var alive = true;
 
+        var data = object.data || {};
+
         var pageUrl = absoluteUrl(
-            object.data && object.data.pageUrl
-                ? object.data.pageUrl
-                : BASE_URL
+            data.pageUrl || BASE_URL
         ) || BASE_URL;
 
         this.create = function () {
@@ -427,9 +533,13 @@
 
                     items.forEach(function (item) {
                         var poster = item.poster
-                            ? '<img src="' + escapeHtml(item.poster) +
-                              '" loading="lazy" style="' +
-                              'width:100%;height:100%;object-fit:cover;">'
+                            ? '<img src="' +
+                                escapeHtml(item.poster) +
+                                '" loading="lazy" style="' +
+                                    'width:100%;' +
+                                    'height:100%;' +
+                                    'object-fit:cover;' +
+                                '">'
                             : '';
 
                         var card = $(
@@ -467,7 +577,7 @@
                         );
 
                         card.on('hover:enter', function () {
-                            openDetail(item);
+                            openDetails(item);
                         });
 
                         scroll.append(card);
@@ -492,7 +602,7 @@
                             Lampa.Activity.push({
                                 url: '',
                                 title: 'Анистар',
-                                component: CATALOG_COMPONENT,
+                                component: CATALOG,
                                 data: {
                                     pageUrl: nextPage
                                 },
@@ -525,17 +635,19 @@
 
         this.destroy = function () {
             alive = false;
+
             clearRequest(request);
             scroll.destroy();
         };
     }
 
     // --------------------------------------------------
-    // Экран информации об аниме
+    // Компонент страницы аниме
     // --------------------------------------------------
 
     function DetailScreen(object) {
         var self = this;
+
         var scroll = new Lampa.Scroll({
             mask: true,
             over: true
@@ -569,12 +681,8 @@
                     var heading = doc.querySelector('h1');
                     var title = textOf(heading) || anime.title;
 
-                    var descriptionNode = doc.querySelector(
-                        '.full-text, .fullstory, .description, ' +
-                        '.shortstory__text, .full-story'
-                    );
-
-                    var description = textOf(descriptionNode);
+                    var description = findDescription(doc);
+                    var poster = anime.poster || findPagePoster(doc);
 
                     scroll.append($(
                         '<div style="' +
@@ -586,14 +694,6 @@
                         '</div>'
                     ));
 
-                    var poster = anime.poster;
-
-                    if (!poster) {
-                        poster = getImageUrl(doc.querySelector(
-                            '.fullstory img, .full-text img, .poster img, article img'
-                        ));
-                    }
-
                     if (poster) {
                         scroll.append($(
                             '<div style="' +
@@ -603,8 +703,12 @@
                                 'margin:1em 0;' +
                                 'border-radius:.3em;' +
                             '">' +
-                                '<img src="' + escapeHtml(poster) + '" ' +
-                                    'loading="lazy" style="width:100%;height:auto;">' +
+                                '<img src="' +
+                                    escapeHtml(poster) +
+                                    '" loading="lazy" style="' +
+                                        'width:100%;' +
+                                        'height:auto;' +
+                                    '">' +
                             '</div>'
                         ));
                     }
@@ -621,6 +725,7 @@
                         ));
                     }
 
+                    // Связанные сезоны и части.
                     var related = parseRelated(html, anime.url);
 
                     if (related.length) {
@@ -647,7 +752,7 @@
                             );
 
                             row.on('hover:enter', function () {
-                                openDetail({
+                                openDetails({
                                     title: part.title,
                                     url: part.url,
                                     poster: ''
@@ -658,6 +763,7 @@
                         });
                     }
 
+                    // Открытие оригинальной страницы сайта.
                     var siteButton = $(
                         '<div class="selector" style="' +
                             'padding:1em;' +
@@ -697,34 +803,53 @@
 
         this.destroy = function () {
             alive = false;
+
             clearRequest(request);
             scroll.destroy();
         };
     }
 
     // --------------------------------------------------
-    // Инициализация и меню
+    // Регистрация компонентов и меню
     // --------------------------------------------------
 
     function init() {
+        if (initialized) return;
+
         if (
             !window.Lampa ||
             !Lampa.Component ||
-            !Lampa.Reguest ||
-            !Lampa.Activity
+            !Lampa.Activity ||
+            !Lampa.Reguest
         ) {
             return;
         }
 
-        if (!Lampa.Component.get(CATALOG_COMPONENT)) {
-            Lampa.Component.add(CATALOG_COMPONENT, CatalogScreen);
+        initialized = true;
+        window[PLUGIN_FLAG] = true;
+
+        if (
+            !Lampa.Component.get ||
+            !Lampa.Component.get(CATALOG)
+        ) {
+            Lampa.Component.add(CATALOG, CatalogScreen);
         }
 
-        if (!Lampa.Component.get(DETAIL_COMPONENT)) {
-            Lampa.Component.add(DETAIL_COMPONENT, DetailScreen);
+        if (
+            !Lampa.Component.get ||
+            !Lampa.Component.get(DETAILS)
+        ) {
+            Lampa.Component.add(DETAILS, DetailScreen);
         }
 
-        if ($('.menu .menu__list .anistar-menu-item').length) {
+        var menuList = $('.menu .menu__list').eq(0);
+
+        if (!menuList.length) {
+            console.warn('AniStar: меню Lampa не найдено');
+            return;
+        }
+
+        if (menuList.find('.anistar-menu-item').length) {
             return;
         }
 
@@ -745,7 +870,7 @@
             Lampa.Activity.push({
                 url: '',
                 title: 'Анистар',
-                component: CATALOG_COMPONENT,
+                component: CATALOG,
                 data: {
                     pageUrl: BASE_URL
                 },
@@ -753,30 +878,28 @@
             });
         });
 
-        $('.menu .menu__list').eq(0).append(menuItem);
+        menuList.append(menuItem);
+
+        console.log('AniStar: плагин инициализирован');
     }
 
     // --------------------------------------------------
     // Запуск после готовности Lampa
     // --------------------------------------------------
 
-    function start() {
-        if (window.appready) {
-            init();
-        }
-        else if (
-            window.Lampa &&
-            Lampa.Listener &&
-            typeof Lampa.Listener.follow === 'function'
-        ) {
-            Lampa.Listener.follow('app', function (event) {
-                if (event.type === 'ready') {
-                    init();
-                }
-            });
-        }
+    if (window.appready) {
+        init();
     }
-
-    start();
+    else if (
+        window.Lampa &&
+        Lampa.Listener &&
+        typeof Lampa.Listener.follow === 'function'
+    ) {
+        Lampa.Listener.follow('app', function (event) {
+            if (event.type === 'ready') {
+                init();
+            }
+        });
+    }
 
 })();
