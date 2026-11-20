@@ -229,6 +229,17 @@
     }
 
 
+    /*
+     * Убираем только дату в конце названия, не затрагивая
+     * номера сезонов, годов в названии и прочие цифры.
+     */
+    function cleanAnimeTitle(value) {
+        return cleanText(value)
+            .replace(/\s*[\[(]?(?:\d{2}[.\-/]\d{2}[.\-/]\d{4}|\d{4}[.\-/]\d{2}[.\-/]\d{2})[\])]?(?=\s*$)/, '')
+            .trim();
+    }
+
+
     function absoluteUrl(url, base) {
         if (!url) return '';
 
