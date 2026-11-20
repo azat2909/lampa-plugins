@@ -2,17 +2,22 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.1
+ * Версия: 0.4.2
  * ============================================================
  *
+ * Источник: https://anistar.org/anime/
+ * Платформа: Lampa 3.x / Android TV
+ *
  * Возможности:
- * - Каталог AniStar.
- * - Получение HTML и разбор карточек.
- * - Навигация штатным контроллером Lampa.
- * - Управление стрелками и OK на пульте.
- * - Автоматическая подгрузка следующих страниц.
- * - Защита от повторной загрузки страниц и карточек.
+ * - Каталог AniStar в левом меню.
+ * - Получение HTML сайта.
+ * - Парсинг названий и постеров.
+ * - Сетка карточек.
+ * - Навигация пультом Android TV.
+ * - Пагинация.
  * - Экран информации о тайтле.
+ *
+ * Интерфейс строится на штатной Activity Lampa.
  *
  * ============================================================
  */
@@ -25,20 +30,16 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var DETAIL_ID = 'anistar_detail';
-
-    var READY_FLAG = 'anistar_041_ready';
+    var READY_FLAG = 'anistar_042_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.1';
+    var PLUGIN_VERSION = '0.4.2';
 
-    // Сколько карточек загружать за один запрос.
+    var PROXY_URL = '';
+
     var PAGE_SIZE = 100;
-
-    // За сколько карточек до конца начинать подгрузку.
-    var PREFETCH_COUNT = 14;
 
     if (window[READY_FLAG]) return;
 
@@ -47,18 +48,18 @@
 
     /* =========================================================
      * 2. CSS
-     * ========================================================= */
+     * =========================================================
+     *
+     * Сетка создаётся средствами CSS.
+     * Это позволяет не зависеть от неизвестных внутренних
+     * методов Maker и сохранять управление selector в Lampa.
+     */
 
     var css = [
-
         '.anistar-screen {',
         ' width:100%;',
-        ' height:100%;',
-        ' min-height:100%;',
         ' box-sizing:border-box;',
         ' padding:0 2.5em 3em;',
-        ' overflow-y:auto;',
-        ' overflow-x:hidden;',
         '}',
 
         '.anistar-grid {',
@@ -82,7 +83,7 @@
         ' width:100%;',
         ' aspect-ratio:2/3;',
         ' overflow:hidden;',
-        ' border-radius:.35em;',
+        ' border-radius:0.35em;',
         ' background:rgba(255,255,255,.08);',
         '}',
 
@@ -123,15 +124,14 @@
         ' z-index:2;',
         '}',
 
-        '.anistar-loading {',
-        ' padding:1.5em;',
+        '.anistar-more {',
+        ' margin:2em auto;',
+        ' padding:1em 2em;',
         ' text-align:center;',
-        ' opacity:.7;',
-        '}',
-
-        '.anistar-error {',
-        ' padding:2em;',
-        ' text-align:center;',
+        ' width:max-content;',
+        ' max-width:100%;',
+        ' border-radius:.4em;',
+        ' background:rgba(255,255,255,.12);',
         '}',
 
         '.anistar-detail {',
@@ -145,7 +145,6 @@
         ' width:220px;',
         ' max-width:35%;',
         ' border-radius:.4em;',
-        ' overflow:hidden;',
         '}',
 
         '.anistar-detail__poster img {',
@@ -165,20 +164,12 @@
         ' margin-bottom:1em;',
         '}',
 
-        '.anistar-detail__description {',
-        ' opacity:.7;',
-        '}',
-
         '.anistar-detail__link {',
         ' margin-top:1.5em;',
         ' padding:1em;',
         ' background:rgba(255,255,255,.12);',
         ' border-radius:.4em;',
         ' width:max-content;',
-        '}',
-
-        '.anistar-menu-item {',
-        ' cursor:pointer;',
         '}',
 
         '@media (max-width:700px) {',
@@ -191,22 +182,21 @@
         '@media (min-width:1200px) {',
         ' .anistar-grid { grid-template-columns:repeat(7,minmax(0,1fr)); }',
         '}'
-
     ].join('\n');
 
 
     function addStyles() {
-
         if (document.getElementById('anistar_styles')) return;
 
         var style = document.createElement('style');
 
         style.id = 'anistar_styles';
+
         style.type = 'text/css';
+
         style.textContent = css;
 
         document.head.appendChild(style);
-
     }
 
 
@@ -215,82 +205,70 @@
      * ========================================================= */
 
     function cleanText(value) {
-
         return String(value || '')
             .replace(/\s+/g, ' ')
             .trim();
-
     }
 
 
     function absoluteUrl(url, base) {
-
         if (!url) return '';
 
         try {
             return new URL(url, base || BASE_URL).href;
-        }
-        catch (e) {
+        } catch (e) {
             return '';
         }
-
     }
 
 
     function normalizeUrl(url) {
-
         try {
-
             var parsed = new URL(url);
 
             parsed.hash = '';
 
             return parsed.href;
-
-        }
-        catch (e) {
+        } catch (e) {
             return url;
         }
-
     }
 
 
     function isAniStarUrl(url) {
-
         try {
-
             var host = new URL(url).hostname;
 
             return host === SITE_HOST ||
                 host === 'www.' + SITE_HOST;
-
-        }
-        catch (e) {
+        } catch (e) {
             return false;
         }
-
     }
 
 
+    /*
+     * AniStar использует адреса публикаций:
+     * /12345-nazvanie-anime.html
+     */
     function isAnimeUrl(url) {
-
         try {
-
             var parsed = new URL(url);
 
             return isAniStarUrl(url) &&
                 /^\/\d+-[^/]+\.html$/i.test(parsed.pathname);
 
-        }
-        catch (e) {
+        } catch (e) {
             return false;
         }
-
     }
 
 
-    function getPoster(image, base) {
+    /* =========================================================
+     * 4. ПОЛУЧЕНИЕ ПОСТЕРА
+     * ========================================================= */
 
+    function getPoster(image, base) {
         if (!image) return '';
 
         var src =
@@ -302,29 +280,24 @@
             '';
 
         if (!src) {
-
             var srcset =
                 image.getAttribute('data-srcset') ||
                 image.getAttribute('srcset') ||
                 '';
 
             if (srcset) {
-
                 src = srcset.split(',')[0]
                     .trim()
                     .split(/\s+/)[0];
-
             }
-
         }
 
         return absoluteUrl(src, base);
-
     }
 
 
     /* =========================================================
-     * 4. ПАРСЕР КАТАЛОГА
+     * 5. ПАРСЕР КАТАЛОГА
      * ========================================================= */
 
     function parseCatalog(html, pageUrl) {
@@ -339,6 +312,7 @@
 
         var links = doc.querySelectorAll('a[href]');
 
+
         Array.prototype.forEach.call(links, function (link) {
 
             var url = absoluteUrl(
@@ -352,6 +326,10 @@
 
             if (seen[url]) return;
 
+
+            /*
+             * Ищем контейнер карточки.
+             */
             var card = link.closest(
                 '.shortstory, .base, .news, .item, ' +
                 '.anime-item, .movie-item, article, li'
@@ -361,11 +339,19 @@
                 card = link.parentElement;
             }
 
+
+            /*
+             * Получаем заголовок.
+             */
             var title = cleanText(
                 link.getAttribute('title') ||
                 link.textContent
             );
 
+
+            /*
+             * Ищем заголовок в родительском контейнере.
+             */
             if (!title || title.length < 2) {
 
                 var heading = card && card.querySelector(
@@ -375,26 +361,31 @@
                 if (heading) {
                     title = cleanText(heading.textContent);
                 }
-
             }
 
+
+            /*
+             * Ищем изображение.
+             */
             var image =
                 link.querySelector('img') ||
                 (card && card.querySelector('img'));
+
 
             if (
                 (!title || title.length < 2) &&
                 image
             ) {
-
                 title = cleanText(
                     image.getAttribute('alt')
                 );
-
             }
 
+
             if (!title || title.length < 2) return;
+
             if (title.length > 220) return;
+
 
             if (
                 /^(смотреть|подробнее|читать|перейти|следующая)$/i.test(title)
@@ -402,14 +393,20 @@
                 return;
             }
 
+
             seen[url] = true;
+
 
             items.push({
 
                 id: url,
+
                 title: title,
+
                 name: title,
+
                 url: url,
+
                 poster: getPoster(image, pageUrl)
 
             });
@@ -417,62 +414,74 @@
         });
 
 
-        // Поиск следующей страницы.
-
+        /*
+         * Пагинация AniStar: страницы имеют числовые URL:
+         * /anime/ и /anime/page/2/, /anime/page/3/ и т.д.
+         * Старый поиск только по стрелке «Следующая» не находил
+         * такие ссылки, поэтому здесь сначала ищем номер страницы.
+         */
         var next = '';
+        var currentPage = 1;
+
+        try {
+            var currentPath = new URL(pageUrl).pathname;
+            var currentMatch = currentPath.match(/\/anime\/page\/(\d+)\/?$/i);
+            if (currentMatch) currentPage = parseInt(currentMatch[1], 10) || 1;
+        } catch (e) {}
 
         var pagination = doc.querySelectorAll(
-            '.navigation a[href], ' +
-            '.pagination a[href], ' +
-            '.pages a[href], ' +
-            'a[rel~="next"]'
+            '.navigation a[href], .pagination a[href], .pages a[href], ' +
+            '.paginator a[href], .nav-links a[href], a[rel~="next"], a[href]'
         );
 
-        Array.prototype.some.call(
-            pagination,
-            function (link) {
+        var numbered = [];
 
-                var text = cleanText(
-                    link.textContent
-                ).toLowerCase();
+        Array.prototype.forEach.call(pagination, function (link) {
+            var href = absoluteUrl(link.getAttribute('href'), pageUrl);
+            if (!href || !isAniStarUrl(href)) return;
 
-                var rel = (
-                    link.getAttribute('rel') || ''
-                ).toLowerCase();
+            try {
+                var parsedUrl = new URL(href);
+                var match = parsedUrl.pathname.match(/\/anime\/page\/(\d+)\/?$/i);
+                var pageNumber = match ? parseInt(match[1], 10) :
+                    (/\/anime\/?$/i.test(parsedUrl.pathname) ? 1 : 0);
 
-                var cls = (
-                    link.className || ''
-                ).toString().toLowerCase();
+                if (pageNumber > currentPage) {
+                    numbered.push({ number: pageNumber, url: href });
+                }
+            } catch (e) {}
+        });
 
-                var isNext =
-                    rel.indexOf('next') !== -1 ||
+        numbered.sort(function (a, b) {
+            return a.number - b.number;
+        });
+
+        if (numbered.length) {
+            // Берём именно следующую страницу, если она есть.
+            var expected = numbered.filter(function (item) {
+                return item.number === currentPage + 1;
+            })[0];
+            next = (expected || numbered[0]).url;
+        }
+
+        // Резервный вариант для пагинации со стрелкой/текстом.
+        if (!next) {
+            Array.prototype.some.call(pagination, function (link) {
+                var text = cleanText(link.textContent).toLowerCase();
+                var rel = (link.getAttribute('rel') || '').toLowerCase();
+                var cls = (link.className || '').toString().toLowerCase();
+                var isNext = rel.indexOf('next') !== -1 ||
                     /next|следующ|далее/.test(cls) ||
-                    /следующ|далее/.test(text) ||
-                    text === '»' ||
-                    text === '›';
-
+                    /следующ|далее/.test(text) || text === '»' || text === '›';
                 if (!isNext) return false;
 
-                var href = absoluteUrl(
-                    link.getAttribute('href'),
-                    pageUrl
-                );
-
+                var href = absoluteUrl(link.getAttribute('href'), pageUrl);
                 if (!href || !isAniStarUrl(href)) return false;
-
-                if (
-                    normalizeUrl(href) ===
-                    normalizeUrl(pageUrl)
-                ) {
-                    return false;
-                }
-
+                if (normalizeUrl(href) === normalizeUrl(pageUrl)) return false;
                 next = href;
-
                 return true;
-
-            }
-        );
+            });
+        }
 
         return {
             items: items,
@@ -482,195 +491,100 @@
     }
 
 
-    /* =========================================================
-     * 5. СЕТЕВОЙ ЗАПРОС
-     * ========================================================= */
+    
+/* =========================================================
+ * 6. СЕТЕВОЙ ЗАПРОС — ИСПРАВЛЕННАЯ ВЕРСИЯ
+ * =========================================================
+ *
+ * ВАЖНО:
+ * Не используем request.get().
+ *
+ * В некоторых сборках Lampa Request.get() вызывает
+ * необъявленную функцию clear(), что приводит к ошибке:
+ *
+ * ReferenceError: clear is not defined
+ *
+ * Используем request.native(), который поддерживает
+ * Android TV и не вызывает проблемный метод get().
+ */
 
-    function AniStarNetwork() {
+function AniStarNetwork() {
 
-        var request = new Lampa.Reguest();
+    // Создаём штатный сетевой объект Lampa.
+    var request = new Lampa.Reguest();
 
-        this.get = function (url, success, error) {
 
-            request.native(
+    /*
+     * GET-запрос к AniStar.
+     */
+    this.get = function (url, success, error) {
 
-                url,
+        // Если задан прокси, используем его.
+        var target = PROXY_URL
+            ? PROXY_URL + encodeURIComponent(url)
+            : url;
 
-                function (data) {
 
-                    if (typeof success === 'function') {
-                        success(data);
-                    }
+        /*
+         * Используем native вместо get.
+         *
+         * Аргументы:
+         * 1. URL;
+         * 2. Успешный callback;
+         * 3. Callback ошибки;
+         * 4. POST-данные (false для GET);
+         * 5. Настройки запроса.
+         */
+        request.native(
 
-                },
+            target,
 
-                function (xhr, status) {
-
-                    console.error(
-                        '[AniStar] Request error:',
-                        xhr,
-                        status
-                    );
-
-                    if (typeof error === 'function') {
-                        error(xhr, status);
-                    }
-
-                },
-
-                false,
-
-                {
-                    dataType: 'text',
-                    timeout: 20000
+            function (data) {
+                if (typeof success === 'function') {
+                    success(data);
                 }
+            },
 
-            );
-
-        };
-
-
-        this.clear = function () {
-
-            if (
-                request &&
-                typeof request.clear === 'function'
-            ) {
-                request.clear();
-            }
-
-        };
-
-    }
-
-
-    /* =========================================================
-     * 6. ОБЩИЕ ФУНКЦИИ НАВИГАЦИИ
-     * ========================================================= */
-
-    function moveNavigator(direction) {
-
-        if (
-            typeof Navigator !== 'undefined' &&
-            Navigator &&
-            typeof Navigator.canmove === 'function' &&
-            typeof Navigator.move === 'function'
-        ) {
-
-            if (Navigator.canmove(direction)) {
-                Navigator.move(direction);
-            }
-
-        }
-
-    }
-
-
-    function focusCollection(root, first) {
-
-        if (
-            !Lampa.Controller ||
-            typeof Lampa.Controller.collectionSet !== 'function'
-        ) {
-            console.error(
-                '[AniStar] Controller.collectionSet unavailable'
-            );
-
-            return;
-        }
-
-        var selectors = root.find('.selector');
-
-        Lampa.Controller.collectionSet(root);
-
-        if (
-            first &&
-            selectors.length &&
-            typeof Lampa.Controller.collectionFocus === 'function'
-        ) {
-
-            Lampa.Controller.collectionFocus(
-                selectors.eq(0)[0],
-                root
-            );
-
-        }
-
-    }
-
-
-    function createController(component, root) {
-
-        return {
-
-            link: component,
-
-            toggle: function () {
-
-                var selectors = root.find('.selector');
-
-                Lampa.Controller.collectionSet(root);
-
-                Lampa.Controller.collectionFocus(
-                    selectors.length ? selectors.eq(0)[0] : false,
-                    root
+            function (xhr, status) {
+                console.error(
+                    '[AniStar] Request error:',
+                    xhr,
+                    status
                 );
 
-            },
-
-            left: function () {
-
-                if (
-                    typeof Navigator !== 'undefined' &&
-                    Navigator.canmove &&
-                    Navigator.canmove('left')
-                ) {
-
-                    Navigator.move('left');
-
+                if (typeof error === 'function') {
+                    error(xhr, status);
                 }
-                else {
-
-                    Lampa.Controller.toggle('menu');
-
-                }
-
             },
 
-            up: function () {
+            false,
 
-                if (
-                    typeof Navigator !== 'undefined' &&
-                    Navigator.canmove &&
-                    Navigator.canmove('up')
-                ) {
-
-                    Navigator.move('up');
-
-                }
-                else {
-
-                    Lampa.Controller.toggle('head');
-
-                }
-
-            },
-
-            down: function () {
-                moveNavigator('down');
-            },
-
-            right: function () {
-                moveNavigator('right');
-            },
-
-            back: function () {
-                Lampa.Activity.backward();
+            {
+                dataType: 'text',
+                timeout: 20000
             }
 
-        };
+        );
 
-    }
+    };
+
+
+    /*
+     * Отмена активных запросов.
+     *
+     * Здесь clear вызывается правильно:
+     * через экземпляр request.
+     */
+    this.clear = function () {
+
+        if (request && typeof request.clear === 'function') {
+            request.clear();
+        }
+
+    };
+
+}
+
 
 
     /* =========================================================
@@ -684,79 +598,42 @@
         var network = new AniStarNetwork();
 
         var destroyed = false;
+
         var loading = false;
-        var started = false;
 
         var pageUrl = object.page_url || BASE_URL;
+
         var nextUrl = '';
+
+        var loaded = {};
 
         var items = [];
 
-        var loadedItems = {};
-        var loadedPages = {};
 
+        /*
+         * Основной контейнер.
+         */
         var root = $(
             '<div class="anistar-screen"></div>'
         );
 
+
+        /*
+         * Сетка карточек.
+         */
         var grid = $(
             '<div class="anistar-grid"></div>'
         );
 
-        var loadingElement = $(
-            '<div class="anistar-loading">Загрузка AniStar...</div>'
-        );
 
         root.append(grid);
-        root.append(loadingElement);
 
 
         /* =====================================================
-         * 7.1 ОБНОВЛЕНИЕ КОЛЛЕКЦИИ ФОКУСА
+         * 8. ОТРИСОВКА КАРТОЧКИ
          * ===================================================== */
 
-        function refreshCollection(focusFirst) {
-
-            if (!started || destroyed) return;
-
-            var current = root.find('.selector.focus').first();
-
-            var selectors = root.find('.selector');
-
-            Lampa.Controller.collectionSet(root);
-
-            if (
-                focusFirst ||
-                !current.length
-            ) {
-
-                if (selectors.length) {
-
-                    Lampa.Controller.collectionFocus(
-                        selectors.eq(0)[0],
-                        root
-                    );
-
-                }
-
-            }
-            else {
-
-                Lampa.Controller.collectionFocus(
-                    current[0],
-                    root
-                );
-
-            }
-
-        }
-
-
-        /* =====================================================
-         * 7.2 СОЗДАНИЕ КАРТОЧКИ
-         * ===================================================== */
-
-        function createCard(item, index) {
+        function createCard(item) {
 
             var card = $(
                 '<div class="selector anistar-card"></div>'
@@ -771,26 +648,29 @@
             );
 
 
+            /*
+             * Добавляем постер.
+             */
             if (item.poster) {
 
                 var img = $('<img loading="lazy">');
 
                 img.attr('src', item.poster);
+
                 img.attr('alt', item.title);
 
                 img.on('error', function () {
-
                     $(this).remove();
 
                     poster.append(
                         '<div class="anistar-card__placeholder">▶</div>'
                     );
-
                 });
 
                 poster.append(img);
 
             }
+
             else {
 
                 poster.append(
@@ -800,14 +680,18 @@
             }
 
 
+            // Название.
             title.text(item.title);
 
+
             card.append(poster);
+
             card.append(title);
 
 
-            // Открытие тайтла по OK.
-
+            /*
+             * Открытие страницы тайтла по OK на пульте.
+             */
             card.on('hover:enter', function () {
 
                 Lampa.Activity.push({
@@ -816,7 +700,7 @@
 
                     title: item.title,
 
-                    component: DETAIL_ID,
+                    component: 'anistar_detail',
 
                     page: 1,
 
@@ -827,109 +711,107 @@
             });
 
 
-            // Автоматическая подгрузка при приближении к концу.
-
-            card.on('hover:focus', function () {
-
-                checkAutoLoad(index);
-
-            });
-
-
             return card;
 
         }
 
 
         /* =====================================================
-         * 7.3 ОТОБРАЖЕНИЕ КАРТОЧЕК
+         * 9. ЗАПОЛНЕНИЕ СЕТКИ
          * ===================================================== */
 
         function renderItems(list) {
 
-            var added = 0;
-
             list.forEach(function (item) {
 
-                if (!item.url) return;
+                if (!item.url || loaded[item.url]) return;
 
-                if (loadedItems[item.url]) return;
-
-                loadedItems[item.url] = true;
-
-                var index = items.length;
+                loaded[item.url] = true;
 
                 items.push(item);
 
-                grid.append(
-                    createCard(item, index)
-                );
-
-                added++;
+                var card = createCard(item);
+                card.on('hover:focus', function () {
+                    maybeLoadNext(this);
+                });
+                grid.append(card);
 
             });
 
-            console.log(
-                '[AniStar] Added cards:',
-                added
-            );
-
-            return added;
-
         }
 
 
         /* =====================================================
-         * 7.4 АВТОПОДГРУЗКА
+         * 10. АВТОПОДГРУЗКА И УПРАВЛЕНИЕ ПУЛЬТОМ
          * ===================================================== */
 
-        function checkAutoLoad(index) {
+        var controller = null;
+        var lastAutoLoadCount = -1;
 
-            if (destroyed || loading || !nextUrl) return;
-
-            var remaining = items.length - index - 1;
-
-            if (remaining <= PREFETCH_COUNT) {
-
-                loadNextPage();
-
+        function refreshCollection(keepFocus) {
+            if (!window.Lampa || !Lampa.Controller) return;
+            try {
+                var current = keepFocus ? root.find('.anistar-card.focus').first() : $();
+                if (!current.length) current = root.find('.anistar-card').first();
+                Lampa.Controller.collectionSet(root);
+                if (current.length) {
+                    Lampa.Controller.collectionFocus(current[0], root);
+                }
+            } catch (e) {
+                console.warn('[AniStar] Collection refresh:', e);
             }
-
         }
 
-
-        function loadNextPage() {
-
+        function maybeLoadNext(card) {
             if (!nextUrl || loading || destroyed) return;
+            var index = grid.children('.anistar-card').index(card);
+            // Начинаем подгружать, когда фокус дошёл до последних 12 карточек.
+            if (index >= 0 && index >= grid.children('.anistar-card').length - 12 &&
+                lastAutoLoadCount !== items.length) {
+                lastAutoLoadCount = items.length;
+                load(nextUrl);
+            }
+        }
 
-            var url = nextUrl;
+        function createController() {
+            if (!window.Lampa || !Lampa.Controller) return;
 
-            if (loadedPages[normalizeUrl(url)]) return;
+            controller = {
+                link: this,
+                toggle: function () {
+                    try {
+                        Lampa.Controller.collectionSet(root);
+                        var first = root.find('.anistar-card').first();
+                        if (first.length) Lampa.Controller.collectionFocus(first[0], root);
+                    } catch (e) {}
+                },
+                left: function () {
+                    if (Lampa.Navigator && Lampa.Navigator.canmove('left')) Lampa.Navigator.move('left');
+                    else Lampa.Controller.toggle('menu');
+                },
+                up: function () {
+                    if (Lampa.Navigator && Lampa.Navigator.canmove('up')) Lampa.Navigator.move('up');
+                    else Lampa.Controller.toggle('head');
+                },
+                down: function () { if (Lampa.Navigator) Lampa.Navigator.move('down'); },
+                right: function () { if (Lampa.Navigator) Lampa.Navigator.move('right'); },
+                back: function () { Lampa.Activity.backward(); }
+            };
 
-            load(url);
-
+            Lampa.Controller.add('content', controller);
+            Lampa.Controller.toggle('content');
         }
 
 
         /* =====================================================
-         * 7.5 ЗАГРУЗКА СТРАНИЦЫ
+         * 11. ЗАГРУЗКА КАТАЛОГА
          * ===================================================== */
 
         function load(url) {
 
             if (loading || destroyed || !url) return;
 
-            var normalized = normalizeUrl(url);
-
-            if (loadedPages[normalized]) return;
-
-            loadedPages[normalized] = true;
-
             loading = true;
-
-            loadingElement
-                .text('Загрузка...')
-                .show();
 
             self.activity.loader(true);
 
@@ -937,6 +819,7 @@
             network.get(
 
                 url,
+
 
                 function (html) {
 
@@ -946,6 +829,7 @@
 
                     self.activity.loader(false);
 
+
                     try {
 
                         var parsed = parseCatalog(
@@ -954,17 +838,11 @@
                         );
 
 
-                        if (
-                            !parsed.items.length &&
-                            !items.length
-                        ) {
-
-                            loadingElement
-                                .text('Не удалось найти карточки AniStar.')
-                                .show();
+                        if (!parsed.items.length && !items.length) {
 
                             Lampa.Noty.show(
-                                'HTML получен, но карточки не найдены. Проверьте разметку сайта.'
+                                'HTML получен, но тайтлы не найдены. ' +
+                                'Необходимо проверить разметку AniStar.'
                             );
 
                             return;
@@ -972,56 +850,39 @@
                         }
 
 
+                        // Отображаем найденные карточки.
                         renderItems(parsed.items);
 
+
+                        // Сохраняем URL следующей страницы.
                         nextUrl = parsed.next || '';
 
-
-                        if (!nextUrl) {
-
-                            loadingElement
-                                .text('Больше страниц нет.')
-                                .show();
-
-                        }
-                        else {
-
-                            loadingElement.hide();
-
-                        }
+                        // Обновляем коллекцию Lampa после добавления карточек.
+                        refreshCollection(true);
 
 
+                        /*
+                         * После загрузки возвращаем фокус
+                         * на первую карточку, если он отсутствует.
+                         */
                         console.log(
-                            '[AniStar] Page loaded:',
-                            url
+                            '[AniStar] Loaded:',
+                            parsed.items.length
                         );
 
                         console.log(
-                            '[AniStar] Total cards:',
+                            '[AniStar] Total:',
                             items.length
                         );
 
-                        console.log(
-                            '[AniStar] Next page:',
-                            nextUrl
-                        );
-
-
-                        // Обновляем коллекцию после добавления карточек.
-
-                        refreshCollection(false);
-
                     }
+
                     catch (e) {
 
                         console.error(
                             '[AniStar] Parse error:',
                             e
                         );
-
-                        loadingElement
-                            .text('Ошибка обработки каталога.')
-                            .show();
 
                         Lampa.Noty.show(
                             'Ошибка обработки каталога AniStar'
@@ -1038,13 +899,7 @@
 
                     loading = false;
 
-                    delete loadedPages[normalized];
-
                     self.activity.loader(false);
-
-                    loadingElement
-                        .text('Не удалось загрузить AniStar.')
-                        .show();
 
                     console.error(
                         '[AniStar] Network error:',
@@ -1052,7 +907,8 @@
                     );
 
                     Lampa.Noty.show(
-                        'Не удалось загрузить AniStar. Проверь подключение или CORS.'
+                        'Не удалось загрузить AniStar. ' +
+                        'Проверь подключение или CORS.'
                     );
 
                 }
@@ -1063,7 +919,7 @@
 
 
         /* =====================================================
-         * 7.6 ЖИЗНЕННЫЙ ЦИКЛ
+         * 12. ЖИЗНЕННЫЙ ЦИКЛ КАТАЛОГА
          * ===================================================== */
 
         this.create = function () {
@@ -1076,46 +932,25 @@
 
 
         this.render = function () {
-
             return root;
-
         };
 
 
         this.start = function () {
-
-            started = true;
-
-            console.log(
-                '[AniStar] Starting controller'
-            );
-
-            var controller = createController(
-                self,
-                root
-            );
-
-            Lampa.Controller.add(
-                'content',
-                controller
-            );
-
-            Lampa.Controller.toggle('content');
-
+            createController.call(this);
         };
 
 
-        this.stop = function () {
-
-            started = false;
-
-        };
+        this.stop = function () {};
 
 
         this.destroy = function () {
 
             destroyed = true;
-            started = false;
+
+            if (window.Lampa && Lampa.Controller) {
+                try { Lampa.Controller.remove('content'); } catch (e) {}
+            }
 
             network.clear();
 
@@ -1136,47 +971,49 @@
 
 
     /* =========================================================
-     * 8. ЭКРАН ИНФОРМАЦИИ О ТАЙТЛЕ
-     * ========================================================= */
+     * 13. ЭКРАН ИНФОРМАЦИИ О ТАЙТЛЕ
+     * =========================================================
+     *
+     * На данном этапе открываем страницу тайтла
+     * внутри каталога и показываем его постер и ссылку.
+     *
+     * Извлечение описания и списка серий будет следующим
+     * этапом разработки.
+     */
 
     function AniStarDetail(object) {
 
         var self = this;
 
+        var network = new AniStarNetwork();
+
         var item = object.item || {};
+
+        var destroyed = false;
 
         var root = $(
             '<div class="anistar-screen"></div>'
         );
 
+
         var detail = $(
             '<div class="anistar-detail"></div>'
         );
+
 
         var poster = $(
             '<div class="anistar-detail__poster"></div>'
         );
 
+
         var info = $(
             '<div class="anistar-detail__info"></div>'
         );
 
+
         var title = $(
             '<div class="anistar-detail__title"></div>'
         );
-
-        var description = $(
-            '<div class="anistar-detail__description">' +
-            'Страница аниме на AniStar' +
-            '</div>'
-        );
-
-        var open = $(
-            '<div class="selector anistar-detail__link">' +
-            'Показать ссылку AniStar' +
-            '</div>'
-        );
-
 
         title.text(item.title || 'Аниме');
 
@@ -1192,9 +1029,32 @@
         }
 
 
+        var description = $(
+            '<div class="anistar-detail__description">' +
+            'Страница аниме на AniStar' +
+            '</div>'
+        );
+
+
+        /*
+         * Кнопка открытия страницы источника.
+         *
+         * Пока список серий ещё не извлекается.
+         */
+        var open = $(
+            '<div class="selector anistar-detail__link">' +
+            'Открыть страницу AniStar' +
+            '</div>'
+        );
+
+
         open.on('hover:enter', function () {
 
             if (!item.url) return;
+
+            if (window.Lampa && Lampa.Android) {
+                // Внешний переход не выполняем автоматически.
+            }
 
             Lampa.Noty.show(
                 'Ссылка на страницу: ' + item.url
@@ -1204,10 +1064,14 @@
 
 
         info.append(title);
+
         info.append(description);
+
         info.append(open);
 
+
         detail.append(poster);
+
         detail.append(info);
 
         root.append(detail);
@@ -1227,21 +1091,7 @@
         };
 
 
-        this.start = function () {
-
-            var controller = createController(
-                self,
-                root
-            );
-
-            Lampa.Controller.add(
-                'content',
-                controller
-            );
-
-            Lampa.Controller.toggle('content');
-
-        };
+        this.start = function () {};
 
 
         this.stop = function () {};
@@ -1249,12 +1099,18 @@
 
         this.destroy = function () {
 
+            destroyed = true;
+
+            network.clear();
+
             root.remove();
 
         };
 
 
         this.empty = function () {
+
+            self.activity.loader(false);
 
             self.activity.empty();
 
@@ -1264,7 +1120,7 @@
 
 
     /* =========================================================
-     * 9. ПУНКТ ЛЕВОГО МЕНЮ
+     * 14. ПУНКТ ЛЕВОГО МЕНЮ
      * ========================================================= */
 
     function addMenu() {
@@ -1282,6 +1138,7 @@
         }
 
 
+        // Защита от повторного добавления.
         if (menu.find('.anistar-menu-item').length) {
             return;
         }
@@ -1333,7 +1190,7 @@
 
 
     /* =========================================================
-     * 10. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
+     * 15. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
      * ========================================================= */
 
     function init() {
@@ -1342,8 +1199,7 @@
             !window.Lampa ||
             !Lampa.Component ||
             !Lampa.Activity ||
-            !Lampa.Reguest ||
-            !Lampa.Controller
+            !Lampa.Reguest
         ) {
 
             console.error(
@@ -1355,9 +1211,13 @@
         }
 
 
+        // Добавляем CSS.
         addStyles();
 
 
+        /*
+         * Регистрируем каталог.
+         */
         if (!Lampa.Component.get(PLUGIN_ID)) {
 
             Lampa.Component.add(
@@ -1368,16 +1228,20 @@
         }
 
 
-        if (!Lampa.Component.get(DETAIL_ID)) {
+        /*
+         * Регистрируем страницу тайтла.
+         */
+        if (!Lampa.Component.get('anistar_detail')) {
 
             Lampa.Component.add(
-                DETAIL_ID,
+                'anistar_detail',
                 AniStarDetail
             );
 
         }
 
 
+        // Добавляем пункт меню.
         addMenu();
 
 
@@ -1390,7 +1254,7 @@
 
 
     /* =========================================================
-     * 11. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
+     * 16. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
      * ========================================================= */
 
     if (window.appready) {
@@ -1398,6 +1262,7 @@
         init();
 
     }
+
     else {
 
         Lampa.Listener.follow(
@@ -1406,7 +1271,9 @@
             function (event) {
 
                 if (event.type === 'ready') {
+
                     init();
+
                 }
 
             }
