@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.9
+ * Версия: 0.4.11
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0410_ready';
+    var READY_FLAG = 'anistar_0411_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.10';
+    var PLUGIN_VERSION = '0.4.11';
 
     var PROXY_URL = '';
 
@@ -1201,7 +1201,8 @@ function AniStarNetwork() {
         description.text('Просмотр доступен через Плеер AS.');
         status.text('Нажми «Смотреть», чтобы загрузить список серий.');
 
-        watch.on('hover:enter', function () {
+        // Поддерживаем событие пульта Lampa и обычный click.
+        watch.on('hover:enter click', function () {
             loadEpisodes();
         });
 
@@ -1273,6 +1274,19 @@ function AniStarNetwork() {
                             candidates.push(attrMatch[2]);
                         }
                     }
+                }
+            }
+
+            /*
+             * Последний резерв: адрес AS может находиться в HTML/скрипте,
+             * не попадая в атрибут iframe после разбора DOM.
+             */
+            if (!candidates.length) {
+                var playerPattern = /[^"'<>\\s]*videoas_p2p_new\\.php[^"'<>\\s]*/ig;
+                var playerMatch;
+
+                while ((playerMatch = playerPattern.exec(html))) {
+                    candidates.push(playerMatch[0]);
                 }
             }
 
@@ -1420,7 +1434,7 @@ function AniStarNetwork() {
 
 
         this.create = function () {
-            loadEpisodes();
+            // Серии загружаются только после нажатия «Смотреть».
             return this.render();
         };
 
