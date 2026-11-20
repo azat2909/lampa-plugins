@@ -1071,7 +1071,7 @@ function AniStarNetwork() {
      * использует в JS-массиве потоков.
      */
     function decodePlayerText(value) {
-        var text = String(value || '').replace(/\\\//g, '/');
+        var text = String(value || '').split('\\/').join('/');
         var node = document.createElement('textarea');
         node.innerHTML = text;
         return node.value;
