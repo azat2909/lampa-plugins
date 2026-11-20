@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.37
+ * Версия: 0.4.38
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0437_ready';
+    var READY_FLAG = 'anistar_0438_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.37';
+    var PLUGIN_VERSION = '0.4.38';
 
     var PROXY_URL = '';
 
@@ -309,28 +309,30 @@
     function getPoster(image, base) {
         if (!image) return '';
 
-        var src =
-            image.getAttribute('data-src') ||
-            image.getAttribute('data-original') ||
-            image.getAttribute('data-lazy-src') ||
-            image.getAttribute('data-original-src') ||
-            image.getAttribute('src') ||
-            '';
+        var src = '';
+        var attrs = ['data-src', 'data-original', 'data-lazy-src',
+            'data-original-src', 'data-image', 'data-poster', 'src'];
 
-        if (!src) {
-            var srcset =
-                image.getAttribute('data-srcset') ||
-                image.getAttribute('srcset') ||
-                '';
-
-            if (srcset) {
-                src = srcset.split(',')[0]
-                    .trim()
-                    .split(/\s+/)[0];
-            }
+        for (var i = 0; i < attrs.length && !src; i++) {
+            src = image.getAttribute(attrs[i]) || '';
         }
 
-        return absoluteUrl(src, base);
+        if (!src) {
+            var srcset = image.getAttribute('data-srcset') ||
+                image.getAttribute('srcset') || '';
+            if (srcset) src = srcset.split(',')[0].trim().split(/\s+/)[0];
+        }
+
+        if (!src && image.getAttribute) {
+            var style = image.getAttribute('style') || '';
+            var background = style.match(/background(?:-image)?\s*:[^;]*url\((['"]?)(.*?)\1\)/i);
+            if (background) src = background[2];
+        }
+
+        src = String(src || '').trim().replace(/^['"]|['"]$/g, '');
+        if (!src || /^data:image\//i.test(src)) return '';
+
+        return absoluteUrl(src.replace(/&amp;/g, '&'), base);
     }
 
 
@@ -405,10 +407,32 @@
             /*
              * Ищем изображение.
              */
-            var image =
-                link.querySelector('img') ||
-                (card && card.querySelector('img'));
+            // Ищем обложку в ближайших родителях: в поисковой выдаче
+            // заголовок и изображение могут находиться в соседних блоках.
+            var image = null;
+            var imageNode = link;
+            var imageDepth = 0;
 
+            while (imageNode && imageDepth < 6 && !image) {
+                var imageCandidates = imageNode.querySelectorAll
+                    ? imageNode.querySelectorAll('img, [style*="background"]')
+                    : [];
+
+                for (var imageIndex = 0; imageIndex < imageCandidates.length; imageIndex++) {
+                    if (getPoster(imageCandidates[imageIndex], pageUrl)) {
+                        image = imageCandidates[imageIndex];
+                        break;
+                    }
+                }
+
+                imageNode = imageNode.parentElement;
+                imageDepth++;
+            }
+
+            if (!image && card) {
+                var pictureSource = card.querySelector('picture source[srcset], source[srcset]');
+                if (pictureSource) image = pictureSource;
+            }
 
             if (
                 (!title || title.length < 2) &&
@@ -1568,7 +1592,11 @@ function AniStarCatalog(object) {
                     frame.getAttribute('src'),
                     frame.getAttribute('data-src'),
                     frame.getAttribute('data-lazy-src'),
-                    frame.getAttribute('data-original')
+                    frame.getAttribute('data-original'),
+                    frame.getAttribute('data-iframe'),
+                    frame.getAttribute('data-url'),
+                    frame.getAttribute('data-link'),
+                    frame.getAttribute('data-player')
                 ];
 
                 attrs.forEach(function (value) {
@@ -1589,7 +1617,7 @@ function AniStarCatalog(object) {
 
                 while ((iframeMatch = iframePattern.exec(html))) {
                     var tag = iframeMatch[0];
-                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original)\s*=\s*(['"])(.*?)\1/ig;
+                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original|data-iframe|data-url|data-link|data-player)\s*=\s*(['"])(.*?)\1/ig;
                     var attrMatch;
 
                     while ((attrMatch = attrPattern.exec(tag))) {
@@ -1598,6 +1626,41 @@ function AniStarCatalog(object) {
                         }
                     }
                 }
+            }
+
+            /*
+             * В некоторых публикациях адрес плеера отличается.
+             * Проверяем iframe внутри известных видеоконтейнеров,
+             * не подхватывая рекламные iframe со всей страницы.
+             */
+            if (!candidates.length) {
+                var videoFrames = doc.querySelectorAll(
+                    '.video_as iframe, #vid_2 iframe, .video-box iframe, ' +
+                    '.video-container iframe, .video-block iframe, ' +
+                    '.player iframe, #player iframe, #video iframe, ' +
+                    '.tabs-box iframe, .tabs-content iframe'
+                );
+
+                Array.prototype.forEach.call(videoFrames, function (frame) {
+                    var attrs = [
+                        frame.getAttribute('src'),
+                        frame.getAttribute('data-src'),
+                        frame.getAttribute('data-lazy-src'),
+                        frame.getAttribute('data-original'),
+                        frame.getAttribute('data-iframe'),
+                        frame.getAttribute('data-url'),
+                        frame.getAttribute('data-link'),
+                        frame.getAttribute('data-player')
+                    ];
+
+                    attrs.forEach(function (value) {
+                        if (!value) return;
+                        var candidate = absoluteUrl(value, item.url);
+                        if (!candidate || /^(?:about:blank|javascript:)/i.test(candidate)) return;
+                        if (/youtube|doubleclick|googlesyndication|yandex\.ru\/metrika/i.test(candidate)) return;
+                        candidates.push(value);
+                    });
+                });
             }
 
             /*
@@ -2062,6 +2125,11 @@ function AniStarCatalog(object) {
             onSelect: function (event, done) {
                 var selected = event && (event.item_data || event.element) || {};
 
+                // Закрываем глобальный поиск до открытия новой Activity:
+                // done() переключает Controller на content и не должен
+                // перезаписывать контроллер только что открытого экрана.
+                if (typeof done === 'function') done();
+
                 Lampa.Activity.push({
                     url: '',
                     title: selected.title || selected.name || 'AniStar',
@@ -2075,8 +2143,6 @@ function AniStarCatalog(object) {
                         poster: selected.anistar_poster || selected.poster || selected.poster_path || ''
                     }
                 });
-
-                if (typeof done === 'function') done();
             }
         });
 
