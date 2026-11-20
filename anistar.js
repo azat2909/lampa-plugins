@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.6
+ * Версия: 0.4.7
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_046_ready';
+    var READY_FLAG = 'anistar_047_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.6';
+    var PLUGIN_VERSION = '0.4.7';
 
     var PROXY_URL = '';
 
@@ -609,6 +609,10 @@ function AniStarNetwork() {
 
         var network = new AniStarNetwork();
 
+        // Штатный скролл Lampa: на Android TV он прокручивает контент
+        // через translate3d, а не через window.scrollIntoView().
+        var scroll = new Lampa.Scroll({ mask: true, over: true });
+
         var destroyed = false;
 
         var loading = false;
@@ -639,6 +643,7 @@ function AniStarNetwork() {
 
 
         root.append(grid);
+        scroll.append(root);
 
 
         /* =====================================================
@@ -768,40 +773,14 @@ function AniStarNetwork() {
             if (!card) return;
 
             try {
-                if (typeof card.scrollIntoView === 'function') {
-                    card.scrollIntoView({
-                        block: 'nearest',
-                        inline: 'nearest',
-                        behavior: 'auto'
-                    });
-                    return;
+                // Lampa.Scroll сам рассчитывает позицию карточки внутри
+                // .scroll__body и на TV двигает её через transform.
+                if (scroll && typeof scroll.update === 'function') {
+                    scroll.update(card);
                 }
-            } catch (e) {}
-
-            // Запасной вариант для старых Android WebView.
-            try {
-                var node = card;
-                while (node && node !== document.body && node !== document.documentElement) {
-                    var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
-                    var overflowY = style ? style.overflowY : '';
-                    if (node.scrollHeight > node.clientHeight &&
-                        (overflowY === 'auto' || overflowY === 'scroll')) {
-                        var cardRect = card.getBoundingClientRect();
-                        var nodeRect = node.getBoundingClientRect();
-
-                        if (cardRect.bottom > nodeRect.bottom) {
-                            node.scrollTop += cardRect.bottom - nodeRect.bottom;
-                        } else if (cardRect.top < nodeRect.top) {
-                            node.scrollTop -= nodeRect.top - cardRect.top;
-                        }
-                        return;
-                    }
-                    node = node.parentElement;
-                }
-
-                // Последний fallback — прокрутка окна.
-                card.scrollIntoView(false);
-            } catch (e) {}
+            } catch (e) {
+                console.warn('[AniStar] Scroll update:', e);
+            }
         }
 
         function refreshCollection(keepFocus) {
@@ -1014,7 +993,7 @@ function AniStarNetwork() {
 
 
         this.render = function () {
-            return root;
+            return scroll.render();
         };
 
 
@@ -1036,6 +1015,7 @@ function AniStarNetwork() {
 
             network.clear();
 
+            scroll.destroy();
             root.remove();
 
         };
