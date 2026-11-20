@@ -1182,12 +1182,17 @@ function AniStarNetwork() {
         var info = $('<div class="anistar-detail__info"></div>');
         var title = $('<div class="anistar-detail__title"></div>');
         var description = $('<div class="anistar-detail__description"></div>');
+        var watch = $('<div class="selector anistar-detail__link">Смотреть</div>');
         var status = $('<div class="anistar-detail__status"></div>');
         var episodeList = $('<div class="anistar-episodes"></div>');
 
         title.text(cleanAnimeTitle(item.title || 'Аниме'));
-        description.text('Выбери серию для просмотра.');
-        status.text('Загружаем список серий из Плеера AS…');
+        description.text('Просмотр доступен через Плеер AS.');
+        status.text('Нажми «Смотреть», чтобы загрузить список серий.');
+
+        watch.on('hover:enter', function () {
+            loadEpisodes();
+        });
 
         if (item.poster) {
             var image = $('<img>');
@@ -1197,6 +1202,7 @@ function AniStarNetwork() {
 
         info.append(title);
         info.append(description);
+        info.append(watch);
         info.append(status);
         info.append(episodeList);
         detail.append(poster);
@@ -1373,7 +1379,14 @@ function AniStarNetwork() {
             return root;
         };
 
-        this.start = function () {};
+        this.start = function () {
+            if (window.Lampa && Lampa.Controller) {
+                try {
+                    Lampa.Controller.collectionSet(info);
+                    Lampa.Controller.collectionFocus(watch[0], info);
+                } catch (e) {}
+            }
+        };
 
         this.stop = function () {};
 
