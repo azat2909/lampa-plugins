@@ -2,23 +2,22 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.3.0 (исправленная)
+ * Версия: 0.3.0 — исправленная
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
  * Платформа: Lampa 3.x / Android TV
  *
- * Исправления:
- * - Исправлена инициализация плагина.
- * - Исправлена проверка адресов аниме.
- * - Улучшен поиск названий и постеров.
- * - Исправлена загрузка каталога.
- * - Добавлена безопасная обработка Activity.
- * - Исправлена пагинация.
+ * Исправлено:
+ * - Используется Lampa.Request.get().
+ * - Флаг запуска устанавливается после инициализации.
+ * - Улучшен поиск карточек, названий и постеров.
+ * - Исправлена обработка ошибок и тайм-аутов.
  * - Добавлена защита от повторной загрузки.
- * - Улучшена навигация пультом.
+ * - Исправлена работа Activity.
+ * - Добавлена обработка пагинации.
  *
- * Используется штатная Activity Lampa.
+ * Воспроизведение видео через плеер Lampa пока не реализовано.
  * ============================================================
  */
 
@@ -31,20 +30,24 @@
 
     var PLUGIN_ID = 'anistar_catalog';
     var DETAIL_ID = 'anistar_detail';
-    var READY_FLAG = 'anistar_030_fixed_ready';
+    var READY_FLAG = 'anistar_030_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
     var PLUGIN_VERSION = '0.3.0';
 
-    // Оставить пустым, если прокси не используется.
+    // Пустое значение — запрос напрямую к AniStar.
+    // Прокси можно добавить позднее, если потребуется.
     var PROXY_URL = '';
+
+    // Тайм-аут ожидания ответа, миллисекунды.
+    var REQUEST_TIMEOUT = 20000;
 
     if (window[READY_FLAG]) return;
 
     /* =========================================================
-     * 2. CSS
+     * 2. СТИЛИ
      * ========================================================= */
 
     var css = [
@@ -56,7 +59,7 @@
 
         '.anistar-grid {',
         ' display:grid;',
-        ' grid-template-columns:repeat(7,minmax(0,1fr));',
+        ' grid-template-columns:repeat(auto-fill,minmax(135px,1fr));',
         ' gap:1.5em 1em;',
         ' width:100%;',
         ' align-items:start;',
@@ -107,7 +110,7 @@
         '}',
 
         '.anistar-card.focus {',
-        ' transform:scale(1.04);',
+        ' transform:scale(1.035);',
         ' z-index:2;',
         '}',
 
@@ -169,12 +172,6 @@
         ' width:max-content;',
         '}',
 
-        '@media (max-width:1200px) {',
-        ' .anistar-grid {',
-        '  grid-template-columns:repeat(5,minmax(0,1fr));',
-        ' }',
-        '}',
-
         '@media (max-width:700px) {',
         ' .anistar-screen { padding:0 1em 2em; }',
         ' .anistar-grid {',
@@ -185,6 +182,12 @@
         ' .anistar-detail__poster {',
         '  max-width:70%;',
         '  width:180px;',
+        ' }',
+        '}',
+
+        '@media (min-width:1200px) {',
+        ' .anistar-grid {',
+        '  grid-template-columns:repeat(7,minmax(0,1fr));',
         ' }',
         '}'
     ].join('\n');
@@ -242,13 +245,8 @@
     }
 
     /*
-     * Проверяем адрес страницы аниме.
-     *
-     * У AniStar адреса имеют вид:
-     * /10938-nazvanie-anime.html
-     *
-     * Проверяем только домен и расширение .html,
-     * чтобы не зависеть от длины и символов названия.
+     * Формат страницы публикации AniStar:
+     * /12345-nazvanie-anime.html
      */
     function isAnimeUrl(url) {
         try {
@@ -301,16 +299,12 @@
 
     function findCard(link) {
         var card = link.closest(
-            '.shortstory, .dle-news, .news, .item, ' +
+            '.shortstory, .base, .news, .item, ' +
             '.anime-item, .movie-item, article, li'
         );
 
         if (card) return card;
 
-        /*
-         * Если классы сайта изменились, поднимаемся
-         * на несколько уровней вверх и ищем изображение.
-         */
         var parent = link;
 
         for (var i = 0; i < 4; i++) {
@@ -327,7 +321,7 @@
     }
 
     /* =========================================================
-     * 6. ПАРСЕР КАТАЛОГА
+     * 6. ПАРСИНГ КАТАЛОГА
      * ========================================================= */
 
     function parseCatalog(html, pageUrl) {
@@ -355,17 +349,11 @@
 
             var card = findCard(link);
 
-            /*
-             * Сначала ищем заголовок в ссылке.
-             */
             var title = cleanText(
                 link.getAttribute('title') ||
                 link.textContent
             );
 
-            /*
-             * Затем ищем заголовок в контейнере карточки.
-             */
             var heading = card.querySelector(
                 'h1,h2,h3,h4,.title,.name,.shortstory-title'
             );
@@ -374,10 +362,6 @@
                 title = cleanText(heading.textContent);
             }
 
-            /*
-             * Изображение может находиться не внутри ссылки,
-             * а рядом с ней в общем контейнере.
-             */
             var image =
                 link.querySelector('img') ||
                 card.querySelector('img');
@@ -396,8 +380,6 @@
                 return;
             }
 
-            var poster = getPoster(image, pageUrl);
-
             seen[url] = true;
 
             items.push({
@@ -405,13 +387,11 @@
                 title: title,
                 name: title,
                 url: url,
-                poster: poster
+                poster: getPoster(image, pageUrl)
             });
         });
 
-        /* =====================================================
-         * ПОИСК СЛЕДУЮЩЕЙ СТРАНИЦЫ
-         * ===================================================== */
+        /* Поиск следующей страницы. */
 
         var next = '';
 
@@ -458,48 +438,36 @@
             return true;
         });
 
-        /*
-         * Дополнительная проверка пагинации:
-         * если сайт использует только числовые страницы,
-         * ищем ссылку на следующий номер страницы.
-         */
+        // Дополнительно проверяем ссылку на следующий номер страницы.
         if (!next) {
-            var currentPage = 1;
-
             var current = doc.querySelector(
                 '.navigation .current, ' +
                 '.pagination .current, ' +
                 '.pages .current'
             );
 
-            if (current) {
-                currentPage = parseInt(
-                    cleanText(current.textContent),
+            var currentPage = current
+                ? parseInt(cleanText(current.textContent), 10) || 1
+                : 1;
+
+            Array.prototype.some.call(pagination, function (link) {
+                var number = parseInt(
+                    cleanText(link.textContent),
                     10
-                ) || 1;
-            }
+                );
 
-            Array.prototype.some.call(
-                pagination,
-                function (link) {
-                    var number = parseInt(
-                        cleanText(link.textContent),
-                        10
-                    );
+                if (number !== currentPage + 1) return false;
 
-                    if (number !== currentPage + 1) return false;
+                var href = absoluteUrl(
+                    link.getAttribute('href'),
+                    pageUrl
+                );
 
-                    var href = absoluteUrl(
-                        link.getAttribute('href'),
-                        pageUrl
-                    );
+                if (!href || !isAniStarUrl(href)) return false;
 
-                    if (!href || !isAniStarUrl(href)) return false;
-
-                    next = href;
-                    return true;
-                }
-            );
+                next = href;
+                return true;
+            });
         }
 
         return {
@@ -513,35 +481,96 @@
      * ========================================================= */
 
     function AniStarNetwork() {
-        var request = new Lampa.Reguest();
+        var aborted = false;
+        var timer = null;
 
         this.get = function (url, success, error) {
+            aborted = false;
+
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+
             var target = PROXY_URL
                 ? PROXY_URL + encodeURIComponent(url)
                 : url;
 
-            try {
-                request.get(
-                    target,
-                    success,
-                    error
-                );
-            } catch (e) {
-                console.error('[AniStar] Request error:', e);
+            /*
+             * В документации Lampa указан вызов:
+             * Lampa.Request.get(url, callback).
+             *
+             * Не передаём неподтверждённый третий аргумент.
+             */
+            if (
+                !Lampa.Request ||
+                typeof Lampa.Request.get !== 'function'
+            ) {
+                if (error) {
+                    error(new Error('Lampa.Request.get недоступен'));
+                }
+                return;
+            }
 
-                if (error) error(e);
+            var completed = false;
+
+            function finishError(err) {
+                if (completed || aborted) return;
+
+                completed = true;
+
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+
+                if (error) error(err);
+            }
+
+            function finishSuccess(data) {
+                if (completed || aborted) return;
+
+                if (data === undefined || data === null || data === '') {
+                    finishError(new Error('Пустой ответ сервера'));
+                    return;
+                }
+
+                completed = true;
+
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+
+                if (success) success(data);
+            }
+
+            // Если callback не пришёл, завершаем ожидание по тайм-ауту.
+            timer = setTimeout(function () {
+                finishError(
+                    new Error('Тайм-аут ожидания ответа AniStar')
+                );
+            }, REQUEST_TIMEOUT);
+
+            try {
+                Lampa.Request.get(target, finishSuccess);
+            } catch (e) {
+                finishError(e);
             }
         };
 
         this.clear = function () {
-            if (request && typeof request.clear === 'function') {
-                request.clear();
+            aborted = true;
+
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
             }
         };
     }
 
     /* =========================================================
-     * 8. БЕЗОПАСНАЯ РАБОТА С ACTIVITY
+     * 8. ВСПОМОГАТЕЛЬНАЯ РАБОТА С ACTIVITY
      * ========================================================= */
 
     function activityLoader(component, state) {
@@ -583,22 +612,19 @@
         var items = [];
 
         var root = $('<div class="anistar-screen"></div>');
-
         var message = $('<div class="anistar-message"></div>');
         var grid = $('<div class="anistar-grid"></div>');
 
         var more = $(
-            '<div class="selector anistar-more">' +
-            'Загрузить ещё' +
-            '</div>'
+            '<div class="selector anistar-more">Загрузить ещё</div>'
         );
 
         root.append(message);
         root.append(grid);
         root.append(more);
 
-        more.hide();
         message.hide();
+        more.hide();
 
         function showMessage(text) {
             message.text(text);
@@ -609,22 +635,12 @@
             message.hide();
         }
 
-        /* =====================================================
-         * СОЗДАНИЕ КАРТОЧКИ
-         * ===================================================== */
+        /* Создание карточки. */
 
         function createCard(item) {
-            var card = $(
-                '<div class="selector anistar-card"></div>'
-            );
-
-            var poster = $(
-                '<div class="anistar-card__poster"></div>'
-            );
-
-            var title = $(
-                '<div class="anistar-card__title"></div>'
-            );
+            var card = $('<div class="selector anistar-card"></div>');
+            var poster = $('<div class="anistar-card__poster"></div>');
+            var title = $('<div class="anistar-card__title"></div>');
 
             if (item.poster) {
                 var img = $('<img loading="lazy">');
@@ -654,9 +670,7 @@
             card.append(poster);
             card.append(title);
 
-            /*
-             * Открываем экран информации по кнопке OK.
-             */
+            // OK на пульте открывает экран тайтла.
             card.on('hover:enter', function () {
                 if (destroyed) return;
 
@@ -672,9 +686,7 @@
             return card;
         }
 
-        /* =====================================================
-         * ДОБАВЛЕНИЕ КАРТОЧЕК
-         * ===================================================== */
+        /* Добавление карточек в сетку. */
 
         function renderItems(list) {
             list.forEach(function (item) {
@@ -687,9 +699,7 @@
             });
         }
 
-        /* =====================================================
-         * ЗАГРУЗКА СТРАНИЦЫ
-         * ===================================================== */
+        /* Загрузка страницы каталога. */
 
         function load(url) {
             if (loading || destroyed || !url) return;
@@ -718,8 +728,8 @@
 
                         if (!parsed.items.length && !items.length) {
                             showMessage(
-                                'Каталог получен, но карточки не найдены. ' +
-                                'Проверьте доступность сайта и разметку.'
+                                'HTML получен, но карточки не найдены. ' +
+                                'Возможно, сайт изменил разметку.'
                             );
 
                             console.warn(
@@ -767,34 +777,29 @@
 
                     showMessage(
                         'Не удалось загрузить AniStar. ' +
-                        'Возможно, сайт блокирует запрос.'
+                        'Проверь подключение или доступность сайта.'
                     );
                 }
             );
         }
 
-        /* =====================================================
-         * ПАГИНАЦИЯ
-         * ===================================================== */
+        /* Пагинация. */
 
         more.on('hover:enter', function () {
             if (!nextUrl || loading || destroyed) return;
 
             var url = nextUrl;
 
-            // Сбрасываем адрес, чтобы исключить двойное нажатие.
+            // Сбрасываем адрес, чтобы исключить двойной запрос.
             nextUrl = '';
 
             load(url);
         });
 
-        /* =====================================================
-         * ЖИЗНЕННЫЙ ЦИКЛ
-         * ===================================================== */
+        /* Жизненный цикл компонента. */
 
         this.create = function () {
             load(pageUrl);
-
             return this.render();
         };
 
@@ -808,9 +813,7 @@
 
         this.destroy = function () {
             destroyed = true;
-
             network.clear();
-
             root.remove();
         };
 
@@ -842,7 +845,6 @@
         var info = $('<div class="anistar-detail__info"></div>');
 
         var title = $('<div class="anistar-detail__title"></div>');
-
         title.text(item.title || 'Аниме');
 
         if (item.poster) {
@@ -859,14 +861,10 @@
 
         var open = $(
             '<div class="selector anistar-detail__link">' +
-            'Открыть страницу AniStar' +
+            'Показать ссылку на AniStar' +
             '</div>'
         );
 
-        /*
-         * Пока воспроизведение видео в плеере Lampa
-         * не подключено. Кнопка показывает адрес страницы.
-         */
         open.on('hover:enter', function () {
             if (!item.url) return;
 
@@ -961,7 +959,7 @@
             !window.Lampa ||
             !Lampa.Component ||
             !Lampa.Activity ||
-            !Lampa.Reguest
+            !Lampa.Request
         ) {
             console.error(
                 '[AniStar] Необходимые API Lampa недоступны.'
@@ -973,9 +971,7 @@
         try {
             addStyles();
 
-            /*
-             * Регистрируем каталог.
-             */
+            // Регистрируем каталог.
             if (!Lampa.Component.get(PLUGIN_ID)) {
                 Lampa.Component.add(
                     PLUGIN_ID,
@@ -983,9 +979,7 @@
                 );
             }
 
-            /*
-             * Регистрируем экран тайтла.
-             */
+            // Регистрируем экран тайтла.
             if (!Lampa.Component.get(DETAIL_ID)) {
                 Lampa.Component.add(
                     DETAIL_ID,
@@ -993,23 +987,27 @@
                 );
             }
 
-            /*
-             * Добавляем пункт меню.
-             */
-            addMenu();
+            // Добавляем пункт меню.
+            var menuAdded = addMenu();
 
-            /*
-             * Флаг устанавливаем только после регистрации.
-             */
+            if (!menuAdded) {
+                console.warn(
+                    '[AniStar] Компоненты зарегистрированы, ' +
+                    'но пункт меню пока не найден.'
+                );
+            }
+
+            // Флаг ставим только после регистрации компонентов.
             window[READY_FLAG] = true;
 
             console.log(
-                '[AniStar] Initialized. Version: ' +
+                '[AniStar] Запущен. Версия:',
                 PLUGIN_VERSION
             );
 
         } catch (e) {
             console.error('[AniStar] Init error:', e);
+
             showError('Ошибка запуска плагина AniStar.');
         }
     }
