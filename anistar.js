@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.4
+ * Версия: 0.4.5
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_044_ready';
+    var READY_FLAG = 'anistar_045_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.4';
+    var PLUGIN_VERSION = '0.4.5';
 
     var PROXY_URL = '';
 
@@ -463,6 +463,16 @@
             next = (expected || numbered[0]).url;
         }
 
+        // На AniStar используется стандартный путь /anime/page/N/.
+        // Если шаблон страницы не отдал ссылку в DOM, строим адрес
+        // следующей страницы самостоятельно, не останавливая каталог.
+        if (!next) {
+            try {
+                var basePath = new URL(BASE_URL).origin + '/anime/';
+                next = basePath + 'page/' + (currentPage + 1) + '/';
+            } catch (e) {}
+        }
+
         // Резервный вариант для пагинации со стрелкой/текстом.
         if (!next) {
             Array.prototype.some.call(pagination, function (link) {
@@ -755,12 +765,9 @@ function AniStarNetwork() {
                 var current = keepFocus ? root.find('.anistar-card.focus').first() : $();
                 if (!current.length) current = root.find('.anistar-card').first();
 
-                // После добавления новых карточек Navigator должен
-                // пересобрать список selectable-элементов.
-                if (typeof Lampa.Controller.clear === 'function') {
-                    Lampa.Controller.clear();
-                }
-
+                // Обновляем коллекцию без глобального Controller.clear():
+                // clear() в разных сборках Lampa может сбросить весь контекст
+                // навигации, из-за чего пульт перестаёт управлять карточками.
                 Lampa.Controller.collectionSet(root);
 
                 if (current.length) {
