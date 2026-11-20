@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.18
+ * Версия: 0.4.19
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0418_ready';
+    var READY_FLAG = 'anistar_0419_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.18';
+    var PLUGIN_VERSION = '0.4.19';
 
     var PROXY_URL = '';
 
@@ -1652,8 +1652,9 @@ function AniStarNetwork() {
                     return;
                 }
 
-                var searchUrl = BASE_URL +
-                    'index.php?do=search&subaction=search&story=' +
+                // DLE search endpoint is at the domain root, not inside /anime/.
+                var searchUrl = new URL('/', BASE_URL).origin +
+                    '/index.php?do=search&subaction=search&story=' +
                     encodeURIComponent(query);
 
                 searchNetwork.get(searchUrl, function (html) {
