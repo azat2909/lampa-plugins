@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.45
+ * Версия: 0.4.46
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0445_ready';
+    var READY_FLAG = 'anistar_0446_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.45';
+    var PLUGIN_VERSION = '0.4.46';
 
     var PROXY_URL = '';
 
@@ -472,6 +472,25 @@
                 imageDepth++;
             }
 
+            var fullSizePoster = '';
+
+            for (var containerIndex = 0; containerIndex < imageContainers.length && !fullSizePoster; containerIndex++) {
+                var posterLinks = imageContainers[containerIndex].querySelectorAll
+                    ? imageContainers[containerIndex].querySelectorAll('a[href]')
+                    : [];
+
+                for (var posterLinkIndex = 0; posterLinkIndex < posterLinks.length; posterLinkIndex++) {
+                    var posterHref = absoluteUrl(posterLinks[posterLinkIndex].getAttribute('href'), pageUrl);
+
+                    if (!posterHref || !isAniStarUrl(posterHref)) continue;
+
+                    if (/\/uploads\/posters\/[^/]+\/original\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(posterHref)) {
+                        fullSizePoster = posterHref;
+                        break;
+                    }
+                }
+            }
+
             for (var containerIndex = 0; containerIndex < imageContainers.length && !image; containerIndex++) {
                 var imageCandidates = imageContainers[containerIndex].querySelectorAll
                     ? imageContainers[containerIndex].querySelectorAll('img, [style*="background"], picture source[srcset], source[srcset]')
@@ -520,7 +539,7 @@
 
                 url: url,
 
-                poster: getPoster(image, pageUrl)
+                poster: fullSizePoster || getPoster(image, pageUrl)
 
             });
 
