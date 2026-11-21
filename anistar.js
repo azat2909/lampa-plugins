@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.46
+ * Версия: 0.4.47
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0446_ready';
+    var READY_FLAG = 'anistar_0447_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.46';
+    var PLUGIN_VERSION = '0.4.47';
 
     var PROXY_URL = '';
 
@@ -517,7 +517,49 @@
      * 5. ПАРСЕР КАТАЛОГА
      * ========================================================= */
 
-    function parseCatalog(html, pageUrl) {
+    
+    // Строгий поиск обложки в глобальной выдаче:
+    // не поднимаемся выше контейнера одного тайтла, иначе можно
+    // случайно захватить изображение соседней карточки.
+    function getSearchResultPoster(link, animeUrl, base) {
+        var target = normalizeUrl(animeUrl);
+        var node = link;
+        var depth = 0;
+
+        while (node && depth < 6) {
+            var animeLinks = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+            var found = {};
+
+            Array.prototype.forEach.call(animeLinks, function (candidate) {
+                var href = absoluteUrl(candidate.getAttribute('href'), base);
+                if (isAnimeUrl(href)) found[normalizeUrl(href)] = true;
+            });
+
+            var urls = Object.keys(found);
+            if (urls.length > 1) break;
+
+            if (urls.length === 1 && urls[0] === target) {
+                var links = node.querySelectorAll('a[href]');
+                for (var i = 0; i < links.length; i++) {
+                    var imageHref = absoluteUrl(links[i].getAttribute('href'), base);
+                    if (isImageUrl(imageHref, base) && isOriginalPosterUrl(imageHref, base)) return imageHref;
+                }
+
+                var images = node.querySelectorAll('img, source[srcset], [style*="background"]');
+                for (var j = 0; j < images.length; j++) {
+                    var imageUrl = getPoster(images[j], base);
+                    if (imageUrl && isImageUrl(imageUrl, base)) return imageUrl;
+                }
+            }
+
+            node = node.parentElement;
+            depth++;
+        }
+
+        return '';
+    }
+
+function parseCatalog(html, pageUrl, strictSearchPosters) {
 
         var doc = new DOMParser().parseFromString(
             String(html || ''),
@@ -646,8 +688,12 @@
 
                 url: url,
 
-                poster: getPosterByAnimeId(url) || getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl),
-                posterFallback: getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)
+                poster: strictSearchPosters
+                    ? getSearchResultPoster(link, url, pageUrl)
+                    : (getPosterByAnimeId(url) || getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)),
+                posterFallback: strictSearchPosters
+                    ? getSearchResultPoster(link, url, pageUrl)
+                    : (getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl))
 
             });
 
@@ -1052,6 +1098,7 @@ function AniStarCatalog(object) {
                     var cardItem = $.extend({}, item, {
                         url: item.url || item.anistar_url || item.id || '',
                         poster: item.poster || item.anistar_poster || item.poster_path || '',
+                        posterFallback: item.posterFallback || '',
                         title: item.title || item.name || 'Без названия',
                         name: item.name || item.title || 'Без названия'
                     });
@@ -2317,7 +2364,7 @@ function AniStarCatalog(object) {
 
                 requestAniStarSearch(searchNetwork, query, function (html, searchUrl, method) {
                     try {
-                        var parsed = parseCatalog(html, searchUrl);
+                        var parsed = parseCatalog(html, searchUrl, true);
                         var debugDoc = new DOMParser().parseFromString(String(html || ''), 'text/html');
                         var debugLinks = debugDoc.querySelectorAll('a[href]');
                         var debugAnimeLinks = [];
@@ -2359,7 +2406,8 @@ function AniStarCatalog(object) {
                                 img: item.poster || '',
                                 source: 'anistar',
                                 anistar_url: item.url,
-                                anistar_poster: item.poster || ''
+                                anistar_poster: item.poster || '',
+                                posterFallback: item.posterFallback || ''
                             };
                         });
 
