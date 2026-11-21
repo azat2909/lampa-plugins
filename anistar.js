@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.45
+ * Версия: 0.4.46
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0445_ready';
+    var READY_FLAG = 'anistar_0446_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.45';
+    var PLUGIN_VERSION = '0.4.46';
 
     var PROXY_URL = '';
 
@@ -2352,8 +2352,11 @@ function AniStarCatalog(object) {
                                 id: item.url,
                                 title: item.title,
                                 name: item.title,
-                                poster_path: item.poster || '',
+                                // Не задаём poster_path: Lampa считает его путём TMDB
+                                // и прогоняет через Lampa.Api.img(), ломая внешний URL AniStar.
+                                // Для внешних постеров используем прямые поля poster и img.
                                 poster: item.poster || '',
+                                img: item.poster || '',
                                 source: 'anistar',
                                 anistar_url: item.url,
                                 anistar_poster: item.poster || ''
