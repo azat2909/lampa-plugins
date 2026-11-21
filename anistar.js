@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.49
+ * Версия: 0.4.50
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0449_ready';
+    var READY_FLAG = 'anistar_0450_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.49';
+    var PLUGIN_VERSION = '0.4.50';
 
     var PROXY_URL = '';
 
@@ -1215,6 +1215,79 @@ function AniStarCatalog(object) {
             });
         }
 
+        function showAniStarGenres() {
+            Lampa.Noty.show('Загружаем жанры AniStar...');
+
+            network.get(fullVersionUrl(BASE_URL), function (html) {
+                if (destroyed) return;
+
+                var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+                var knownGenres = [
+                    'Боевики', 'Вампиры', 'Гарем', 'Детектив', 'Драма',
+                    'История', 'Киберпанк', 'Комедия', 'Махо-седзе', 'Меха',
+                    'Пародии', 'Сёнен', 'Спорт', 'Мистика', 'Музыкальное',
+                    'Повседневность', 'Приключения', 'Романтика', 'Cедзе',
+                    'Сёнен-ай', 'Триллер', 'Ужасы', 'Фантастика', 'Фэнтeзи',
+                    'Школа', 'Эччи'
+                ];
+                var byName = {};
+
+                Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
+                    var name = cleanText(link.textContent).replace(/\s+/g, ' ');
+                    var match = knownGenres.filter(function (genre) {
+                        return genre.toLowerCase() === name.toLowerCase();
+                    })[0];
+
+                    if (!match || byName[match]) return;
+
+                    var url = absoluteUrl(link.getAttribute('href'), BASE_URL);
+                    if (!url || !isAniStarUrl(url)) return;
+                    if (isAnimeUrl(url) || /\/(anime|manga|dorama)(\/|$)/i.test(new URL(url).pathname)) return;
+
+                    byName[match] = url;
+                });
+
+                var items = knownGenres.filter(function (genre) {
+                    return !!byName[genre];
+                }).map(function (genre) {
+                    return { title: genre, url: byName[genre] };
+                });
+
+                if (!items.length) {
+                    Lampa.Noty.show('Не удалось получить список жанров AniStar.');
+                    Lampa.Controller.toggle('content');
+                    return;
+                }
+
+                Lampa.Select.show({
+                    title: 'Жанры AniStar',
+                    items: items,
+                    onBack: function () {
+                        showAniStarFilter();
+                    },
+                    onSelect: function (selected) {
+                        var url = selected && selected.url;
+                        if (!url) {
+                            Lampa.Controller.toggle('content');
+                            return;
+                        }
+
+                        Lampa.Activity.push({
+                            url: '',
+                            title: 'AniStar — ' + (selected.title || 'Жанры'),
+                            component: PLUGIN_ID,
+                            page: 1,
+                            page_url: url
+                        });
+                    }
+                });
+            }, function () {
+                if (destroyed) return;
+                Lampa.Noty.show('Не удалось загрузить список жанров AniStar.');
+                Lampa.Controller.toggle('content');
+            });
+        }
+
         function showAniStarFilter() {
             if (!Lampa.Select || typeof Lampa.Select.show !== 'function') {
                 Lampa.Noty.show('Меню фильтра недоступно в этой версии Lampa.');
@@ -1223,11 +1296,16 @@ function AniStarCatalog(object) {
 
             Lampa.Select.show({
                 title: 'Фильтр',
-                items: [{ title: 'Поиск' }],
+                items: [{ title: 'Поиск', action: 'search' }, { title: 'Жанры', action: 'genres' }],
                 onBack: function () {
                     Lampa.Controller.toggle('content');
                 },
-                onSelect: function () {
+                onSelect: function (selected) {
+                    if (selected && selected.action === 'genres') {
+                        showAniStarGenres();
+                        return;
+                    }
+
                     if (!Lampa.Input || typeof Lampa.Input.edit !== 'function') {
                         Lampa.Noty.show('Поле поиска недоступно в этой версии Lampa.');
                         Lampa.Controller.toggle('content');
