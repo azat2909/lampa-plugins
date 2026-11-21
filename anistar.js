@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.42
+ * Версия: 0.4.43
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0442_ready';
+    var READY_FLAG = 'anistar_0443_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.42';
+    var PLUGIN_VERSION = '0.4.43';
 
     var PROXY_URL = '';
 
@@ -149,12 +149,19 @@
         '.anistar-detail__poster {',
         ' width:220px;',
         ' max-width:35%;',
+        ' aspect-ratio:2/3;',
+        ' flex:0 0 auto;',
+        ' overflow:hidden;',
         ' border-radius:.4em;',
+        ' background:rgba(255,255,255,.08);',
         '}',
 
         '.anistar-detail__poster img {',
         ' display:block;',
         ' width:100%;',
+        ' height:100%;',
+        ' aspect-ratio:2/3;',
+        ' object-fit:contain;',
         ' border-radius:.4em;',
         '}',
 
@@ -341,26 +348,45 @@
      * Оригинальная обложка из полной версии AniStar.
      * Заголовок и ссылка на оригинал могут быть соседними ссылками.
      */
+    function isOriginalPosterUrl(value, base) {
+        var url = absoluteUrl(value, base);
+        if (!url || !isAniStarUrl(url)) return false;
+        try {
+            return new RegExp('^/uploads/posters/[0-9]+/original[.](jpg|jpeg|png|webp)$', 'i')
+                .test(new URL(url).pathname);
+        } catch (e) {
+            return false;
+        }
+    }
+
     function getFullPoster(card, animeUrl, base) {
         if (!card) return '';
+        var target = normalizeUrl(animeUrl);
         var node = card;
         var depth = 0;
         while (node && depth < 6) {
-            var animeLinks = {};
             var links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+            var hasTarget = false;
             Array.prototype.forEach.call(links, function (link) {
                 var href = absoluteUrl(link.getAttribute('href'), base);
-                if (isAnimeUrl(href)) animeLinks[normalizeUrl(href)] = true;
+                if (isAnimeUrl(href) && normalizeUrl(href) === target) hasTarget = true;
             });
-            var urls = Object.keys(animeLinks);
-            if (urls.length === 1 && urls[0] === normalizeUrl(animeUrl)) {
-                for (var i = 0; i < links.length; i++) {
-                    var posterUrl = absoluteUrl(links[i].getAttribute('href'), base);
-                    if (!isAniStarUrl(posterUrl)) continue;
-                    try {
-                        if (/^\/uploads\/posters\/\d+\/original\.(?:jpe?g|png|webp)$/i.test(new URL(posterUrl).pathname)) return posterUrl;
-                    } catch (e) {}
+            if (hasTarget) {
+                var images = node.querySelectorAll ? node.querySelectorAll('img') : [];
+                for (var i = 0; i < images.length; i++) {
+                    var anchor = images[i].closest ? images[i].closest('a[href]') : null;
+                    if (anchor && isOriginalPosterUrl(anchor.getAttribute('href'), base)) {
+                        return absoluteUrl(anchor.getAttribute('href'), base);
+                    }
                 }
+                var originals = [];
+                Array.prototype.forEach.call(links, function (link) {
+                    if (isOriginalPosterUrl(link.getAttribute('href'), base)) {
+                        var candidate = absoluteUrl(link.getAttribute('href'), base);
+                        if (originals.indexOf(candidate) < 0) originals.push(candidate);
+                    }
+                });
+                if (originals.length === 1) return originals[0];
             }
             node = node.parentElement;
             depth++;
@@ -379,6 +405,50 @@
         } catch (e) {
             return value;
         }
+    }
+
+    /*
+     * Получаем отдельный постер со страницы конкретного тайтла.
+     * Предпочитаем оригинал из основного содержимого, затем Open Graph.
+     */
+    function getArticlePoster(html, pageUrl) {
+        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+        var scopes = [
+            doc.querySelector('#dle-content'),
+            doc.querySelector('.fullstory'),
+            doc.querySelector('.full-text'),
+            doc.querySelector('article'),
+            doc.querySelector('.news')
+        ];
+        var scope = null;
+        for (var i = 0; i < scopes.length; i++) {
+            if (scopes[i]) {
+                scope = scopes[i];
+                break;
+            }
+        }
+
+        if (scope) {
+            var originalLinks = scope.querySelectorAll('a[href]');
+            for (var j = 0; j < originalLinks.length; j++) {
+                if (isOriginalPosterUrl(originalLinks[j].getAttribute('href'), pageUrl)) {
+                    return absoluteUrl(originalLinks[j].getAttribute('href'), pageUrl);
+                }
+            }
+        }
+
+        var meta = doc.querySelector('meta[property="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]');
+        if (meta) {
+            var metaUrl = absoluteUrl(meta.getAttribute('content'), pageUrl);
+            if (metaUrl && isAniStarUrl(metaUrl)) return metaUrl;
+        }
+
+        var images = (scope || doc).querySelectorAll('img');
+        for (var k = 0; k < images.length; k++) {
+            var src = getPoster(images[k], pageUrl);
+            if (src && isAniStarUrl(src)) return src;
+        }
+        return '';
     }
 
     /* =========================================================
@@ -1944,8 +2014,33 @@ function AniStarCatalog(object) {
         }
 
 
+        function loadDetailPoster() {
+            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
+            if (!articleUrl || !isAnimeUrl(articleUrl)) return;
+
+            network.get(fullVersionUrl(articleUrl), function (pageHtml) {
+                if (destroyed) return;
+                var source = getArticlePoster(pageHtml, articleUrl);
+                if (!source) {
+                    console.warn('[AniStar] Detail poster not found:', articleUrl);
+                    return;
+                }
+                var image = poster.find('img').first();
+                if (!image.length) {
+                    image = $('<img>');
+                    poster.empty().append(image);
+                }
+                image.attr('src', source);
+                item.poster = source;
+                console.log('[AniStar] Detail poster loaded:', source);
+            }, function () {
+                console.warn('[AniStar] Detail poster request failed:', articleUrl);
+            });
+        }
+
         this.create = function () {
-            // Серии загружаются только после нажатия «Смотреть».
+            // Обновляем обложку независимо от загрузки серий.
+            loadDetailPoster();
             return this.render();
         };
 
