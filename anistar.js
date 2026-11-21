@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.41
+ * Версия: 0.4.42
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0441_ready';
+    var READY_FLAG = 'anistar_0442_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.41';
+    var PLUGIN_VERSION = '0.4.42';
 
     var PROXY_URL = '';
 
@@ -336,6 +336,51 @@
     }
 
 
+
+    /*
+     * Оригинальная обложка из полной версии AniStar.
+     * Заголовок и ссылка на оригинал могут быть соседними ссылками.
+     */
+    function getFullPoster(card, animeUrl, base) {
+        if (!card) return '';
+        var node = card;
+        var depth = 0;
+        while (node && depth < 6) {
+            var animeLinks = {};
+            var links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+            Array.prototype.forEach.call(links, function (link) {
+                var href = absoluteUrl(link.getAttribute('href'), base);
+                if (isAnimeUrl(href)) animeLinks[normalizeUrl(href)] = true;
+            });
+            var urls = Object.keys(animeLinks);
+            if (urls.length === 1 && urls[0] === normalizeUrl(animeUrl)) {
+                for (var i = 0; i < links.length; i++) {
+                    var posterUrl = absoluteUrl(links[i].getAttribute('href'), base);
+                    if (!isAniStarUrl(posterUrl)) continue;
+                    try {
+                        if (/^\/uploads\/posters\/\d+\/original\.(?:jpe?g|png|webp)$/i.test(new URL(posterUrl).pathname)) return posterUrl;
+                    } catch (e) {}
+                }
+            }
+            node = node.parentElement;
+            depth++;
+        }
+        return '';
+    }
+
+    /*
+     * Запрашиваем десктопную тему AniStar, исключая мобильную разметку.
+     */
+    function fullVersionUrl(value) {
+        try {
+            var parsed = new URL(value, BASE_URL);
+            parsed.searchParams.set('skin_name', 'new36');
+            return parsed.href;
+        } catch (e) {
+            return value;
+        }
+    }
+
     /* =========================================================
      * 5. ПАРСЕР КАТАЛОГА
      * ========================================================= */
@@ -469,7 +514,7 @@
 
                 url: url,
 
-                poster: getPoster(image, pageUrl)
+                poster: getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)
 
             });
 
@@ -758,7 +803,7 @@ function encodeAniStarQuery(value) {
 function requestAniStarSearch(network, query, complete, error) {
     var searchUrl = new URL('/', BASE_URL).origin +
         '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
-        encodeAniStarQuery(query);
+        encodeAniStarQuery(query) + '&skin_name=new36';
 
     // GET с CP1251: POST через объект Lampa кодирует кириллицу как UTF-8,
     // что на AniStar приводит к искажённому тексту запроса.
@@ -1270,7 +1315,7 @@ function AniStarCatalog(object) {
 
             network.get(
 
-                url,
+                fullVersionUrl(url),
 
 
                 function (html) {
