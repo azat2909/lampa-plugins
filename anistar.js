@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.42
+ * Версия: 0.4.43
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0442_ready';
+    var READY_FLAG = 'anistar_0443_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.42';
+    var PLUGIN_VERSION = '0.4.43';
 
     var PROXY_URL = '';
 
@@ -155,6 +155,9 @@
         '.anistar-detail__poster img {',
         ' display:block;',
         ' width:100%;',
+        ' height:auto;',
+        ' max-height:none;',
+        ' object-fit:contain;',
         ' border-radius:.4em;',
         '}',
 
@@ -335,6 +338,24 @@
         return absoluteUrl(src.replace(/&amp;/g, '&'), base);
     }
 
+    // Полноразмерная обложка берётся непосредственно со страницы публикации.
+    function getDetailPoster(html, pageUrl) {
+        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+        var meta = doc.querySelector('meta[property="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]');
+        if (meta) {
+            var metaUrl = absoluteUrl(meta.getAttribute('content'), pageUrl);
+            if (metaUrl) return metaUrl;
+        }
+
+        var selectors = ['.fullstory img', '.full-text img', '.fullstory__content img',
+            '.news-item img', 'article img', '.shortstory img'];
+        for (var i = 0; i < selectors.length; i++) {
+            var posterUrl = getPoster(doc.querySelector(selectors[i]), pageUrl);
+            if (posterUrl) return posterUrl;
+        }
+        return '';
+    }
+
 
     /* =========================================================
      * 5. ПАРСЕР КАТАЛОГА
@@ -407,31 +428,41 @@
             /*
              * Ищем изображение.
              */
-            // Ищем обложку в ближайших родителях: в поисковой выдаче
-            // заголовок и изображение могут находиться в соседних блоках.
+            // Ищем обложку только в самой ссылке или в ближайшем
+            // контейнере, где находится ровно один уникальный тайтл.
+            // Не захватываем изображения соседних карточек из общей сетки.
             var image = null;
-            var imageNode = link;
+            var imageContainers = [link];
+            var imageParent = link.parentElement;
             var imageDepth = 0;
 
-            while (imageNode && imageDepth < 6 && !image) {
-                var imageCandidates = imageNode.querySelectorAll
-                    ? imageNode.querySelectorAll('img, [style*="background"]')
-                    : [];
+            while (imageParent && imageDepth < 5) {
+                var animeLinks = imageParent.querySelectorAll('a[href]');
+                var uniqueAnimeLinks = [];
+                Array.prototype.forEach.call(animeLinks, function (candidateLink) {
+                    var candidateUrl = normalizeUrl(absoluteUrl(candidateLink.getAttribute('href'), pageUrl));
+                    if (isAnimeUrl(candidateUrl) && uniqueAnimeLinks.indexOf(candidateUrl) < 0) {
+                        uniqueAnimeLinks.push(candidateUrl);
+                    }
+                });
+                if (uniqueAnimeLinks.length === 1 && uniqueAnimeLinks[0] === url) {
+                    imageContainers.push(imageParent);
+                    break;
+                }
+                imageParent = imageParent.parentElement;
+                imageDepth++;
+            }
 
+            for (var containerIndex = 0; containerIndex < imageContainers.length && !image; containerIndex++) {
+                var imageCandidates = imageContainers[containerIndex].querySelectorAll
+                    ? imageContainers[containerIndex].querySelectorAll('img, [style*="background"], picture source[srcset], source[srcset]')
+                    : [];
                 for (var imageIndex = 0; imageIndex < imageCandidates.length; imageIndex++) {
                     if (getPoster(imageCandidates[imageIndex], pageUrl)) {
                         image = imageCandidates[imageIndex];
                         break;
                     }
                 }
-
-                imageNode = imageNode.parentElement;
-                imageDepth++;
-            }
-
-            if (!image && card) {
-                var pictureSource = card.querySelector('picture source[srcset], source[srcset]');
-                if (pictureSource) image = pictureSource;
             }
 
             if (
@@ -1580,6 +1611,27 @@ function AniStarCatalog(object) {
         detail.append(poster);
         detail.append(info);
         root.append(detail);
+
+        // Заменяем уменьшенную картинку из каталога на обложку со страницы тайтла.
+        function loadDetailPoster() {
+            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
+            if (!articleUrl || !isAnimeUrl(articleUrl)) return;
+            network.get(articleUrl, function (pageHtml) {
+                if (destroyed) return;
+                var fullPoster = getDetailPoster(pageHtml, articleUrl);
+                if (!fullPoster) return;
+                poster.empty();
+                var image = $('<img>');
+                image.attr('src', fullPoster);
+                image.attr('alt', item.title || 'Обложка');
+                image.on('error', function () { $(this).remove(); });
+                poster.append(image);
+            }, function () {
+                // При ошибке оставляем миниатюру из каталога.
+            });
+        }
+
+        loadDetailPoster();
 
 
         function showError(message) {
