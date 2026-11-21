@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.44
+ * Версия: 0.4.45
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0444_ready';
+    var READY_FLAG = 'anistar_0445_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.44';
+    var PLUGIN_VERSION = '0.4.45';
 
     var PROXY_URL = '';
 
@@ -447,21 +447,38 @@
             /*
              * Ищем изображение.
              */
-            // Ищем изображение только внутри ссылок на ЭТОТ ЖЕ тайтл.
-            // Не поднимаемся к общим родителям: там может лежать постер соседа.
+            // Ищем обложку в ссылке или в ближайшем контейнере,
+            // содержащем только один уникальный URL тайтла.
+            // На AniStar заголовок и изображение часто находятся в разных ссылках.
             var image = null;
-            var sameTitleLinks = doc.querySelectorAll('a[href]');
-            for (var sameIndex = 0; sameIndex < sameTitleLinks.length && !image; sameIndex++) {
-                var sameLink = sameTitleLinks[sameIndex];
-                var sameUrl = normalizeUrl(absoluteUrl(sameLink.getAttribute('href'), pageUrl));
-                if (sameUrl !== url) continue;
+            var imageContainers = [link];
+            var imageParent = link.parentElement;
+            var imageDepth = 0;
 
-                var sameImages = sameLink.querySelectorAll
-                    ? sameLink.querySelectorAll('img, [style*="background"], picture source[srcset], source[srcset]')
+            while (imageParent && imageDepth < 5) {
+                var animeLinks = imageParent.querySelectorAll('a[href]');
+                var uniqueAnimeLinks = [];
+                Array.prototype.forEach.call(animeLinks, function (candidateLink) {
+                    var candidateUrl = normalizeUrl(absoluteUrl(candidateLink.getAttribute('href'), pageUrl));
+                    if (isAnimeUrl(candidateUrl) && uniqueAnimeLinks.indexOf(candidateUrl) < 0) {
+                        uniqueAnimeLinks.push(candidateUrl);
+                    }
+                });
+                if (uniqueAnimeLinks.length === 1 && uniqueAnimeLinks[0] === url) {
+                    imageContainers.push(imageParent);
+                    break;
+                }
+                imageParent = imageParent.parentElement;
+                imageDepth++;
+            }
+
+            for (var containerIndex = 0; containerIndex < imageContainers.length && !image; containerIndex++) {
+                var imageCandidates = imageContainers[containerIndex].querySelectorAll
+                    ? imageContainers[containerIndex].querySelectorAll('img, [style*="background"], picture source[srcset], source[srcset]')
                     : [];
-                for (var sameImageIndex = 0; sameImageIndex < sameImages.length; sameImageIndex++) {
-                    if (getPoster(sameImages[sameImageIndex], pageUrl)) {
-                        image = sameImages[sameImageIndex];
+                for (var imageIndex = 0; imageIndex < imageCandidates.length; imageIndex++) {
+                    if (getPoster(imageCandidates[imageIndex], pageUrl)) {
+                        image = imageCandidates[imageIndex];
                         break;
                     }
                 }
