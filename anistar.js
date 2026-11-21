@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.41
+ * Версия: 0.4.42
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0441_ready';
+    var READY_FLAG = 'anistar_0442_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.41';
+    var PLUGIN_VERSION = '0.4.42';
 
     var PROXY_URL = '';
 
@@ -1042,24 +1042,16 @@ function AniStarCatalog(object) {
                 img.attr('alt', item.title);
 
                 img.on('error', function () {
+                    // Если обложка отсутствует или недоступна на AniStar,
+                    // оставляем пустую область постера без заглушек.
                     $(this).remove();
-
-                    poster.append(
-                        '<div class="anistar-card__placeholder">▶</div>'
-                    );
                 });
 
                 poster.append(img);
 
             }
 
-            else {
-
-                poster.append(
-                    '<div class="anistar-card__placeholder">▶</div>'
-                );
-
-            }
+            // Если на AniStar нет обложки, постер остаётся пустым.
 
 
             // Название.
@@ -2143,8 +2135,12 @@ function AniStarCatalog(object) {
                                 id: item.url,
                                 title: item.title,
                                 name: item.title,
-                                poster_path: item.poster || '',
+                                // AniStar отдаёт готовый абсолютный URL.
+                                // poster_path Lampa обрабатывает через TMDB Api.img,
+                                // из-за чего внешний URL превращается в неверный адрес.
+                                // Передаём обложку как прямое поле poster.
                                 poster: item.poster || '',
+                                img: item.poster || '',
                                 source: 'anistar',
                                 anistar_url: item.url,
                                 anistar_poster: item.poster || ''
