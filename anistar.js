@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.51
+ * Версия: 0.4.52
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0451_ready';
+    var READY_FLAG = 'anistar_0452_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.51';
+    var PLUGIN_VERSION = '0.4.52';
 
     var PROXY_URL = '';
 
@@ -1222,20 +1222,38 @@ function AniStarCatalog(object) {
                 var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
                 var knownGenres = ['Боевики', 'Вампиры', 'Гарем', 'Детектив', 'Драма', 'История', 'Киберпанк', 'Комедия', 'Махо-седзе', 'Меха', 'Пародии', 'Сёнен', 'Спорт', 'Мистика', 'Музыкальное', 'Повседневность', 'Приключения', 'Романтика', 'Cедзе', 'Сёнен-ай', 'Триллер', 'Ужасы', 'Фантастика', 'Фэнтeзи', 'Школа', 'Эччи'];
                 function norm(value) {
-                    return cleanText(value).toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+                    return cleanText(value).toLowerCase()
+                        .replace(/ё/g, 'е')
+                        // Некоторые пункты меню AniStar содержат латинские
+                        // символы, визуально совпадающие с кириллицей.
+                        .replace(/[cceahk moptyx]/g, function (char) {
+                            var map = {
+                                'c': 'с', 'e': 'е', 'a': 'а', 'h': 'н',
+                                'k': 'к', 'm': 'м', 'o': 'о', 'p': 'р',
+                                't': 'т', 'y': 'у', 'x': 'х'
+                            };
+                            return map[char] || char;
+                        })
+                        .replace(/\s+/g, ' ').trim();
                 }
                 var genreMap = {};
                 knownGenres.forEach(function (name) { genreMap[norm(name)] = name; });
                 var found = {};
-                Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
+                var allLinks = doc.querySelectorAll('a[href]');
+                var baseHost = new URL(BASE_URL).hostname.toLowerCase();
+                Array.prototype.forEach.call(allLinks, function (link) {
                     var name = genreMap[norm(link.textContent)];
                     if (!name || found[name]) return;
                     var url = absoluteUrl(link.getAttribute('href'), BASE_URL);
                     if (!url) return;
                     try {
                         var parsed = new URL(url);
-                        if (parsed.hostname !== new URL(BASE_URL).hostname || isAnimeUrl(url)) return;
+                        var host = parsed.hostname.toLowerCase();
+                        // www — тот же официальный домен, не зеркало.
+                        if (host !== baseHost && host !== 'www.' + baseHost) return;
+                        if (isAnimeUrl(url)) return;
                         if (/^\/(anime|manga|dorama)(\/|$)/i.test(parsed.pathname)) return;
+                        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
                     } catch (e) { return; }
                     found[name] = url;
                 });
@@ -1250,7 +1268,26 @@ function AniStarCatalog(object) {
                     genres: items.map(function (item) { return item.title + ' -> ' + item.url; })
                 });
                 if (!items.length) {
-                    Lampa.Noty.show('Не удалось получить список жанров AniStar (ссылки не найдены).');
+                    var debugSamples = [];
+                    Array.prototype.forEach.call(allLinks, function (link) {
+                        if (debugSamples.length >= 5) return;
+                        var label = cleanText(link.textContent);
+                        var href = link.getAttribute('href') || '';
+                        if (label && href) debugSamples.push(label.slice(0, 24) + ' → ' + href.slice(0, 70));
+                    });
+                    console.warn('[AniStar] Genre links not matched:', {
+                        htmlLength: String(html || '').length,
+                        pageTitle: cleanText(doc.title),
+                        links: allLinks.length,
+                        baseHost: baseHost,
+                        samples: debugSamples
+                    });
+                    Lampa.Noty.show(
+                        'Жанры: HTML ' + String(html || '').length +
+                        ', ссылок ' + allLinks.length +
+                        ', страница: ' + (cleanText(doc.title) || 'без заголовка') +
+                        '. Подробности в диагностике AniStar.'
+                    );
                     Lampa.Controller.toggle('content');
                     return;
                 }
