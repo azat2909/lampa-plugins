@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.44
+ * Версия: 0.4.45
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0444_ready';
+    var READY_FLAG = 'anistar_0445_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.44';
+    var PLUGIN_VERSION = '0.4.45';
 
     var PROXY_URL = '';
 
@@ -377,6 +377,20 @@
         }
     }
 
+    // На AniStar ID публикации совпадает с ID каталога постера:
+    // /10938-title.html -> /uploads/posters/10938/original.jpg
+    // Этот путь подтверждён страницей тайтла 10938.
+    function getPosterByAnimeId(animeUrl) {
+        try {
+            var parsed = new URL(animeUrl, BASE_URL);
+            var match = parsed.pathname.match(/^\/(\d+)-[^/]+\.html$/i);
+            if (!match) return '';
+            return 'https://' + SITE_HOST + '/uploads/posters/' + match[1] + '/original.jpg';
+        } catch (e) {
+            return '';
+        }
+    }
+
     function isOriginalPosterUrl(value, base) {
         var url = absoluteUrl(value, base);
         if (!url || !isAniStarUrl(url)) return false;
@@ -632,7 +646,8 @@
 
                 url: url,
 
-                poster: getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)
+                poster: getPosterByAnimeId(url) || getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl),
+                posterFallback: getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)
 
             });
 
@@ -1205,8 +1220,14 @@ function AniStarCatalog(object) {
                 img.attr('alt', item.title);
 
                 img.on('error', function () {
-                    $(this).remove();
+                    var fallback = item.posterFallback || '';
+                    if (fallback && fallback !== item.poster && !img.data('fallback-tried')) {
+                        img.data('fallback-tried', true);
+                        img.attr('src', fallback);
+                        return;
+                    }
 
+                    $(this).remove();
                     poster.append(
                         '<div class="anistar-card__placeholder">▶</div>'
                     );
