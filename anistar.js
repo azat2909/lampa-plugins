@@ -1,10 +1,10 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.46
+ * Версия: 0.4.47
  * ============================================================
  *
- * Источник: https://anistar.org/anime/
+ * Источник: https://anistar.org/
  * Платформа: Lampa 3.x / Android TV
  *
  * Возможности:
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0446_ready';
+    var READY_FLAG = 'anistar_0447_ready';
 
-    var BASE_URL = 'https://anistar.org/anime/';
+    var BASE_URL = 'https://anistar.org/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.46';
+    var PLUGIN_VERSION = '0.4.47';
 
     var PROXY_URL = '';
 
@@ -547,8 +547,8 @@
 
 
         /*
-         * Пагинация AniStar: страницы имеют числовые URL:
-         * /anime/ и /anime/page/2/, /anime/page/3/ и т.д.
+         * Пагинация главной AniStar: страницы имеют URL:
+         * / и /page/2/, /page/3/ и т.д.
          * Старый поиск только по стрелке «Следующая» не находил
          * такие ссылки, поэтому здесь сначала ищем номер страницы.
          */
@@ -557,7 +557,7 @@
 
         try {
             var currentPath = new URL(pageUrl).pathname;
-            var currentMatch = currentPath.match(/\/anime\/page\/(\d+)\/?$/i);
+            var currentMatch = currentPath.match(/\/page\/(\d+)\/?$/i);
             if (currentMatch) currentPage = parseInt(currentMatch[1], 10) || 1;
         } catch (e) {}
 
@@ -575,9 +575,9 @@
 
             try {
                 var parsedUrl = new URL(href);
-                var match = parsedUrl.pathname.match(/\/anime\/page\/(\d+)\/?$/i);
+                var match = parsedUrl.pathname.match(/\/page\/(\d+)\/?$/i);
                 var pageNumber = match ? parseInt(match[1], 10) :
-                    (/\/anime\/?$/i.test(parsedUrl.pathname) ? 1 : 0);
+                    (/^\/$/i.test(parsedUrl.pathname) ? 1 : 0);
 
                 if (pageNumber > 0) hasPageLinks = true;
 
@@ -599,12 +599,12 @@
             next = (expected || numbered[0]).url;
         }
 
-        // На AniStar используется стандартный путь /anime/page/N/.
+        // На главной AniStar используется стандартный путь /page/N/.
         // Если шаблон страницы не отдал ссылку в DOM, строим адрес
         // следующей страницы самостоятельно, не останавливая каталог.
         if (!next && !hasPageLinks) {
             try {
-                var basePath = new URL(BASE_URL).origin + '/anime/';
+                var basePath = new URL(BASE_URL).origin + '/';
                 next = basePath + 'page/' + (currentPage + 1) + '/';
             } catch (e) {}
         }
