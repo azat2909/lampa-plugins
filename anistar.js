@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.50
+ * Версия: 0.4.51
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0450_ready';
+    var READY_FLAG = 'anistar_0451_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.50';
+    var PLUGIN_VERSION = '0.4.51';
 
     var PROXY_URL = '';
 
@@ -1217,61 +1217,50 @@ function AniStarCatalog(object) {
 
         function showAniStarGenres() {
             Lampa.Noty.show('Загружаем жанры AniStar...');
-
-            network.get(fullVersionUrl(BASE_URL), function (html) {
+            network.get(BASE_URL, function (html) {
                 if (destroyed) return;
-
                 var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                var knownGenres = [
-                    'Боевики', 'Вампиры', 'Гарем', 'Детектив', 'Драма',
-                    'История', 'Киберпанк', 'Комедия', 'Махо-седзе', 'Меха',
-                    'Пародии', 'Сёнен', 'Спорт', 'Мистика', 'Музыкальное',
-                    'Повседневность', 'Приключения', 'Романтика', 'Cедзе',
-                    'Сёнен-ай', 'Триллер', 'Ужасы', 'Фантастика', 'Фэнтeзи',
-                    'Школа', 'Эччи'
-                ];
-                var byName = {};
-
+                var knownGenres = ['Боевики', 'Вампиры', 'Гарем', 'Детектив', 'Драма', 'История', 'Киберпанк', 'Комедия', 'Махо-седзе', 'Меха', 'Пародии', 'Сёнен', 'Спорт', 'Мистика', 'Музыкальное', 'Повседневность', 'Приключения', 'Романтика', 'Cедзе', 'Сёнен-ай', 'Триллер', 'Ужасы', 'Фантастика', 'Фэнтeзи', 'Школа', 'Эччи'];
+                function norm(value) {
+                    return cleanText(value).toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+                }
+                var genreMap = {};
+                knownGenres.forEach(function (name) { genreMap[norm(name)] = name; });
+                var found = {};
                 Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
-                    var name = cleanText(link.textContent).replace(/\s+/g, ' ');
-                    var match = knownGenres.filter(function (genre) {
-                        return genre.toLowerCase() === name.toLowerCase();
-                    })[0];
-
-                    if (!match || byName[match]) return;
-
+                    var name = genreMap[norm(link.textContent)];
+                    if (!name || found[name]) return;
                     var url = absoluteUrl(link.getAttribute('href'), BASE_URL);
-                    if (!url || !isAniStarUrl(url)) return;
-                    if (isAnimeUrl(url) || /\/(anime|manga|dorama)(\/|$)/i.test(new URL(url).pathname)) return;
-
-                    byName[match] = url;
+                    if (!url) return;
+                    try {
+                        var parsed = new URL(url);
+                        if (parsed.hostname !== new URL(BASE_URL).hostname || isAnimeUrl(url)) return;
+                        if (/^\/(anime|manga|dorama)(\/|$)/i.test(parsed.pathname)) return;
+                    } catch (e) { return; }
+                    found[name] = url;
                 });
-
-                var items = knownGenres.filter(function (genre) {
-                    return !!byName[genre];
-                }).map(function (genre) {
-                    return { title: genre, url: byName[genre] };
+                var items = knownGenres.filter(function (name) { return !!found[name]; }).map(function (name) {
+                    return { title: name, url: found[name] };
                 });
-
+                console.log('[AniStar] Genres parsed:', {
+                    htmlLength: String(html || '').length,
+                    pageTitle: cleanText(doc.title),
+                    found: items.length,
+                    links: doc.querySelectorAll('a[href]').length,
+                    genres: items.map(function (item) { return item.title + ' -> ' + item.url; })
+                });
                 if (!items.length) {
-                    Lampa.Noty.show('Не удалось получить список жанров AniStar.');
+                    Lampa.Noty.show('Не удалось получить список жанров AniStar (ссылки не найдены).');
                     Lampa.Controller.toggle('content');
                     return;
                 }
-
                 Lampa.Select.show({
                     title: 'Жанры AniStar',
                     items: items,
-                    onBack: function () {
-                        showAniStarFilter();
-                    },
+                    onBack: function () { showAniStarFilter(); },
                     onSelect: function (selected) {
                         var url = selected && selected.url;
-                        if (!url) {
-                            Lampa.Controller.toggle('content');
-                            return;
-                        }
-
+                        if (!url) { Lampa.Controller.toggle('content'); return; }
                         Lampa.Activity.push({
                             url: '',
                             title: 'AniStar — ' + (selected.title || 'Жанры'),
@@ -1281,13 +1270,13 @@ function AniStarCatalog(object) {
                         });
                     }
                 });
-            }, function () {
+            }, function (xhr, status) {
                 if (destroyed) return;
-                Lampa.Noty.show('Не удалось загрузить список жанров AniStar.');
+                console.error('[AniStar] Genres request failed:', status || xhr);
+                Lampa.Noty.show('Не удалось загрузить страницу жанров AniStar.');
                 Lampa.Controller.toggle('content');
             });
         }
-
         function showAniStarFilter() {
             if (!Lampa.Select || typeof Lampa.Select.show !== 'function') {
                 Lampa.Noty.show('Меню фильтра недоступно в этой версии Lampa.');
