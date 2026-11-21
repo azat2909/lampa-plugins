@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.52
+ * Версия: 0.4.53
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0452_ready';
+    var READY_FLAG = 'anistar_0453_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.52';
+    var PLUGIN_VERSION = '0.4.53';
 
     var PROXY_URL = '';
 
@@ -1216,104 +1216,152 @@ function AniStarCatalog(object) {
         }
 
         function showAniStarGenres() {
-            Lampa.Noty.show('Загружаем жанры AniStar...');
+            Lampa.Noty.show('Загружаем список жанров AniStar...');
+
             network.get(BASE_URL, function (html) {
                 if (destroyed) return;
+
                 var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                var knownGenres = ['Боевики', 'Вампиры', 'Гарем', 'Детектив', 'Драма', 'История', 'Киберпанк', 'Комедия', 'Махо-седзе', 'Меха', 'Пародии', 'Сёнен', 'Спорт', 'Мистика', 'Музыкальное', 'Повседневность', 'Приключения', 'Романтика', 'Cедзе', 'Сёнен-ай', 'Триллер', 'Ужасы', 'Фантастика', 'Фэнтeзи', 'Школа', 'Эччи'];
-                function norm(value) {
-                    return cleanText(value).toLowerCase()
-                        .replace(/ё/g, 'е')
-                        // Некоторые пункты меню AniStar содержат латинские
-                        // символы, визуально совпадающие с кириллицей.
-                        .replace(/[cceahk moptyx]/g, function (char) {
-                            var map = {
-                                'c': 'с', 'e': 'е', 'a': 'а', 'h': 'н',
-                                'k': 'к', 'm': 'м', 'o': 'о', 'p': 'р',
-                                't': 'т', 'y': 'у', 'x': 'х'
-                            };
-                            return map[char] || char;
-                        })
-                        .replace(/\s+/g, ' ').trim();
-                }
-                var genreMap = {};
-                knownGenres.forEach(function (name) { genreMap[norm(name)] = name; });
-                var found = {};
-                var allLinks = doc.querySelectorAll('a[href]');
-                var baseHost = new URL(BASE_URL).hostname.toLowerCase();
-                Array.prototype.forEach.call(allLinks, function (link) {
-                    var name = genreMap[norm(link.textContent)];
-                    if (!name || found[name]) return;
+                var host = new URL(BASE_URL).hostname.toLowerCase();
+
+                function isOfficialGenreLink(link) {
+                    var label = cleanText(link.textContent);
                     var url = absoluteUrl(link.getAttribute('href'), BASE_URL);
-                    if (!url) return;
+                    if (!label || !url) return null;
+
                     try {
                         var parsed = new URL(url);
-                        var host = parsed.hostname.toLowerCase();
-                        // www — тот же официальный домен, не зеркало.
-                        if (host !== baseHost && host !== 'www.' + baseHost) return;
-                        if (isAnimeUrl(url)) return;
-                        if (/^\/(anime|manga|dorama)(\/|$)/i.test(parsed.pathname)) return;
-                        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
-                    } catch (e) { return; }
-                    found[name] = url;
+                        var domain = parsed.hostname.toLowerCase();
+                        if (domain !== host && domain !== 'www.' + host) return null;
+                        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+                        if (isAnimeUrl(url)) return null;
+                        if (/^\/(anime|manga|dorama)(\/|$)/i.test(parsed.pathname)) return null;
+                        if (parsed.pathname === '/' || !parsed.pathname || /\.html?$/i.test(parsed.pathname)) return null;
+
+                        return {
+                            title: label,
+                            url: url
+                        };
+                    } catch (e) {
+                        return null;
+                    }
+                }
+
+                // Ищем именно блок «Аниме по жанрам», а не ссылки на жанры
+                // манги, дорам или категории каталога.
+                var headingNodes = doc.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong,b,p');
+                var section = null;
+                var sectionLinks = [];
+
+                for (var h = 0; h < headingNodes.length; h++) {
+                    if (cleanText(headingNodes[h].textContent).toLowerCase() !== 'аниме по жанрам') continue;
+
+                    var parent = headingNodes[h];
+                    for (var depth = 0; parent && depth < 5; depth++, parent = parent.parentElement) {
+                        var anchors = parent.querySelectorAll ? parent.querySelectorAll('a[href]') : [];
+                        if (anchors.length < 10 || anchors.length > 35) continue;
+
+                        var candidateItems = [];
+                        Array.prototype.forEach.call(anchors, function (link) {
+                            var item = isOfficialGenreLink(link);
+                            if (item) candidateItems.push(item);
+                        });
+
+                        if (candidateItems.length >= 10) {
+                            section = parent;
+                            sectionLinks = candidateItems;
+                            break;
+                        }
+                    }
+
+                    if (section) break;
+                }
+
+                // Резервный вариант для изменений вёрстки: блок «Жанры»
+                // в верхней части страницы каталога.
+                if (!sectionLinks.length) {
+                    for (var h2 = 0; h2 < headingNodes.length; h2++) {
+                        if (cleanText(headingNodes[h2].textContent).toLowerCase() !== 'жанры') continue;
+
+                        var parent2 = headingNodes[h2];
+                        for (var depth2 = 0; parent2 && depth2 < 5; depth2++, parent2 = parent2.parentElement) {
+                            var anchors2 = parent2.querySelectorAll ? parent2.querySelectorAll('a[href]') : [];
+                            if (anchors2.length < 10 || anchors2.length > 35) continue;
+
+                            var candidateItems2 = [];
+                            Array.prototype.forEach.call(anchors2, function (link) {
+                                var item = isOfficialGenreLink(link);
+                                if (item) candidateItems2.push(item);
+                            });
+
+                            if (candidateItems2.length >= 10) {
+                                sectionLinks = candidateItems2;
+                                break;
+                            }
+                        }
+
+                        if (sectionLinks.length) break;
+                    }
+                }
+
+                // Убираем дубликаты по URL, сохраняя порядок на сайте.
+                var seen = {};
+                var items = [];
+                sectionLinks.forEach(function (item) {
+                    var key = normalizeUrl(item.url);
+                    if (!seen[key]) {
+                        seen[key] = true;
+                        items.push(item);
+                    }
                 });
-                var items = knownGenres.filter(function (name) { return !!found[name]; }).map(function (name) {
-                    return { title: name, url: found[name] };
-                });
-                console.log('[AniStar] Genres parsed:', {
+
+                console.log('[AniStar] Genre menu parsed:', {
                     htmlLength: String(html || '').length,
                     pageTitle: cleanText(doc.title),
-                    found: items.length,
-                    links: doc.querySelectorAll('a[href]').length,
-                    genres: items.map(function (item) { return item.title + ' -> ' + item.url; })
+                    sectionFound: !!section,
+                    count: items.length,
+                    items: items
                 });
+
                 if (!items.length) {
-                    var debugSamples = [];
-                    Array.prototype.forEach.call(allLinks, function (link) {
-                        if (debugSamples.length >= 5) return;
-                        var label = cleanText(link.textContent);
-                        var href = link.getAttribute('href') || '';
-                        if (label && href) debugSamples.push(label.slice(0, 24) + ' → ' + href.slice(0, 70));
-                    });
-                    console.warn('[AniStar] Genre links not matched:', {
-                        htmlLength: String(html || '').length,
-                        pageTitle: cleanText(doc.title),
-                        links: allLinks.length,
-                        baseHost: baseHost,
-                        samples: debugSamples
-                    });
-                    Lampa.Noty.show(
-                        'Жанры: HTML ' + String(html || '').length +
-                        ', ссылок ' + allLinks.length +
-                        ', страница: ' + (cleanText(doc.title) || 'без заголовка') +
-                        '. Подробности в диагностике AniStar.'
-                    );
+                    Lampa.Noty.show('Не удалось найти ссылки в блоке «Аниме по жанрам» на AniStar.');
                     Lampa.Controller.toggle('content');
                     return;
                 }
+
+                // Второй список открывается штатным селектором Lampa
+                // поверх каталога — в том же правом меню.
                 Lampa.Select.show({
-                    title: 'Жанры AniStar',
+                    title: 'Жанры',
                     items: items,
-                    onBack: function () { showAniStarFilter(); },
+                    onBack: function () {
+                        showAniStarFilter();
+                    },
                     onSelect: function (selected) {
-                        var url = selected && selected.url;
-                        if (!url) { Lampa.Controller.toggle('content'); return; }
+                        if (!selected || !selected.url) {
+                            Lampa.Controller.toggle('content');
+                            return;
+                        }
+
+                        // Открываем основной каталог AniStar уже по URL жанра.
+                        // Заголовок Activity — ровно название выбранного жанра.
                         Lampa.Activity.push({
                             url: '',
-                            title: 'AniStar — ' + (selected.title || 'Жанры'),
+                            title: selected.title,
                             component: PLUGIN_ID,
                             page: 1,
-                            page_url: url
+                            page_url: selected.url
                         });
                     }
                 });
             }, function (xhr, status) {
                 if (destroyed) return;
                 console.error('[AniStar] Genres request failed:', status || xhr);
-                Lampa.Noty.show('Не удалось загрузить страницу жанров AniStar.');
+                Lampa.Noty.show('Не удалось загрузить список жанров AniStar.');
                 Lampa.Controller.toggle('content');
             });
         }
+
         function showAniStarFilter() {
             if (!Lampa.Select || typeof Lampa.Select.show !== 'function') {
                 Lampa.Noty.show('Меню фильтра недоступно в этой версии Lampa.');
