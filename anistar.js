@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.43
+ * Версия: 0.4.44
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0443_ready';
+    var READY_FLAG = 'anistar_0444_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.43';
+    var PLUGIN_VERSION = '0.4.44';
 
     var PROXY_URL = '';
 
@@ -313,24 +313,49 @@
      * 4. ПОЛУЧЕНИЕ ПОСТЕРА
      * ========================================================= */
 
-    function getPoster(image, base) {
-        if (!image) return '';
+    function bestSrcset(value) {
+        var entries = String(value || '').split(',');
+        var best = '';
+        var bestScore = -1;
 
+        entries.forEach(function (entry) {
+            var parts = entry.trim().split(/\s+/);
+            if (!parts[0]) return;
+            var descriptor = parts[1] || '';
+            var score = 0;
+            var width = descriptor.match(/^(\d+)w$/i);
+            var density = descriptor.match(/^([\d.]+)x$/i);
+            if (width) score = parseInt(width[1], 10);
+            else if (density) score = Math.round(parseFloat(density[1]) * 10000);
+            else score = 1;
+            if (score > bestScore) {
+                bestScore = score;
+                best = parts[0];
+            }
+        });
+
+        return best;
+    }
+
+    function getPoster(image, base) {
+        if (!image || !image.getAttribute) return '';
+
+        // Сначала проверяем атрибуты, которые обычно содержат исходный файл,
+        // и только затем ленивую/экранную миниатюру.
+        var attrs = [
+            'data-original', 'data-original-src', 'data-poster',
+            'data-image', 'data-full', 'data-zoom-image',
+            'data-srcset', 'srcset', 'data-lazy-src', 'data-src', 'src'
+        ];
         var src = '';
-        var attrs = ['data-src', 'data-original', 'data-lazy-src',
-            'data-original-src', 'data-image', 'data-poster', 'src'];
 
         for (var i = 0; i < attrs.length && !src; i++) {
-            src = image.getAttribute(attrs[i]) || '';
+            var value = image.getAttribute(attrs[i]) || '';
+            if (attrs[i].indexOf('srcset') !== -1) value = bestSrcset(value);
+            src = value;
         }
 
         if (!src) {
-            var srcset = image.getAttribute('data-srcset') ||
-                image.getAttribute('srcset') || '';
-            if (srcset) src = srcset.split(',')[0].trim().split(/\s+/)[0];
-        }
-
-        if (!src && image.getAttribute) {
             var style = image.getAttribute('style') || '';
             var background = style.match(/background(?:-image)?\s*:[^;]*url\((['"]?)(.*?)\1\)/i);
             if (background) src = background[2];
@@ -342,18 +367,24 @@
         return absoluteUrl(src.replace(/&amp;/g, '&'), base);
     }
 
+    function isImageUrl(value, base) {
+        var url = absoluteUrl(value, base);
+        if (!url || !isAniStarUrl(url)) return false;
+        try {
+            return /\.(jpg|jpeg|png|webp|avif)(?:$|[?#])/i.test(url);
+        } catch (e) {
+            return false;
+        }
+    }
 
-
-    /*
-     * Оригинальная обложка из полной версии AniStar.
-     * Заголовок и ссылка на оригинал могут быть соседними ссылками.
-     */
     function isOriginalPosterUrl(value, base) {
         var url = absoluteUrl(value, base);
         if (!url || !isAniStarUrl(url)) return false;
         try {
-            return new RegExp('^/uploads/posters/[0-9]+/original[.](jpg|jpeg|png|webp)$', 'i')
-                .test(new URL(url).pathname);
+            var path = new URL(url).pathname;
+            return /\/uploads\/posters\/[^/]+\/original\.(jpg|jpeg|png|webp)$/i.test(path) ||
+                /\/uploads\/posters\/\d+\/[^/]+\.(jpg|jpeg|png|webp)$/i.test(path) &&
+                !/(thumb|small|medium|preview|resize|mini)/i.test(path);
         } catch (e) {
             return false;
         }
@@ -364,33 +395,50 @@
         var target = normalizeUrl(animeUrl);
         var node = card;
         var depth = 0;
-        while (node && depth < 6) {
+
+        while (node && depth < 8) {
             var links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
             var hasTarget = false;
             Array.prototype.forEach.call(links, function (link) {
                 var href = absoluteUrl(link.getAttribute('href'), base);
                 if (isAnimeUrl(href) && normalizeUrl(href) === target) hasTarget = true;
             });
+
             if (hasTarget) {
-                var images = node.querySelectorAll ? node.querySelectorAll('img') : [];
-                for (var i = 0; i < images.length; i++) {
-                    var anchor = images[i].closest ? images[i].closest('a[href]') : null;
-                    if (anchor && isOriginalPosterUrl(anchor.getAttribute('href'), base)) {
-                        return absoluteUrl(anchor.getAttribute('href'), base);
-                    }
-                }
-                var originals = [];
+                var preferred = [];
+                var otherImages = [];
+
                 Array.prototype.forEach.call(links, function (link) {
-                    if (isOriginalPosterUrl(link.getAttribute('href'), base)) {
-                        var candidate = absoluteUrl(link.getAttribute('href'), base);
-                        if (originals.indexOf(candidate) < 0) originals.push(candidate);
-                    }
+                    var href = absoluteUrl(link.getAttribute('href'), base);
+                    if (!isImageUrl(href, base)) return;
+                    if (isOriginalPosterUrl(href, base)) preferred.push(href);
+                    else otherImages.push(href);
                 });
-                if (originals.length === 1) return originals[0];
+
+                if (preferred.length) return preferred[0];
+
+                // Иногда полноразмерная картинка находится в ссылке вокруг
+                // постера, но файл назван не original.jpg.
+                if (otherImages.length) {
+                    var posterFiles = otherImages.filter(function (href) {
+                        return /\/uploads\/posters\//i.test(href);
+                    });
+                    if (posterFiles.length) return posterFiles[0];
+                }
+
+                var images = node.querySelectorAll ? node.querySelectorAll('img, source[srcset]') : [];
+                var candidates = [];
+                for (var i = 0; i < images.length; i++) {
+                    var imageUrl = getPoster(images[i], base);
+                    if (imageUrl) candidates.push(imageUrl);
+                }
+                if (candidates.length) return candidates[0];
             }
+
             node = node.parentElement;
             depth++;
         }
+
         return '';
     }
 
