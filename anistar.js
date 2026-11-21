@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.47
+ * Версия: 0.4.48
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0447_ready';
+    var READY_FLAG = 'anistar_0448_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.47';
+    var PLUGIN_VERSION = '0.4.48';
 
     var PROXY_URL = '';
 
@@ -1157,7 +1157,7 @@ function AniStarCatalog(object) {
 
                 try {
                     var sourceHtml = String(html || '');
-                    var parsed = parseCatalog(sourceHtml, searchUrl);
+                    var parsed = parseCatalog(sourceHtml, searchUrl, true);
                     var debugDoc = new DOMParser().parseFromString(sourceHtml, 'text/html');
                     var allLinks = debugDoc.querySelectorAll('a[href]');
                     var animeLikeLinks = [];
