@@ -1,10 +1,10 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.47
+ * Версия: 0.4.41
  * ============================================================
  *
- * Источник: https://anistar.org/
+ * Источник: https://anistar.org/anime/
  * Платформа: Lampa 3.x / Android TV
  *
  * Возможности:
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0447_ready';
+    var READY_FLAG = 'anistar_0441_ready';
 
-    var BASE_URL = 'https://anistar.org/';
+    var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.47';
+    var PLUGIN_VERSION = '0.4.41';
 
     var PROXY_URL = '';
 
@@ -155,9 +155,6 @@
         '.anistar-detail__poster img {',
         ' display:block;',
         ' width:100%;',
-        ' height:auto;',
-        ' max-height:none;',
-        ' object-fit:contain;',
         ' border-radius:.4em;',
         '}',
 
@@ -338,43 +335,6 @@
         return absoluteUrl(src.replace(/&amp;/g, '&'), base);
     }
 
-    // Сначала ищем ссылку на оригинал постера AniStar (original.jpg).
-    // OG:image оставляем только запасным вариантом: он часто ведёт на превью.
-    function getDetailPoster(html, pageUrl) {
-        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-        var anchors = doc.querySelectorAll('a[href]');
-        var original = '';
-
-        Array.prototype.forEach.call(anchors, function (anchor) {
-            if (original) return;
-            var href = absoluteUrl(anchor.getAttribute('href'), pageUrl);
-            if (!href || !isAniStarUrl(href)) return;
-            if (/\/uploads\/posters\/[^/]+\/original\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(href)) {
-                original = href;
-            }
-        });
-        if (original) return original;
-
-        // Если ссылка на original.jpg отсутствует, ищем постер в основном содержимом.
-        var selectors = ['.fullstory img', '.full-text img', '.fullstory__content img',
-            '.news-item img', 'article img', '.shortstory img'];
-        for (var i = 0; i < selectors.length; i++) {
-            var images = doc.querySelectorAll(selectors[i]);
-            for (var j = 0; j < images.length; j++) {
-                var posterUrl = getPoster(images[j], pageUrl);
-                if (posterUrl && /\/uploads\/posters\//i.test(posterUrl)) return posterUrl;
-            }
-        }
-
-        // Последний резерв — изображение из метаданных страницы.
-        var meta = doc.querySelector('meta[property="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]');
-        if (meta) {
-            var metaUrl = absoluteUrl(meta.getAttribute('content'), pageUrl);
-            if (metaUrl && isAniStarUrl(metaUrl)) return metaUrl;
-        }
-        return '';
-    }
-
 
     /* =========================================================
      * 5. ПАРСЕР КАТАЛОГА
@@ -447,62 +407,32 @@
             /*
              * Ищем изображение.
              */
-            // Ищем обложку в ссылке или в ближайшем контейнере,
-            // содержащем только один уникальный URL тайтла.
-            // На AniStar заголовок и изображение часто находятся в разных ссылках.
+            // Ищем обложку в ближайших родителях: в поисковой выдаче
+            // заголовок и изображение могут находиться в соседних блоках.
             var image = null;
-            var imageContainers = [link];
-            var imageParent = link.parentElement;
+            var imageNode = link;
             var imageDepth = 0;
 
-            while (imageParent && imageDepth < 5) {
-                var animeLinks = imageParent.querySelectorAll('a[href]');
-                var uniqueAnimeLinks = [];
-                Array.prototype.forEach.call(animeLinks, function (candidateLink) {
-                    var candidateUrl = normalizeUrl(absoluteUrl(candidateLink.getAttribute('href'), pageUrl));
-                    if (isAnimeUrl(candidateUrl) && uniqueAnimeLinks.indexOf(candidateUrl) < 0) {
-                        uniqueAnimeLinks.push(candidateUrl);
-                    }
-                });
-                if (uniqueAnimeLinks.length === 1 && uniqueAnimeLinks[0] === url) {
-                    imageContainers.push(imageParent);
-                    break;
-                }
-                imageParent = imageParent.parentElement;
-                imageDepth++;
-            }
-
-            var fullSizePoster = '';
-
-            for (var containerIndex = 0; containerIndex < imageContainers.length && !fullSizePoster; containerIndex++) {
-                var posterLinks = imageContainers[containerIndex].querySelectorAll
-                    ? imageContainers[containerIndex].querySelectorAll('a[href]')
+            while (imageNode && imageDepth < 6 && !image) {
+                var imageCandidates = imageNode.querySelectorAll
+                    ? imageNode.querySelectorAll('img, [style*="background"]')
                     : [];
 
-                for (var posterLinkIndex = 0; posterLinkIndex < posterLinks.length; posterLinkIndex++) {
-                    var posterHref = absoluteUrl(posterLinks[posterLinkIndex].getAttribute('href'), pageUrl);
-
-                    if (!posterHref || !isAniStarUrl(posterHref)) continue;
-
-                    if (/\/uploads\/posters\/[^/]+\/original\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(posterHref)) {
-                        fullSizePoster = posterHref;
-                        break;
-                    }
-                }
-            }
-
-            for (var containerIndex = 0; containerIndex < imageContainers.length && !image; containerIndex++) {
-                var imageCandidates = imageContainers[containerIndex].querySelectorAll
-                    ? imageContainers[containerIndex].querySelectorAll('img, [style*="background"], picture source[srcset], source[srcset]')
-                    : [];
                 for (var imageIndex = 0; imageIndex < imageCandidates.length; imageIndex++) {
                     if (getPoster(imageCandidates[imageIndex], pageUrl)) {
                         image = imageCandidates[imageIndex];
                         break;
                     }
                 }
+
+                imageNode = imageNode.parentElement;
+                imageDepth++;
             }
 
+            if (!image && card) {
+                var pictureSource = card.querySelector('picture source[srcset], source[srcset]');
+                if (pictureSource) image = pictureSource;
+            }
 
             if (
                 (!title || title.length < 2) &&
@@ -539,7 +469,7 @@
 
                 url: url,
 
-                poster: fullSizePoster || getPoster(image, pageUrl)
+                poster: getPoster(image, pageUrl)
 
             });
 
@@ -547,8 +477,8 @@
 
 
         /*
-         * Пагинация главной AniStar: страницы имеют URL:
-         * / и /page/2/, /page/3/ и т.д.
+         * Пагинация AniStar: страницы имеют числовые URL:
+         * /anime/ и /anime/page/2/, /anime/page/3/ и т.д.
          * Старый поиск только по стрелке «Следующая» не находил
          * такие ссылки, поэтому здесь сначала ищем номер страницы.
          */
@@ -557,7 +487,7 @@
 
         try {
             var currentPath = new URL(pageUrl).pathname;
-            var currentMatch = currentPath.match(/\/page\/(\d+)\/?$/i);
+            var currentMatch = currentPath.match(/\/anime\/page\/(\d+)\/?$/i);
             if (currentMatch) currentPage = parseInt(currentMatch[1], 10) || 1;
         } catch (e) {}
 
@@ -575,9 +505,9 @@
 
             try {
                 var parsedUrl = new URL(href);
-                var match = parsedUrl.pathname.match(/\/page\/(\d+)\/?$/i);
+                var match = parsedUrl.pathname.match(/\/anime\/page\/(\d+)\/?$/i);
                 var pageNumber = match ? parseInt(match[1], 10) :
-                    (/^\/$/i.test(parsedUrl.pathname) ? 1 : 0);
+                    (/\/anime\/?$/i.test(parsedUrl.pathname) ? 1 : 0);
 
                 if (pageNumber > 0) hasPageLinks = true;
 
@@ -599,12 +529,12 @@
             next = (expected || numbered[0]).url;
         }
 
-        // На главной AniStar используется стандартный путь /page/N/.
+        // На AniStar используется стандартный путь /anime/page/N/.
         // Если шаблон страницы не отдал ссылку в DOM, строим адрес
         // следующей страницы самостоятельно, не останавливая каталог.
         if (!next && !hasPageLinks) {
             try {
-                var basePath = new URL(BASE_URL).origin + '/';
+                var basePath = new URL(BASE_URL).origin + '/anime/';
                 next = basePath + 'page/' + (currentPage + 1) + '/';
             } catch (e) {}
         }
@@ -1112,16 +1042,24 @@ function AniStarCatalog(object) {
                 img.attr('alt', item.title);
 
                 img.on('error', function () {
-                    // Если обложка отсутствует или недоступна на AniStar,
-                    // оставляем пустую область постера без заглушек.
                     $(this).remove();
+
+                    poster.append(
+                        '<div class="anistar-card__placeholder">▶</div>'
+                    );
                 });
 
                 poster.append(img);
 
             }
 
-            // Если на AniStar нет обложки, постер остаётся пустым.
+            else {
+
+                poster.append(
+                    '<div class="anistar-card__placeholder">▶</div>'
+                );
+
+            }
 
 
             // Название.
@@ -1636,8 +1574,11 @@ function AniStarCatalog(object) {
             lastDetailFocus = watch;
         });
 
-        // Не показываем миниатюру из каталога: она может быть уменьшенной
-        // или ошибочно сопоставленной. Ниже загружается постер самой публикации.
+        if (item.poster) {
+            var image = $('<img>');
+            image.attr('src', item.poster);
+            poster.append(image);
+        }
 
         info.append(title);
         info.append(description);
@@ -1647,27 +1588,6 @@ function AniStarCatalog(object) {
         detail.append(poster);
         detail.append(info);
         root.append(detail);
-
-        // Заменяем уменьшенную картинку из каталога на обложку со страницы тайтла.
-        function loadDetailPoster() {
-            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
-            if (!articleUrl || !isAnimeUrl(articleUrl)) return;
-            network.get(articleUrl, function (pageHtml) {
-                if (destroyed) return;
-                var fullPoster = getDetailPoster(pageHtml, articleUrl);
-                if (!fullPoster) return;
-                poster.empty();
-                var image = $('<img>');
-                image.attr('src', fullPoster);
-                image.attr('alt', item.title || 'Обложка');
-                image.on('error', function () { $(this).remove(); });
-                poster.append(image);
-            }, function () {
-                // При ошибке оставляем миниатюру из каталога.
-            });
-        }
-
-        loadDetailPoster();
 
 
         function showError(message) {
@@ -2223,12 +2143,8 @@ function AniStarCatalog(object) {
                                 id: item.url,
                                 title: item.title,
                                 name: item.title,
-                                // AniStar отдаёт готовый абсолютный URL.
-                                // poster_path Lampa обрабатывает через TMDB Api.img,
-                                // из-за чего внешний URL превращается в неверный адрес.
-                                // Передаём обложку как прямое поле poster.
+                                poster_path: item.poster || '',
                                 poster: item.poster || '',
-                                img: item.poster || '',
                                 source: 'anistar',
                                 anistar_url: item.url,
                                 anistar_poster: item.poster || ''
