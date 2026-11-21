@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.48
+ * Версия: 0.4.49
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0448_ready';
+    var READY_FLAG = 'anistar_0449_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.48';
+    var PLUGIN_VERSION = '0.4.49';
 
     var PROXY_URL = '';
 
@@ -536,6 +536,8 @@
             });
 
             var urls = Object.keys(found);
+            // Не поднимаемся в общий контейнер нескольких результатов:
+            // это защита от подстановки постера соседнего тайтла.
             if (urls.length > 1) break;
 
             if (urls.length === 1 && urls[0] === target) {
@@ -546,10 +548,20 @@
                 }
 
                 var images = node.querySelectorAll('img, source[srcset], [style*="background"]');
+                var hasOwnImage = false;
                 for (var j = 0; j < images.length; j++) {
                     var imageUrl = getPoster(images[j], base);
-                    if (imageUrl && isImageUrl(imageUrl, base)) return imageUrl;
+                    if (imageUrl && isImageUrl(imageUrl, base)) {
+                        hasOwnImage = true;
+                        break;
+                    }
                 }
+
+                // В выдаче AniStar часто лежит маленькая миниатюра.
+                // Если у этого результата есть собственная картинка,
+                // запрашиваем оригинал по ID публикации вместо миниатюры.
+                // Если картинки в карточке нет — не угадываем и оставляем пусто.
+                if (hasOwnImage) return getPosterByAnimeId(animeUrl);
             }
 
             node = node.parentElement;
@@ -558,7 +570,6 @@
 
         return '';
     }
-
 function parseCatalog(html, pageUrl, strictSearchPosters) {
 
         var doc = new DOMParser().parseFromString(
