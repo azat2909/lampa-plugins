@@ -1,7 +1,7 @@
 /*!
  * ============================================================
  * AniStar для Lampa
- * Версия: 0.4.54
+ * Версия: 0.4.55
  * ============================================================
  *
  * Источник: https://anistar.org/anime/
@@ -29,12 +29,12 @@
      * ========================================================= */
 
     var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0454_ready';
+    var READY_FLAG = 'anistar_0455_ready';
 
     var BASE_URL = 'https://anistar.org/anime/';
     var SITE_HOST = 'anistar.org';
 
-    var PLUGIN_VERSION = '0.4.54';
+    var PLUGIN_VERSION = '0.4.55';
 
     var PROXY_URL = '';
 
@@ -253,12 +253,20 @@
      * номера сезонов, годов в названии и прочие цифры.
      */
     function cleanAnimeTitle(value) {
+        // AniStar записывает русское и английское названия через «/».
+        // Оставляем первые два варианта, отбрасывая дополнительные подписи.
         return cleanText(value)
-            // Убираем отдельное слово «Дата» из наименования тайтла.
-            .replace(/(^|[^A-Za-zА-Яа-яЁё0-9_])дата(?=$|[^A-Za-zА-Яа-яЁё0-9_])/ig, '$1')
-            .replace(/\s*[\[(]?(?:\d{2}[.\-/]\d{2}[.\-/]\d{4}|\d{4}[.\-/]\d{2}[.\-/]\d{2})[\])]?(?=\s*$)/, '')
-            .replace(/\s+/g, ' ')
-            .trim();
+            .split(/\s*\/\s*/)
+            .slice(0, 2)
+            .map(function (part) {
+                return cleanText(part)
+                    .replace(/(^|[^A-Za-zА-Яа-яЁё0-9_])дата(?=$|[^A-Za-zА-Яа-яЁё0-9_])/ig, '$1')
+                    .replace(/\s*[\[(]?(?:\d{2}[.\-/]\d{2}[.\-/]\d{4}|\d{4}[.\-/]\d{2}[.\-/]\d{2})[\])]?(?=\s*$)/, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+            })
+            .filter(Boolean)
+            .join(' / ');
     }
 
 
