@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.2.1 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.0 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -10,6 +10,15 @@
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 30;
     var TIMEOUT = 15000;
+    var HOME = 'animehub_home';
+    var COLLECTIONS = 'animehub_collections';
+    var COMMENTS = 'animehub_comments';
+    var SECTIONS = [
+        { title: 'Обновленные', url: 'editdate' },
+        { title: 'Новые', url: 'date' },
+        { title: 'Популярные', url: 'news_read' },
+        { title: 'Коллекции', url: 'collections' }
+    ];
 
     if (window.animehub_catalog_ready) return;
     window.animehub_catalog_ready = true;
@@ -130,6 +139,35 @@
         return data && data.id != null ? [data] : null;
     }
 
+    function names(value, delimiter) {
+        var list = Array.isArray(value) ? value : plain(value).split(delimiter);
+        return Array.from(new Set(list.map(plain).filter(Boolean)));
+    }
+
+    function entryIds(value) {
+        var list = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+        return Array.from(new Set(list.map(Number).filter(function (id) {
+            return Number.isSafeInteger(id) && id > 0;
+        })));
+    }
+
+    function collectionCard(record) {
+        if (!record || !/^\d+$/.test(String(record.id))) return null;
+        var title = plain(record.title);
+        var ids = entryIds(record.news_lists);
+        if (!title || !ids.length) return null;
+        return {
+            id: SOURCE + ':collection:' + record.id,
+            source: SOURCE,
+            title: title,
+            poster: httpsUrl(record.img_link),
+            animehubCollection: ids,
+            adult: true,
+            restrict: 18,
+            params: { style: { name: 'collection' } }
+        };
+    }
+
     function catalogCard(record) {
         if (!record || !/^\d+$/.test(String(record.id))) return null;
         var fields = record.xfields_data || {};
@@ -159,19 +197,50 @@
         card.title = escapeHtml(titles.title);
         card.original_title = escapeHtml(titles.english);
         card.tagline = card.original_title;
-        card.animehub_studio = plain(fields.studios);
+        card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         card.overview = [description, translate && 'Перевод: ' + translate]
             .filter(Boolean).map(escapeHtml).join('<br>');
         card.poster = imageUrl(fields.poster, false);
         card.img = card.poster || './img/img_broken.svg';
         card.background_image = imageUrl(fields.screen, false);
         card.runtime = Math.max(0, Math.round((Number(fields.duration) || 0) / 60));
-        card.genres = (Array.isArray(fields.hentai_tags) ? fields.hentai_tags : []).map(plain)
-            .filter(Boolean).map(function (tag) { return { id: tag, name: escapeHtml(tag) }; });
+        card.genres = names(fields.hentai_tags, /\s*[,;|]\s*/).map(function (tag) {
+            return { id: tag, name: escapeHtml(tag) };
+        });
         card.production_companies = [];
         card.production_countries = [];
         card.vote_average = 0;
+        card.animehub_rating = countValue(record.rating);
+        card.animehub_views = countValue(record.news_read);
+        card.animehub_votes = countValue(record.vote_num);
         return card;
+    }
+
+    function countValue(value) {
+        if (value == null || value === '') return null;
+        var number = Number(value);
+        return Number.isSafeInteger(number) ? number : null;
+    }
+
+    function listing(object, page) {
+        var body = { mode: 'short', page: page, limit: PAGE_SIZE };
+        var ids = object.animehubCollection;
+        if (object.url === 'collections') {
+            return { path: 'users/collections/list', body: { page: page, limit: PAGE_SIZE }, collections: true };
+        }
+        if (Array.isArray(ids)) {
+            body.ids = ids.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+            body.limit = body.ids.length;
+            body.page = 1;
+            return { path: 'news', body: body, total: Math.ceil(ids.length / PAGE_SIZE) };
+        }
+        if (object.genres || object.companies) {
+            if (object.genres) body.tags = [String(object.genres)];
+            if (object.companies) body.studios = [String(object.companies)];
+            return { path: 'filter', body: body };
+        }
+        if (SECTIONS.some(function (section) { return section.url === object.url; })) body.sort = object.url;
+        return { path: 'news', body: body };
     }
 
     function loadList(object, success, failure) {
@@ -182,13 +251,7 @@
             state = { component: component, ids: new Set(), lastPage: 0 };
             catalogs.set(object, state);
         }
-        var body = { mode: 'short', page: page, limit: PAGE_SIZE };
-        var path = 'news';
-
-        if (object.genres) {
-            path = 'filter';
-            body.tags = [String(object.genres)];
-        }
+        var query = listing(object, page);
 
         function fail() {
             if (catalogs.get(object) !== state || (component && component.destroyed)) return;
@@ -198,25 +261,237 @@
             failure();
         }
 
-        request(path, body, function (data) {
+        if (query.body.ids && !query.body.ids.length) {
+            success({ results: [], page: page, total_pages: query.total || 1 });
+            return;
+        }
+
+        request(query.path, query.body, function (data) {
             if (catalogs.get(object) !== state || (component && component.destroyed)) return;
-            var records = recordList(data);
-            if (!records) {
+            var records = query.collections ? data && data.playlists : recordList(data);
+            if (!Array.isArray(records)) {
                 fail();
                 return;
             }
 
-            var cards = records.map(catalogCard).filter(Boolean).filter(function (card) {
+            var cards = records.map(query.collections ? collectionCard : catalogCard).filter(Boolean).filter(function (card) {
                 if (state.ids.has(card.id)) return false;
                 state.ids.add(card.id);
                 return true;
             });
-            // The API returns no page count. Allow Lampa to advance while a full page has new entries.
-            var total = page + Number(records.length >= PAGE_SIZE && cards.length > 0);
+            if (query.body.ids) {
+                var order = new Map(query.body.ids.map(function (id, index) { return [id, index]; }));
+                cards.sort(function (a, b) { return order.get(a.animehub_id) - order.get(b.animehub_id); });
+            }
+            // Lampa advances while the API still returns full pages.
+            var total = query.total || page + Number(records.length >= PAGE_SIZE && cards.length > 0);
             state.lastPage = page;
             if (component) component.total_pages = total;
             success({ results: cards, page: page, total_pages: total });
         }, fail);
+    }
+
+    function fetchShelf(section, done) {
+        loadList({ url: section.url, page: 1 }, function (data) {
+            done({
+                title: section.title,
+                source: SOURCE,
+                url: section.url,
+                results: data.results,
+                total_pages: data.total_pages
+            });
+        }, function () { done(null); });
+    }
+
+    function loadHome(object, success, failure) {
+        var component = object.activity && object.activity.component;
+        var pending = SECTIONS.length;
+        var sections = new Array(pending);
+        SECTIONS.forEach(function (section, index) {
+            fetchShelf(section, function (data) {
+                sections[index] = data;
+                if (--pending) return;
+                if (component && component.destroyed) return;
+                var available = sections.filter(function (row) { return row && row.results.length; });
+                if (available.length) success(available);
+                else failure();
+            });
+        });
+    }
+
+    function openCollection(card) {
+        Lampa.Activity.push({
+            component: 'category_full', source: SOURCE, url: '', page: 1,
+            title: card.title, animehubCollection: card.animehubCollection
+        });
+    }
+
+    function collectionEnter(card, data) {
+        if (data.animehubCollection) {
+            card.use({ onlyEnter: function () { openCollection(data); } });
+        }
+    }
+
+    function mainComponent(name, object, hooks) {
+        var Native = Lampa.Component.get(name);
+        var component = new Native(object);
+        component.use(hooks);
+        return component;
+    }
+
+    function animeHome(object) {
+        return mainComponent('category', object, {
+            onInstance: function (line, data) {
+                if (data.url !== 'collections') return;
+                line.use({
+                    onInstance: collectionEnter,
+                    onlyMore: function () {
+                        Lampa.Activity.push({
+                            component: COLLECTIONS, source: SOURCE, url: 'collections', page: 1, title: data.title
+                        });
+                    }
+                });
+            }
+        });
+    }
+
+    function animeCollections(object) {
+        return mainComponent('category_full', object, { onInstance: collectionEnter });
+    }
+
+    function commentPage(id, page, done) {
+        request('comments/news', { postId: id, page: page, limit: 12 }, function (data) {
+            var entries = recordList(data);
+            if (!entries) {
+                done(null);
+                return;
+            }
+            var comments = entries.map(function (item) {
+                if (!item || item.id == null) return null;
+                var text = plain(item.text);
+                return text ? {
+                    id: item.id, text: text, author: plain(item.autor) || 'Гость',
+                    date: plain(item.date), likes: countValue(item.rating), animehubComment: true,
+                    params: {}
+                } : null;
+            }).filter(Boolean);
+            done({ results: comments, total_pages: page + Number(entries.length >= 12 && comments.length > 0) });
+        }, function () { done(null); });
+    }
+
+    function appendComment(owner, entry, full) {
+        var review = Lampa.Maker.make('Discuss', {
+            text: escapeHtml(entry.text),
+            like_count: entry.likes == null ? '' : entry.likes,
+            params: { line: { full_text: full } }
+        }, function (modules) { return modules.only('Line'); });
+        review.create();
+        var html = $(review.render(true));
+        html.find('.full-review__text').text(entry.text);
+        html.find('.full-review__footer').text(
+            [entry.author, entry.date, entry.likes == null ? '' : 'Оценка ' + entry.likes].filter(Boolean).join(' · ')
+        );
+        html.on('hover:enter', function () {
+            var controller = Lampa.Controller.enabled().name;
+            Lampa.Select.show({
+                title: entry.author,
+                items: [],
+                onFullDraw: function (scroll) {
+                    scroll.body().prepend($('<div class="selectbox__text selector"></div>').text(entry.text));
+                },
+                onBack: function () { Lampa.Controller.toggle(controller); }
+            });
+        });
+        owner.emit('append', review, entry);
+    }
+
+    function openComments(movie) {
+        Lampa.Activity.push({
+            component: COMMENTS, source: SOURCE, url: '', page: 1,
+            title: 'Комментарии', id: movie.animehub_id
+        });
+    }
+
+    function animeComments(object) {
+        Lampa.Arrays.extend(object, { params: { items: { mapping: 'list' } } });
+        var component = Lampa.Maker.make('Category', object, function (modules) {
+            return modules.only('Explorer', 'Next', 'Empty', 'Items');
+        });
+
+        function load(resolve, reject) {
+            var page = object.page;
+            commentPage(object.id, page, function (data) {
+                if (component.destroyed) return;
+                if (!data) {
+                    if (page > 1) object.page = page - 1;
+                    reject();
+                    return;
+                }
+                component.total_pages = data.total_pages;
+                resolve(data);
+            });
+        }
+
+        component.use({
+            onCreate: function () { load(this.build.bind(this), this.empty.bind(this)); },
+            onNext: load,
+            onCreateAndAppend: function (entry) { appendComment(this, entry, true); }
+        });
+        return component;
+    }
+
+    function enrichFull(movie, success) {
+        var result = { movie: movie };
+        var pending = 3;
+        var finished = false;
+        var timeout = setTimeout(complete, 5000);
+
+        function complete() {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timeout);
+            success(result);
+        }
+
+        function done() {
+            if (--pending === 0) complete();
+        }
+
+        commentPage(movie.animehub_id, 1, function (data) {
+            if (!finished && data && data.results.length) {
+                result.discuss = {
+                    result: data.results,
+                    total_pages: data.total_pages,
+                    animehubComments: true
+                };
+            }
+            done();
+        });
+
+        function cards(items) {
+            return (recordList(items) || []).map(catalogCard).filter(function (card) {
+                return card && card.id !== movie.id;
+            });
+        }
+
+        request('series', { id: movie.animehub_id }, function (data) {
+            var items = cards(data && data.items);
+            if (!finished && items.length) {
+                result.collection = { results: items, total_pages: 1, animehubRelated: true };
+            }
+            done();
+        }, done);
+
+        var tags = movie.genres.slice(0, 3).map(function (genre) { return genre.id; });
+        if (!tags.length) {
+            done();
+            return;
+        }
+        request('filter', { mode: 'short', tags: tags, sort: 'news_read', page: 1, limit: 18 }, function (data) {
+            var items = cards(data);
+            if (!finished && items.length) result.recomend = { results: items, total_pages: 1 };
+            done();
+        }, done);
     }
 
     function loadFull(object, success, failure) {
@@ -242,7 +517,13 @@
 
             var movie = fullCard(record);
             playback.set(movie, { title: plain(movie.title), options: playerOptions(record.xfields_data || {}) });
-            success({ movie: movie });
+            if (!Lampa.Utils.canWatchChildren('18+', Lampa.Account.Permit.profile.age)) {
+                success({ movie: movie });
+                return;
+            }
+            enrichFull(movie, function (data) {
+                if (!component || !component.destroyed) success(data);
+            });
         }, fail);
     }
 
@@ -274,21 +555,17 @@
             /^\/embed-[\w-]+\.html$/i.test(parsed.pathname) ? url : '';
     }
 
-    function translation(label, value, allowEmbed) {
+    function streamsFor(value) {
         var unique = new Set();
-        var streams = rows(value).map(function (item) {
+        return rows(value).map(function (item) {
             if (!item) return null;
             var url = directStream(item.source || item.link || item.url, item.format || item.type);
-            var embed = !url && allowEmbed && mp4UploadEmbed(item.link);
-            var key = url || embed;
-            if (!key || unique.has(key)) return null;
-            unique.add(key);
-            return { url: url, embed: embed, quality: qualityOf(item.quality) };
+            if (!url || unique.has(url)) return null;
+            unique.add(url);
+            return { url: url, quality: qualityOf(item.quality) };
         }).filter(Boolean).sort(function (a, b) {
-            return Number(Boolean(b.url)) - Number(Boolean(a.url)) || b.quality - a.quality;
+            return b.quality - a.quality;
         });
-
-        return streams.length ? { title: label, streams: streams } : null;
     }
 
     function asObject(data) {
@@ -300,39 +577,55 @@
         }
     }
 
+    function providers(items) {
+        var byName = new Map();
+        items.forEach(function (item) {
+            var url = directStream(item.source || item.link || item.url, item.format || item.type);
+            var embed = url ? '' : mp4UploadEmbed(item.link);
+            if (!url && !embed) return;
+            var name = embed ? 'MP4Upload' : (plain(item.title) || new URL(url).hostname);
+            if (!byName.has(name)) byName.set(name, { title: name, streams: [] });
+            var streams = byName.get(name).streams;
+            if (!streams.some(function (stream) { return stream.url === url && stream.embed === embed; })) {
+                streams.push({ url: url, embed: embed, quality: qualityOf(item.quality) });
+            }
+        });
+        return Array.from(byName.values()).map(function (provider) {
+            provider.streams.sort(function (a, b) {
+                return Number(Boolean(b.url)) - Number(Boolean(a.url)) || b.quality - a.quality;
+            });
+            return provider;
+        });
+    }
+
     function playerOptions(fields) {
         var main = asObject(fields.plyr_json) || {};
         var labels = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
-        var primary = [];
-        var backup = [];
+        var extras = rows(asObject(fields.json_player_voice)).concat(rows(asObject(fields.json_player_subs)));
+        var options = [];
 
         Object.keys(labels).forEach(function (kind) {
             var group = main[kind];
-            if (!group) return;
-            if (kind === 'voice' && !Array.isArray(group) && !group.source && !group.url) {
-                var studios = Object.keys(group);
+            var extra = extras.filter(function (item) { return item && item.type === kind; });
+            var studios = kind === 'voice' && group && !Array.isArray(group) && !group.source && !group.url
+                ? Object.keys(group) : [];
+
+            if (studios.length) {
                 studios.forEach(function (studio) {
-                    var label = labels[kind] + (studios.length > 1 ? ' · ' + plain(studio) : '');
-                    var item = translation(label, group[studio]);
-                    if (item) primary.push(item);
+                    var matches = extra.filter(function (item) {
+                        return !item.edit || plain(item.edit).toLowerCase() === plain(studio).toLowerCase();
+                    });
+                    options.push({
+                        title: labels[kind] + (studios.length > 1 ? ' · ' + plain(studio) : ''),
+                        primary: streamsFor(group[studio]),
+                        backup: providers(studios.length === 1 ? extra : matches)
+                    });
                 });
             } else {
-                var item = translation(labels[kind], group);
-                if (item) primary.push(item);
+                options.push({ title: labels[kind], primary: streamsFor(group), backup: providers(extra) });
             }
         });
-
-        var extras = rows(asObject(fields.json_player_subs));
-        Object.keys(labels).forEach(function (kind) {
-            var group = extras.filter(function (item) { return item && item.type === kind; });
-            var item = translation(labels[kind], group, true);
-            if (item) backup.push(item);
-        });
-
-        return [
-            primary.length && { title: 'Основной', translations: primary },
-            backup.length && { title: 'Дополнительный', translations: backup }
-        ].filter(Boolean);
+        return options.filter(function (option) { return option.primary.length || option.backup.length; });
     }
 
     function restoreFocus(activity) {
@@ -389,69 +682,143 @@
 
     function openPlayers(movie, video) {
         var external = Lampa.Storage.field('player') === 'android';
-        var options = video.options.map(function (player) {
-            var translations = player.translations.filter(function (item) {
-                return item.streams[0].url || external;
+        var options = video.options.map(function (option) {
+            var backup = option.backup.filter(function (provider) {
+                return provider.streams[0].url || external;
             });
-            return { title: player.title, translations: translations };
-        }).filter(function (player) { return player.translations.length; });
+            return { title: escapeHtml(option.title), primary: option.primary, backup: backup };
+        }).filter(function (option) { return option.primary.length || option.backup.length; });
         if (!options.length) {
             Lampa.Noty.show('Для выбранного типа плеера видео недоступно.');
             return;
         }
 
         var activity = Lampa.Activity.active();
+        function choose(streams) {
+            Lampa.Select.closeAll();
+            restoreFocus(activity);
+            play(movie, video, { streams: streams }, activity);
+        }
+
         Lampa.Select.show({
-            title: 'Плеер',
+            title: 'Перевод',
             items: options,
             nohide: true,
             onBack: function () { Lampa.Controller.toggle('content'); },
-            onSelect: function (player) {
+            onSelect: function (option) {
+                var players = [];
+                if (option.primary.length) players.push({ title: 'Основной', streams: option.primary });
+                if (option.backup.length) players.push({ title: 'Дополнительный' });
                 Lampa.Select.show({
-                    title: 'Перевод',
+                    title: 'Плеер',
                     nohide: true,
-                    items: player.translations.map(function (item) {
-                        return { title: escapeHtml(item.title), translation: item };
-                    }),
-                    onSelect: function (choice) {
-                        Lampa.Select.closeAll();
-                        restoreFocus(activity);
-                        play(movie, video, choice.translation, activity);
+                    items: players,
+                    onSelect: function (player) {
+                        if (player.streams) {
+                            choose(player.streams);
+                            return;
+                        }
+                        Lampa.Select.show({
+                            title: 'Дополнительные плееры',
+                            nohide: true,
+                            items: option.backup.map(function (provider) {
+                                return { title: escapeHtml(provider.title), streams: provider.streams };
+                            }),
+                            onSelect: function (provider) { choose(provider.streams); }
+                        });
                     }
                 });
             }
         });
     }
 
+    function openFilter(title, key, value) {
+        var state = { title: title, component: 'category_full', source: SOURCE, url: '', page: 1 };
+        state[key] = value;
+        Lampa.Activity.push(state);
+    }
+
+    function showStudios(description, studios) {
+        if (!studios.length) return;
+        var items = studios.map(function (studio) { return { id: studio, name: escapeHtml(studio) }; });
+        var button = description.tag('Производство', items, function (studio) {
+            openFilter(studio.id, 'companies', studio.id);
+        });
+        description.body.find('.full-descr__tags').append(button);
+    }
+
+    function showStatistics(card, movie) {
+        var row = card.find('.full-start-new__rate-line');
+        var format = new Intl.NumberFormat('ru-RU');
+        if (movie.animehub_rating !== null) {
+            var rating = row.find('.rate--tmdb').removeClass('hide');
+            rating.children().first().text((movie.animehub_rating > 0 ? '+' : '') + format.format(movie.animehub_rating));
+            rating.find('.source--name').text(NAME);
+        }
+        var values = [];
+        if (movie.animehub_views !== null) values.push(format.format(movie.animehub_views) + ' просмотров');
+        if (movie.animehub_votes !== null) values.push(format.format(movie.animehub_votes) + ' голосов');
+        if (values.length) {
+            row.append($('<span class="animehub-view-stats"></span>')
+                .text('Статистика просмотра · ' + values.join(' · ')));
+        }
+    }
+
+    function onlyNativeActions(card) {
+        var standard = '.button--play, .button--book, .button--reaction, .button--subscribe, ' +
+            '.button--options, .view--trailer';
+        card.find('.button--priority').remove();
+        card.find('.buttons--container > *, .full-start-new__buttons > .selector, .full-start__button')
+            .not(standard).remove();
+    }
+
+    function configureCommentLine(line, movie) {
+        if (!line.data || !line.data.animehubComments) return;
+        // The native comments row inserts the CUB add tile. AnimeHub displays its own comments.
+        line.data.results = line.data.results.filter(function (item) { return item.animehubComment; });
+        line.use({
+            onlyCreateAndAppend: function (entry) { appendComment(this, entry, false); },
+            onlyMore: function () { openComments(movie); }
+        });
+    }
+
     function onFull(event) {
-        var movie = event.data && event.data.movie;
+        var movie = event.data && event.data.movie || event.props && event.props.get('movie');
         if (!movie || movie.source !== SOURCE) return;
         if (event.type === 'start') {
             // Lampa emits start only for profiles allowed to watch this card.
             canWatch.add(movie);
+            event.link.use({ onInstance: function (line) { configureCommentLine(line, movie); } });
             return;
         }
-        if (event.type !== 'build' || event.name !== 'start') return;
+        if (event.type !== 'build') return;
+        if (event.name === 'description') {
+            showStudios(event.item, movie.animehub_studios);
+            return;
+        }
+        if (event.name === 'cards' && event.data.animehubRelated) {
+            event.item.render().find('.items-line__title').text('Связанные');
+            return;
+        }
+        if (event.name !== 'start') return;
 
         var card = event.item.html;
-        card.find('.view--torrent').remove();
-        if (movie.animehub_studio) {
-            var details = card.find('.full-start-new__details');
-            if (details.children().length) details.append($('<span class="full-start-new__split"></span>').text('●'));
-            details.append($('<span>').text('Студия: ' + movie.animehub_studio));
-        }
-        if (!canWatch.has(movie)) return;
-
-        var video = playback.get(movie);
-        if (!video || !video.options.length) return;
-
+        onlyNativeActions(card);
+        showStatistics(card, movie);
+        var video = canWatch.has(movie) && playback.get(movie);
+        var observer = new MutationObserver(function () { onlyNativeActions(card); });
+        var buttons = card.find('.full-start-new__buttons, .buttons--container');
+        buttons.each(function () { observer.observe(this, { childList: true, subtree: true }); });
         event.item.use({
             onGroupButtons: function () {
+                onlyNativeActions(this.html);
+                if (!video || !video.options.length) return;
                 var button = this.html.find('.button--play');
                 button.removeClass('hide').off('hover:enter').on('hover:enter', function () {
                     openPlayers(movie, video);
                 });
-            }
+            },
+            onDestroy: function () { observer.disconnect(); }
         });
     }
 
@@ -473,7 +840,10 @@
     function init() {
         if (Lampa.Api.sources[SOURCE]) return;
 
-        Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
+        Lampa.Api.sources[SOURCE] = { category: loadHome, list: loadList, full: loadFull, clear: function () {} };
+        Lampa.Component.add(HOME, animeHome);
+        Lampa.Component.add(COLLECTIONS, animeCollections);
+        Lampa.Component.add(COMMENTS, animeComments);
         Lampa.Listener.follow('full', onFull);
         Lampa.Player.listener.follow('close', function (event) {
             var activity = playbackOrigins.get(event.data);
@@ -484,7 +854,7 @@
 
         var icon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
         Lampa.Menu.addButton(icon, NAME, function () {
-            Lampa.Activity.push({ title: NAME, component: 'category_full', source: SOURCE, page: 1, url: '' });
+            Lampa.Activity.push({ title: NAME, component: HOME, source: SOURCE, page: 1, url: '' });
             checkUpdate();
         });
     }
