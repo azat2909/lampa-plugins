@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.2.0 — источник каталога и видео для Lampa на Android TV.
+ * AnimeHub 0.2.1 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -7,6 +7,7 @@
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
     var API = 'https://api.hentaigo.me/api/';
+    var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 30;
     var TIMEOUT = 15000;
 
@@ -15,7 +16,9 @@
 
     var catalogs = new WeakMap();
     var playback = new WeakMap();
+    var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
+    var checkingUpdate = false;
 
     function request(path, body, success, failure) {
         nativeRequest(API + path, 'POST', body, 'json', success, failure);
@@ -96,6 +99,25 @@
             .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    function latinTitle(value) {
+        return /[A-Za-z]/.test(value) && !/[А-Яа-яЁё\u3040-\u30ff\u3400-\u9fff]/.test(value);
+    }
+
+    function detailTitles(title, alternatives) {
+        var parts = title.split(/\s+\/\s+|\s*\|\s*/).map(function (part) { return part.trim(); });
+        var english = parts.length > 1 && /[А-Яа-яЁё]/.test(parts[0]) &&
+            parts.slice(1).find(latinTitle);
+        if (english) {
+            return { title: parts[0], english: english };
+        }
+
+        english = plain(alternatives).split(/\s+\/\s+|[|;\n]/).map(function (part) {
+            return part.trim();
+        }).find(latinTitle);
+
+        return { title: title, english: english && english.toLowerCase() !== title.toLowerCase() ? english : '' };
+    }
+
     function releaseDate(fields) {
         var date = String(fields.release_date || '');
         if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
@@ -130,17 +152,16 @@
     function fullCard(record) {
         var card = catalogCard(record);
         var fields = record.xfields_data || {};
-        var studios = plain(fields.studios);
+        var titles = detailTitles(card.title, fields.alt_titles);
         var translate = plain(fields.translate_type);
         var description = plain(record.full_story);
-        var meta = [
-            studios && 'Студия: ' + studios,
-            translate && 'Перевод: ' + translate
-        ].filter(Boolean);
 
-        card.title = escapeHtml(card.title);
-        card.original_title = escapeHtml(plain(fields.alt_titles));
-        card.overview = [description].concat(meta).filter(Boolean).map(escapeHtml).join('<br>');
+        card.title = escapeHtml(titles.title);
+        card.original_title = escapeHtml(titles.english);
+        card.tagline = card.original_title;
+        card.animehub_studio = plain(fields.studios);
+        card.overview = [description, translate && 'Перевод: ' + translate]
+            .filter(Boolean).map(escapeHtml).join('<br>');
         card.poster = imageUrl(fields.poster, false);
         card.img = card.poster || './img/img_broken.svg';
         card.background_image = imageUrl(fields.screen, false);
@@ -220,7 +241,7 @@
             }
 
             var movie = fullCard(record);
-            playback.set(movie, { title: plain(record.title), options: playerOptions(record.xfields_data || {}) });
+            playback.set(movie, { title: plain(movie.title), options: playerOptions(record.xfields_data || {}) });
             success({ movie: movie });
         }, fail);
     }
@@ -314,17 +335,28 @@
         ].filter(Boolean);
     }
 
-    function play(movie, video, item) {
+    function restoreFocus(activity) {
+        if (!activity || Lampa.Activity.active() !== activity) return;
+        if (activity.activity && typeof activity.activity.toggle === 'function') activity.activity.toggle();
+        else Lampa.Controller.toggle('content', true);
+    }
+
+    function launch(data, activity) {
+        if (Lampa.Activity.active() !== activity) return;
+        playbackOrigins.set(data, activity);
+        Lampa.Player.play(data);
+    }
+
+    function play(movie, video, item, activity) {
         var first = item.streams[0];
         if (first.embed) {
-            var active = Lampa.Activity.active();
             function unavailable() {
-                if (Lampa.Activity.active() === active) {
+                if (Lampa.Activity.active() === activity) {
                     Lampa.Noty.show('Дополнительный плеер сейчас недоступен.');
                 }
             }
             nativeRequest(first.embed, 'GET', null, 'text', function (html) {
-                if (Lampa.Activity.active() !== active) return;
+                if (Lampa.Activity.active() !== activity) return;
                 // Read the public media source in the embed without running the page.
                 var match = typeof html === 'string' &&
                     html.match(/\bplayer\.src\(\s*\{\s*type:\s*["']video\/mp4["']\s*,\s*src:\s*["']([^"']+)["']/i);
@@ -333,12 +365,12 @@
                     unavailable();
                     return;
                 }
-                Lampa.Player.play({
+                launch({
                     url: url,
                     title: video.title,
                     card: movie,
                     headers: { Referer: first.embed }
-                });
+                }, activity);
             }, unavailable);
             return;
         }
@@ -352,7 +384,7 @@
 
         var data = { url: first.url, title: video.title, card: movie };
         if (Object.keys(quality).length > 1) data.quality = quality;
-        Lampa.Player.play(data);
+        launch(data, activity);
     }
 
     function openPlayers(movie, video) {
@@ -368,6 +400,7 @@
             return;
         }
 
+        var activity = Lampa.Activity.active();
         Lampa.Select.show({
             title: 'Плеер',
             items: options,
@@ -376,10 +409,15 @@
             onSelect: function (player) {
                 Lampa.Select.show({
                     title: 'Перевод',
+                    nohide: true,
                     items: player.translations.map(function (item) {
                         return { title: escapeHtml(item.title), translation: item };
                     }),
-                    onSelect: function (choice) { play(movie, video, choice.translation); }
+                    onSelect: function (choice) {
+                        Lampa.Select.closeAll();
+                        restoreFocus(activity);
+                        play(movie, video, choice.translation, activity);
+                    }
                 });
             }
         });
@@ -393,7 +431,16 @@
             canWatch.add(movie);
             return;
         }
-        if (event.type !== 'build' || event.name !== 'start' || !canWatch.has(movie)) return;
+        if (event.type !== 'build' || event.name !== 'start') return;
+
+        var card = event.item.html;
+        card.find('.view--torrent').remove();
+        if (movie.animehub_studio) {
+            var details = card.find('.full-start-new__details');
+            if (details.children().length) details.append($('<span class="full-start-new__split"></span>').text('●'));
+            details.append($('<span>').text('Студия: ' + movie.animehub_studio));
+        }
+        if (!canWatch.has(movie)) return;
 
         var video = playback.get(movie);
         if (!video || !video.options.length) return;
@@ -408,15 +455,37 @@
         });
     }
 
+    function checkUpdate() {
+        if (checkingUpdate) return;
+        checkingUpdate = true;
+
+        function done() { checkingUpdate = false; }
+
+        request('check-updates', { version: HENTAIHUB_VERSION }, function (data) {
+            done();
+            var latest = data && data.latest && data.latest.version;
+            if (data && data.hasUpdate === true && typeof latest === 'string' && /^\d+(\.\d+)+$/.test(latest)) {
+                Lampa.Noty.show('Доступна новая версия HentaiHub ' + latest, { time: 5000 });
+            }
+        }, done);
+    }
+
     function init() {
         if (Lampa.Api.sources[SOURCE]) return;
 
         Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
         Lampa.Listener.follow('full', onFull);
+        Lampa.Player.listener.follow('close', function (event) {
+            var activity = playbackOrigins.get(event.data);
+            if (!activity) return;
+            playbackOrigins.delete(event.data);
+            restoreFocus(activity);
+        });
 
         var icon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
         Lampa.Menu.addButton(icon, NAME, function () {
             Lampa.Activity.push({ title: NAME, component: 'category_full', source: SOURCE, page: 1, url: '' });
+            checkUpdate();
         });
     }
 
