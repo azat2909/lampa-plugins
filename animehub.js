@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.6 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.7 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.6';
+    var VERSION = '0.5.7';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -113,7 +113,7 @@
     var accountEvents;
 
     function request(path, body, success, failure) {
-        nativeRequest(API + path, 'POST', body, 'json', success, failure);
+        sendRequest(API + path, 'POST', body, 'json', success, failure);
     }
 
     function readProfile(renew) {
@@ -552,10 +552,15 @@
         accountEvents.follow('change', renderAccountSettings);
     }
 
-    function nativeRequest(url, method, body, type, success, failure, timeout) {
+    function hasAndroidBridge() {
         var bridge = window.AndroidJS;
-        if (!bridge || typeof bridge.httpReq !== 'function' || !Lampa.Platform.is('android')) {
-            Lampa.Noty.show('Для AnimeHub нужен Android-клиент Lampa.');
+        return Lampa.Platform.is('android') && bridge && typeof bridge.httpReq === 'function';
+    }
+
+    function sendRequest(url, method, body, type, success, failure, timeout) {
+        var android = hasAndroidBridge();
+        if (!android && !Lampa.Platform.is('tizen')) {
+            Lampa.Noty.show('Для AnimeHub нужна Lampa на Android или установленная Lampa на Tizen.');
             failure();
             return;
         }
@@ -590,7 +595,8 @@
         timeout = timeout || TIMEOUT;
         timer = setTimeout(fail, timeout + 2000);
         try {
-            network.native(url, complete, fail, body ? JSON.stringify(body) : undefined, {
+            var transport = android ? 'native' : 'silent';
+            network[transport](url, complete, fail, body ? JSON.stringify(body) : undefined, {
                 type: method,
                 dataType: type,
                 headers: body ? { 'Content-Type': 'application/json' } : {},
@@ -1015,6 +1021,9 @@
                 sections[index] = data;
                 if (--pending) return;
                 if (component && component.destroyed) return;
+                if (Lampa.Platform.is('tizen') && !sections.some(Boolean)) {
+                    Lampa.Noty.show('AnimeHub: не удалось подключиться к API из Lampa на Tizen.');
+                }
                 var available = sections.filter(function (row) { return row && row.results.length; });
                 available.unshift(bookmarkShelf());
                 success(available);
@@ -1309,7 +1318,7 @@
     }
 
     function loadEliteStudios(done) {
-        nativeRequest(ELITE_STUDIOS + '?t=' + Date.now(), 'GET', null, 'text', function (data) {
+        sendRequest(ELITE_STUDIOS + '?t=' + Date.now(), 'GET', null, 'text', function (data) {
             if (typeof data === 'string') {
                 eliteStudios = data.split(/\r?\n/).map(normalizeFilterName).filter(Boolean);
             }
@@ -1763,7 +1772,7 @@
             function unavailable() {
                 if (Lampa.Activity.active() === activity) Lampa.Noty.show('Не удалось получить прямую ссылку MP4.');
             }
-            nativeRequest(first.embed, 'GET', null, 'text', function (html) {
+            sendRequest(first.embed, 'GET', null, 'text', function (html) {
                 if (Lampa.Activity.active() !== activity) return;
                 var url = mediaFromEmbed(html, first.embed);
                 if (!url) {
@@ -1793,7 +1802,7 @@
     }
 
     function playbackGroups(video) {
-        var external = Lampa.Storage.field('player') === 'android';
+        var external = hasAndroidBridge() && Lampa.Storage.field('player') === 'android';
         return video.options.map(function (group) {
             var options = group.options.map(function (option) {
                 var backup = [];
