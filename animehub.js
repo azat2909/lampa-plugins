@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.2 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.3 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -928,9 +928,10 @@
         event.item.use({
             onGroupButtons: function () {
                 onlyNativeActions(this.html);
-                if (!video || !video.options.length) return;
-                var button = this.html.find('.button--play');
-                button.removeClass('hide').off('hover:enter').on('hover:enter', function () {
+                var available = Boolean(video && video.options.length);
+                var button = this.html.find('.button--play').off('hover:enter').toggleClass('hide', !available);
+                if (!available) return;
+                button.on('hover:enter', function () {
                     openPlayers(movie, video);
                 });
             },
