@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.4 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.5 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -14,6 +14,11 @@
     var COLLECTIONS = 'animehub_collections';
     var COMMENTS = 'animehub_comments';
     var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
+    var MANGA_TITLE_PREFIXES = [
+        'хроники гарема художественного клуба',
+        'секта вечного блаженства',
+        'мой опыт в приложении для знакомств'
+    ];
     var SECTIONS = [
         { title: 'Обновленные', url: 'editdate' },
         { title: 'Новые', url: 'date' },
@@ -156,6 +161,13 @@
         return /(?:^|[\s,/|(\[—–-])(?:манга|manga)(?=$|[\s,/:|)\]—–-])/i.test(plain(value));
     }
 
+    function isKnownMangaTitle(value) {
+        var title = value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+        return MANGA_TITLE_PREFIXES.some(function (prefix) {
+            return title === prefix || (title.startsWith(prefix) && /^\s*[:~—–/|…-]/.test(title.slice(prefix.length)));
+        });
+    }
+
     function episodeNumber(record, title) {
         var fields = record.xfields_data || {};
         var number = [record.episode_number, fields.episode_number, record.episode, fields.episode].find(function (value) {
@@ -191,7 +203,7 @@
         if (!record || !/^\d+$/.test(String(record.id))) return null;
         var title = plain(record.title);
         var ids = entryIds(record.news_lists);
-        if (!title || !ids.length || isManga(title)) return null;
+        if (!title || !ids.length || isManga(title) || isKnownMangaTitle(title)) return null;
         return {
             id: SOURCE + ':collection:' + record.id,
             source: SOURCE,
@@ -208,7 +220,7 @@
         if (!record || !/^\d+$/.test(String(record.id)) || isManga(record.category)) return null;
         var fields = record.xfields_data || {};
         var title = plain(record.title);
-        if (!title || /^(?:\[(?:манга|manga)\]|(?:манга|manga)\s*[:—–-])/i.test(title)) return null;
+        if (!title || isKnownMangaTitle(title) || /^(?:\[(?:манга|manga)\]|(?:манга|manga)\s*[:—–-])/i.test(title)) return null;
 
         return {
             id: SOURCE + ':' + record.id,
