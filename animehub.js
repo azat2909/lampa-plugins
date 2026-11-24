@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.6 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.0 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -19,6 +19,14 @@
     var COMMENTS = 'animehub_comments';
     var RANDOM = 'animehub_random';
     var POPULAR = 'animehub_popular';
+    var ACCOUNT_TOKEN = 'animehub_account_token';
+    var UPDATE_SETTING = 'animehub_check_update';
+    var BOOKMARKS = [
+        { key: 'favorite', list: 1, title: 'Избранное' },
+        { key: 'viewed', list: 0, title: 'Просмотрено' },
+        { key: 'watch_later', list: 2, title: 'В планах' },
+        { key: 'other', list: 3, title: 'Брошено' }
+    ];
     var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/icons/animehub-dice.svg';
     var ELITE_STUDIOS = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/filter/studio-elite';
     var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
@@ -76,9 +84,261 @@
     var catalogFilters = { sort: 'date' };
     var randomShelf;
     var checkingUpdate = false;
+    var accountToken = '';
+    var accountProfile = null;
+    var profileRequest;
+    var changingBookmark = false;
+    var signingIn = false;
+    var loginEmail = '';
+    var loginPassword = '';
+    var settingsRows = {};
+    var accountEvents;
 
     function request(path, body, success, failure) {
         nativeRequest(API + path, 'POST', body, 'json', success, failure);
+    }
+
+    function readProfile(renew) {
+        if (!accountToken) return Promise.resolve(null);
+        if (!renew && profileRequest) return profileRequest;
+        var token = accountToken;
+        var pending = new Promise(function (resolve) {
+            request('users/info/personal_info', { token: token }, resolve, function () { resolve(null); });
+        }).then(function (data) {
+            if (accountToken !== token || profileRequest !== pending) return null;
+            profileRequest = null;
+            if (!data || !data.lists || typeof data.lists !== 'object' || Array.isArray(data.lists)) return null;
+            accountProfile = data;
+            accountEvents.send('change');
+            return data;
+        });
+        profileRequest = pending;
+        return pending;
+    }
+
+    function setAccount(token, profile) {
+        accountToken = token;
+        accountProfile = profile;
+        profileRequest = null;
+        loginPassword = '';
+        Lampa.Storage.set(ACCOUNT_TOKEN, token);
+        accountEvents.send('change');
+    }
+
+    function bookmarkIds(key, profile) {
+        return entryIds(profile && profile.lists && profile.lists[key]);
+    }
+
+    function openBookmarkList(entry) {
+        var activity = Lampa.Activity.active();
+        if (!accountToken) {
+            Lampa.Noty.show('Войдите в HentaiHub в настройках AnimeHub.');
+            return;
+        }
+        readProfile().then(function (profile) {
+            if (Lampa.Activity.active() !== activity) return;
+            if (!profile) {
+                Lampa.Noty.show('Не удалось загрузить списки HentaiHub.');
+                return;
+            }
+            Lampa.Activity.push({
+                component: 'category_full', source: SOURCE, url: '', page: 1,
+                title: entry.title, animehubBookmark: entry.key
+            });
+        });
+    }
+
+    function bookmarkShelf() {
+        return {
+            title: '', source: SOURCE, total_pages: 1,
+            results: BOOKMARKS.map(function (entry) {
+                return {
+                    title: entry.title,
+                    count: accountProfile && accountProfile.lists ? bookmarkIds(entry.key, accountProfile).length : '—',
+                    limit: 0,
+                    params: {
+                        createInstance: function (item) {
+                            return Lampa.Maker.make('Register', item, function (modules) {
+                                return modules.only('Line', 'Callback');
+                            });
+                        },
+                        emit: {
+                            onlyEnter: function () { openBookmarkList(entry); },
+                            onCreate: function () {
+                                var tile = $(this.render(true));
+                                this.animehubRefreshCount = function () {
+                                    var count = accountProfile && accountProfile.lists ?
+                                        bookmarkIds(entry.key, accountProfile).length : '—';
+                                    tile.find('.register__counter').text(count);
+                                };
+                                accountEvents.follow('change', this.animehubRefreshCount);
+                                this.animehubRefreshCount();
+                            },
+                            onDestroy: function () {
+                                accountEvents.remove('change', this.animehubRefreshCount);
+                            }
+                        }
+                    }
+                };
+            })
+        };
+    }
+
+    function showBookmarks(movie, button) {
+        if (!accountToken) {
+            Lampa.Noty.show('Войдите в HentaiHub в настройках AnimeHub.');
+            return;
+        }
+        var activity = Lampa.Activity.active();
+        var token = accountToken;
+        readProfile().then(function (profile) {
+            if (Lampa.Activity.active() !== activity || token !== accountToken) return;
+            if (!profile) {
+                Lampa.Noty.show('Не удалось загрузить списки HentaiHub.');
+                return;
+            }
+            var id = movie.animehub_id;
+            function checked(entry) { return bookmarkIds(entry.key, accountProfile).includes(id); }
+            var items = BOOKMARKS.map(function (entry) {
+                return { title: entry.title, bookmark: entry, checkbox: true, checked: checked(entry) };
+            });
+            var drawn = new Map();
+            showRememberedSelect('bookmarks', {
+                title: 'Закладки',
+                items: items,
+                onDraw: function (element, item) { drawn.set(item.bookmark.key, { item: item, element: element }); },
+                onBack: function () { restoreFocus(activity); },
+                onCheck: function (item, element) {
+                    var entry = item.bookmark;
+                    var desired = item.checked;
+                    item.checked = checked(entry);
+                    element.toggleClass('selectbox-item--checked', item.checked);
+                    if (changingBookmark || accountToken !== token || desired === item.checked) return;
+                    changingBookmark = true;
+                    var body = { token: token, newsId: id, list: desired ? entry.list : -1 };
+                    if (!desired) body.targetList = String(entry.list);
+                    else if (entry.key !== 'favorite') body.targetList = 'all_except_favorite';
+
+                    function fail() {
+                        changingBookmark = false;
+                        if (accountToken === token) Lampa.Noty.show('Не удалось обновить закладки HentaiHub.');
+                    }
+                    request('users/lists', body, function (data) {
+                        if (data && data.success === false) { fail(); return; }
+                        if (accountToken !== token) { changingBookmark = false; return; }
+                        readProfile(true).then(function (latest) {
+                            changingBookmark = false;
+                            if (accountToken !== token) return;
+                            if (!latest) { fail(); return; }
+                            drawn.forEach(function (row) {
+                                row.item.checked = checked(row.item.bookmark);
+                                row.element.toggleClass('selectbox-item--checked', row.item.checked);
+                            });
+                            updateBookmarkIcon(movie, button);
+                            if (checked(entry) !== desired) fail();
+                        });
+                    }, fail);
+                }
+            }, activity);
+        });
+    }
+
+    function updateBookmarkIcon(movie, button) {
+        var stored = BOOKMARKS.some(function (entry) {
+            return bookmarkIds(entry.key, accountProfile).includes(movie.animehub_id);
+        });
+        button.find('svg path').attr('fill', stored ? 'currentColor' : 'transparent');
+    }
+
+    function signIn() {
+        if (signingIn || accountToken) return;
+        if (!loginEmail || !loginPassword) {
+            Lampa.Noty.show('Введите Email и пароль HentaiHub.');
+            return;
+        }
+        var credentials = { email: loginEmail, password: loginPassword };
+        loginPassword = '';
+        signingIn = true;
+        accountEvents.send('change');
+        function fail() {
+            signingIn = false;
+            accountEvents.send('change');
+            Lampa.Noty.show('Не удалось войти в HentaiHub. Проверьте Email и пароль.');
+        }
+        request('users/login', credentials, function (data) {
+            if (!data || typeof data.token !== 'string' || !data.token) {
+                fail();
+                return;
+            }
+            signingIn = false;
+            loginEmail = '';
+            setAccount(data.token, data.user || null);
+            readProfile();
+            Lampa.Noty.show('Вы вошли в HentaiHub.');
+        }, fail);
+    }
+
+    function renderAccountSettings() {
+        var signedIn = Boolean(accountToken);
+        var user = accountProfile || {};
+        var values = {
+            email: loginEmail,
+            password: loginPassword ? '••••••••' : '',
+            name: plain(user.name) || '—',
+            profile_email: plain(user.email) || '—'
+        };
+        Object.keys(settingsRows).forEach(function (key) {
+            var row = settingsRows[key];
+            var show = /^(name|profile_email|logout)$/.test(key) === signedIn;
+            var enabled = show && !signingIn && key !== 'name' && key !== 'profile_email';
+            row.toggleClass('hide', !show).toggleClass('selector', enabled);
+            row.find('.settings-param__value').text(values[key] || '');
+        });
+    }
+
+    function installSettings() {
+        Lampa.SettingsApi.addComponent({ component: SOURCE, name: NAME });
+        Lampa.SettingsApi.addParam({
+            component: SOURCE, param: { name: 'animehub_account', type: 'title' }, field: { name: 'Аккаунт' }
+        });
+        function row(key, label, action) {
+            Lampa.SettingsApi.addParam({
+                component: SOURCE,
+                param: { name: 'animehub_account_' + key, type: action ? 'button' : 'static' },
+                field: { name: label },
+                onChange: action,
+                onRender: function (item) {
+                    settingsRows[key] = item;
+                    if (!item.find('.settings-param__value').length) {
+                        item.append('<div class="settings-param__value"></div>');
+                    }
+                    renderAccountSettings();
+                    if (key === 'name' && accountToken && !(accountProfile && accountProfile.lists)) readProfile();
+                }
+            });
+        }
+        row('email', 'Email', function () {
+            editFilterText('Email', loginEmail, function (value) {
+                if (value !== null) loginEmail = value;
+                renderAccountSettings();
+            });
+        });
+        row('password', 'Пароль', function () {
+            editFilterText('Пароль', loginPassword, function (value) {
+                if (value !== null) loginPassword = value;
+                renderAccountSettings();
+            }, true);
+        });
+        row('login', 'Войти', signIn);
+        row('name', 'Логин');
+        row('profile_email', 'Email');
+        row('logout', 'Выйти из аккаунта', function () { setAccount('', null); });
+        Lampa.SettingsApi.addParam({
+            component: SOURCE,
+            param: { name: UPDATE_SETTING, type: 'select', values: { yes: 'Да', no: 'Нет' }, default: 'yes' },
+            field: { name: 'Проверить обновление' }
+        });
+        accountEvents.follow('change', renderAccountSettings);
     }
 
     function nativeRequest(url, method, body, type, success, failure, timeout) {
@@ -295,11 +555,14 @@
         card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         card.overview = escapeHtml(description);
         card.animehub_translation = plain(fields.translate_type);
+        card.animehub_censored = plain(fields.censored);
         card.poster = imageUrl(fields.poster, false);
         card.img = card.poster || './img/img_broken.svg';
         card.background_image = imageUrl(fields.screen, false);
         card.runtime = Math.max(0, Math.round((Number(fields.duration) || 0) / 60));
-        card.genres = names(fields.hentai_tags, /\s*[,;|]\s*/).map(function (tag) {
+        card.genres = names(fields.hentai_tags, /\s*[,;|]\s*/).filter(function (tag) {
+            return normalizeFilterName(tag) !== 'русская озвучка';
+        }).map(function (tag) {
             return { id: tag, name: escapeHtml(tag) };
         });
         card.production_companies = [];
@@ -307,6 +570,11 @@
         card.vote_average = 0;
         card.animehub_views = countValue(record.news_read);
         card.animehub_votes = countValue(record.vote_num);
+        var rating = countValue(record.rating);
+        if (rating !== null && card.animehub_votes !== null && Math.abs(rating) <= card.animehub_votes) {
+            card.animehub_likes = Math.round((card.animehub_votes + rating) / 2);
+            card.animehub_dislikes = card.animehub_votes - card.animehub_likes;
+        }
         return card;
     }
 
@@ -322,7 +590,7 @@
 
     function listing(object, page) {
         var body = { mode: 'short', page: page, limit: PAGE_SIZE };
-        var ids = object.animehubCollection;
+        var ids = object.animehubBookmark ? (catalogs.get(object) || {}).bookmarkIds || [] : object.animehubCollection;
         if (object.animehubSearch) {
             return { path: 'search', body: { search: object.animehubSearch }, total: 1 };
         }
@@ -362,6 +630,7 @@
         var state = catalogs.get(object);
         if (!state || state.component !== component) {
             state = { component: component, ids: new Set(), lastPage: 0, prefetched: new Map() };
+            if (object.animehubBookmark) state.bookmarkIds = bookmarkIds(object.animehubBookmark, accountProfile);
             catalogs.set(object, state);
         }
         var visited = new Set();
@@ -507,6 +776,7 @@
     }
 
     function loadHome(object, success, failure) {
+        readProfile();
         var component = object.activity && object.activity.component;
         var pending = SECTIONS.length;
         var sections = new Array(pending);
@@ -516,8 +786,8 @@
                 if (--pending) return;
                 if (component && component.destroyed) return;
                 var available = sections.filter(function (row) { return row && row.results.length; });
-                if (available.length) success(available);
-                else failure();
+                available.unshift(bookmarkShelf());
+                success(available);
             });
         });
     }
@@ -715,10 +985,11 @@
         names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/).forEach(function (studio) { filterChoices.studios.add(studio); });
     }
 
-    function editFilterText(title, value, done) {
+    function editFilterText(title, value, done, password) {
         var cancelled = false;
         var keyboard = Lampa.Input.edit({
-            title: title, value: value || '', keyboard: 'lampa', layout: 'clarify', align: 'center', nosave: true
+            title: title, value: value || '', keyboard: 'lampa', layout: 'clarify', align: 'center', nosave: true,
+            password: Boolean(password)
         }, function (input) {
             // Input calls back for both Enter and Back. Let the Back listener run first.
             Promise.resolve().then(function () {
@@ -1362,18 +1633,59 @@
         }
     }
 
-    function showTranslation(card, movie, video) {
-        var label = video && video.options.map(function (group) { return group.title; }).join(', ');
-        if (!label) label = /^raw$/i.test(movie.animehub_translation) ? 'Оригинал' : movie.animehub_translation;
-        var translation = $('<div class="full-start-new__details"></div>')
-            .append($('<strong></strong>').text('Перевод'));
-        if (label) translation.append($('<span></span>').text(' · ' + label));
-        // Use the native metadata style without leaving a reaction element that Lampa can repaint.
-        card.find('.full-start-new__reactions').replaceWith(translation);
+    function showTitleMetadata(card, movie, video) {
+        var labels = names(movie.animehub_translation, /\s*[,;|]\s*/);
+        var groups = video ? video.options : [];
+        var licensed = labels.concat(groups.map(function (group) { return group.title; })).map(normalizeFilterName);
+        var translation = ['voice', 'subs', 'raw'].filter(function (key) {
+            return licensed.includes(normalizeFilterName(TRANSLATIONS[key])) ||
+                (key === 'raw' && licensed.includes('raw')) ||
+                (key === 'voice' && licensed.includes('русская озвучка'));
+        }).map(function (key) { return TRANSLATIONS[key]; }).join(', ');
+        var hd = movie.genres.some(function (genre) { return /^(?:HD|Full HD|UHD|4K)$/i.test(genre.id); }) ||
+            groups.some(function (group) {
+                return group.options.some(function (option) {
+                    return option.primary.some(function (stream) { return stream.quality >= 720; }) ||
+                        option.backup.some(function (provider) {
+                            return provider.streams.some(function (stream) { return stream.quality >= 720; });
+                        });
+                });
+            });
+        var censorship = '';
+        if (/^(?:uncensored|без цензуры)$/i.test(movie.animehub_censored)) censorship = 'без цензуры';
+        if (/^(?:censored|с цензурой)$/i.test(movie.animehub_censored)) censorship = 'с цензурой';
+        var quality = [hd ? 'HD' : '', censorship].filter(Boolean).join(' | ');
+        var time = movie.runtime ? String(Math.floor(movie.runtime / 60)).padStart(2, '0') +
+            ':' + String(movie.runtime % 60).padStart(2, '0') : '';
+        var details = card.find('.full-start-new__details').first().empty();
+        [time, translation || labels.join(', '), quality].filter(Boolean).forEach(function (value, index) {
+            if (index) details.append('<span class="full-start-new__split">●</span>');
+            details.append($('<span></span>').text(value));
+        });
+
+        var reactions = $('<div class="animehub-reaction-counts"></div>').css({
+            display: 'flex', gap: '0.9em', margin: '0.55em 0', alignItems: 'center'
+        });
+        if (movie.animehub_likes !== undefined && movie.animehub_dislikes !== undefined) {
+            [
+                { icon: '♥', value: movie.animehub_likes, name: 'Лайки' },
+                { icon: '💔︎', value: movie.animehub_dislikes, name: 'Дизлайки' }
+            ].forEach(function (entry) {
+                var value = $('<span></span>').attr('aria-label', entry.name + ' ' + entry.value);
+                value.append($('<span aria-hidden="true"></span>').text(entry.icon).css({
+                    color: '#92999c', marginRight: '0.35em', filter: 'grayscale(1)'
+                }));
+                value.append($('<span aria-hidden="true"></span>').text(new Intl.NumberFormat('ru-RU').format(entry.value)));
+                reactions.append(value);
+            });
+            card.find('.full-start-new__reactions').replaceWith(reactions);
+        } else {
+            card.find('.full-start-new__reactions').addClass('hide').removeClass('selector');
+        }
     }
 
     function onlyNativeActions(card) {
-        var standard = '.button--play, .button--book, .button--subscribe, .view--trailer';
+        var standard = '.button--play, .button--book, .animehub-bookmark-button, .button--subscribe, .view--trailer';
         card.find('.button--priority').remove();
         card.find('.buttons--container > *, .full-start-new__buttons > .selector, .full-start__button')
             .not(standard).remove();
@@ -1423,7 +1735,17 @@
         decoratePoster(card.find('.full-start-new__poster'), movie.animehub_episode);
         onlyNativeActions(card);
         showStatistics(card, movie);
-        showTranslation(card, movie, playback.get(movie));
+        showTitleMetadata(card, movie, playback.get(movie));
+        var nativeBookmark = card.find('.button--book').first();
+        var bookmark = nativeBookmark.clone(false).removeClass('button--book loading').addClass('animehub-bookmark-button');
+        bookmark.find('span').last().text('Закладки');
+        bookmark.on('hover:focus hover:enter', function () { event.item.last = this; });
+        bookmark.on('hover:enter', function () { showBookmarks(movie, bookmark); });
+        nativeBookmark.replaceWith(bookmark);
+        function refreshBookmark() { updateBookmarkIcon(movie, bookmark); }
+        accountEvents.follow('change', refreshBookmark);
+        refreshBookmark();
+        if (accountToken && !accountProfile) readProfile();
         var video = canWatch.has(movie) && playback.get(movie);
         var observer = new MutationObserver(function () { onlyNativeActions(card); });
         var buttons = card.find('.full-start-new__buttons, .buttons--container');
@@ -1438,7 +1760,10 @@
                     openPlayers(movie, video);
                 });
             },
-            onDestroy: function () { observer.disconnect(); }
+            onDestroy: function () {
+                observer.disconnect();
+                accountEvents.remove('change', refreshBookmark);
+            }
         });
     }
 
@@ -1460,6 +1785,9 @@
     function init() {
         if (Lampa.Api.sources[SOURCE]) return;
 
+        accountEvents = Lampa.Subscribe();
+        accountToken = Lampa.Storage.get(ACCOUNT_TOKEN, '') || '';
+        installSettings();
         Lampa.Api.sources[SOURCE] = { category: loadHome, list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
@@ -1478,7 +1806,7 @@
         var icon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
         Lampa.Menu.addButton(icon, NAME, function () {
             Lampa.Activity.push({ title: NAME, component: HOME, source: SOURCE, page: 1, url: '' });
-            checkUpdate();
+            if (Lampa.Storage.field(UPDATE_SETTING) !== 'no') checkUpdate();
         });
     }
 
