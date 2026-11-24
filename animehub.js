@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.3 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.4 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -578,39 +578,9 @@
     }
 
     function animePopular(object) {
-        var tab = $('<button type="button" class="simple-button selector animehub-popular-tab" aria-haspopup="dialog">Популярное</button>').css({
-            position: 'fixed',
-            top: '50%',
-            right: 0,
-            zIndex: 2,
-            transform: 'translateY(-50%)',
-            writingMode: 'vertical-rl',
-            whiteSpace: 'nowrap',
-            padding: '0.9em 0.45em',
-            font: 'inherit',
-            color: 'inherit',
-            border: 0
-        });
-        function open() {
-            if (Lampa.Activity.active() === object) showPopular(object);
-        }
-        function offerTab() {
-            if (Lampa.Controller.own(this)) Lampa.Controller.collectionAppend(tab);
-        }
-        tab.on('hover:enter', open);
-
         return mainComponent('category_full', object, {
-            onStart: function () { this.render().append(tab.show()); },
-            onPause: function () { tab.hide(); },
-            onToggle: offerTab,
-            onScroll: offerTab,
-            onController: function (controller) {
-                var nativeRight = controller.right;
-                controller.right = function () {
-                    var navigator = window.Navigator;
-                    if (navigator && typeof navigator.canmove === 'function' && !navigator.canmove('right')) open();
-                    else nativeRight.apply(this, arguments);
-                };
+            onlyRight: function () {
+                if (Lampa.Activity.active() === object) showPopular(object);
             }
         });
     }
@@ -618,7 +588,7 @@
     function showPopular(object) {
         function back() { restoreFocus(object); }
         Lampa.Select.show({
-            title: 'Популярное',
+            title: 'Популярные',
             items: PERIODS.map(function (period) {
                 return { title: period.title, period: period, selected: period.value === object.animehubPeriod };
             }),
@@ -688,6 +658,7 @@
 
     function selectFilter(title, key, options, draft, back, manual) {
         var items = options.map(function (option) {
+            if (option.separator) return { title: option.title, separator: true };
             return { title: escapeHtml(option.title), value: option.value, selected: option.value === draft[key] };
         });
         if (manual) items.push({ title: 'Ввести вручную', manual: true });
@@ -701,7 +672,7 @@
                         if (input) {
                             var normalized = normalizeFilterName(input);
                             var match = options.find(function (option) {
-                                return normalizeFilterName(option.title) === normalized;
+                                return !option.separator && normalizeFilterName(option.title) === normalized;
                             });
                             draft[key] = match ? match.value : input;
                         }
@@ -732,20 +703,28 @@
         var sorted = Array.from(filterChoices[key]).sort(function (a, b) {
             return a.localeCompare(b, 'ru');
         });
-        if (key === 'studios') {
-            var known = new Map();
-            sorted.forEach(function (value) {
-                var name = normalizeFilterName(value);
-                if (!known.has(name) || value.indexOf('\u00a0') !== -1) known.set(name, value);
-            });
-            var order = new Set(eliteStudios.concat(Array.from(known.keys())));
-            sorted = Array.from(order).filter(function (name) { return known.has(name); }).map(function (name) {
-                return known.get(name);
-            });
-        }
-        return [{ title: 'Все', value: '' }].concat(sorted.map(function (value) {
+        function option(value) {
             return { title: value.replace(/\s+/g, ' '), value: value };
-        }));
+        }
+        var options = [{ title: 'Все', value: '' }];
+        if (key !== 'studios') return options.concat(sorted.map(option));
+
+        var known = new Map();
+        sorted.forEach(function (value) {
+            var name = normalizeFilterName(value);
+            if (!known.has(name) || value.indexOf('\u00a0') !== -1) known.set(name, value);
+        });
+        var favorites = [];
+        eliteStudios.forEach(function (name) {
+            if (!known.has(name)) return;
+            favorites.push(option(known.get(name)));
+            known.delete(name);
+        });
+        if (favorites.length) {
+            options = options.concat({ title: 'Избранные', separator: true }, favorites);
+            if (known.size) options.push({ title: 'Остальные', separator: true });
+        }
+        return options.concat(Array.from(known.values(), option));
     }
 
     function filterYears() {
