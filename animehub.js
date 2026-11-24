@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.0 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.1 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -13,6 +13,7 @@
     var HOME = 'animehub_home';
     var COLLECTIONS = 'animehub_collections';
     var COMMENTS = 'animehub_comments';
+    var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
     var SECTIONS = [
         { title: 'Обновленные', url: 'editdate' },
         { title: 'Новые', url: 'date' },
@@ -191,15 +192,14 @@
         var card = catalogCard(record);
         var fields = record.xfields_data || {};
         var titles = detailTitles(card.title, fields.alt_titles);
-        var translate = plain(fields.translate_type);
         var description = plain(record.full_story);
 
         card.title = escapeHtml(titles.title);
         card.original_title = escapeHtml(titles.english);
         card.tagline = card.original_title;
         card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
-        card.overview = [description, translate && 'Перевод: ' + translate]
-            .filter(Boolean).map(escapeHtml).join('<br>');
+        card.overview = escapeHtml(description);
+        card.animehub_translation = plain(fields.translate_type);
         card.poster = imageUrl(fields.poster, false);
         card.img = card.poster || './img/img_broken.svg';
         card.background_image = imageUrl(fields.screen, false);
@@ -210,7 +210,6 @@
         card.production_companies = [];
         card.production_countries = [];
         card.vote_average = 0;
-        card.animehub_rating = countValue(record.rating);
         card.animehub_views = countValue(record.news_read);
         card.animehub_votes = countValue(record.vote_num);
         return card;
@@ -440,7 +439,7 @@
         return component;
     }
 
-    function enrichFull(movie, success) {
+    function enrichFull(record, movie, success) {
         var result = { movie: movie };
         var pending = 3;
         var finished = false;
@@ -482,14 +481,18 @@
             done();
         }, done);
 
-        var tags = movie.genres.slice(0, 3).map(function (genre) { return genre.id; });
-        if (!tags.length) {
+        var ids = entryIds(record.related_ids).filter(function (id) { return id !== movie.animehub_id; })
+            .slice(0, PAGE_SIZE);
+        if (!ids.length) {
             done();
             return;
         }
-        request('filter', { mode: 'short', tags: tags, sort: 'news_read', page: 1, limit: 18 }, function (data) {
-            var items = cards(data);
-            if (!finished && items.length) result.recomend = { results: items, total_pages: 1 };
+        request('news', { mode: 'short', ids: ids, page: 1, limit: ids.length }, function (data) {
+            var byId = new Map(cards(data).map(function (card) { return [card.animehub_id, card]; }));
+            var items = ids.map(function (id) { return byId.get(id); }).filter(Boolean);
+            if (!finished && items.length) result.recomend = {
+                results: items, total_pages: 1, animehubRecommended: true
+            };
             done();
         }, done);
     }
@@ -521,7 +524,7 @@
                 success({ movie: movie });
                 return;
             }
-            enrichFull(movie, function (data) {
+            enrichFull(record, movie, function (data) {
                 if (!component || !component.destroyed) success(data);
             });
         }, fail);
@@ -547,12 +550,17 @@
         return match ? Number(match[1]) : 0;
     }
 
-    function mp4UploadEmbed(value) {
+    function embedProvider(value) {
         var url = httpsUrl(value);
         if (!url) return '';
         var parsed = new URL(url);
-        return /^(?:www\.)?mp4upload\.com$/i.test(parsed.hostname) &&
-            /^\/embed-[\w-]+\.html$/i.test(parsed.pathname) ? url : '';
+        if (/^(?:www\.)?mp4upload\.com$/i.test(parsed.hostname) &&
+            /^\/embed-[\w-]+\.html$/i.test(parsed.pathname)) return 'MP4';
+        if (/^(?:bysesayeveum\.com|byse\.sx)$/i.test(parsed.hostname) &&
+            /^\/e\/[\w-]+\/?$/i.test(parsed.pathname)) return 'Moon';
+        if (/^(?:abyssplayer\.com|(?:[\w-]+\.)?abyss\.to)$/i.test(parsed.hostname) &&
+            /^\/[\w-]+\/?$/i.test(parsed.pathname)) return 'Hydra';
+        return '';
     }
 
     function streamsFor(value) {
@@ -581,13 +589,15 @@
         var byName = new Map();
         items.forEach(function (item) {
             var url = directStream(item.source || item.link || item.url, item.format || item.type);
-            var embed = url ? '' : mp4UploadEmbed(item.link);
+            var source = !url && embedProvider(item.link);
+            var embed = source ? httpsUrl(item.link) : '';
             if (!url && !embed) return;
-            var name = embed ? 'MP4Upload' : (plain(item.title) || new URL(url).hostname);
+            var name = source || plain(item.title) || new URL(url).hostname;
+            if (/^(?:mp4|mp4upload)$/i.test(name)) name = 'MP4';
             if (!byName.has(name)) byName.set(name, { title: name, streams: [] });
             var streams = byName.get(name).streams;
             if (!streams.some(function (stream) { return stream.url === url && stream.embed === embed; })) {
-                streams.push({ url: url, embed: embed, quality: qualityOf(item.quality) });
+                streams.push({ url: url, embed: embed, provider: source, quality: qualityOf(item.quality) });
             }
         });
         return Array.from(byName.values()).map(function (provider) {
@@ -600,32 +610,45 @@
 
     function playerOptions(fields) {
         var main = asObject(fields.plyr_json) || {};
-        var labels = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
         var extras = rows(asObject(fields.json_player_voice)).concat(rows(asObject(fields.json_player_subs)));
-        var options = [];
+        var voice = main.voice;
+        var studios = voice && !Array.isArray(voice) && !voice.source && !voice.url && !voice.link
+            ? Object.keys(voice) : [];
+        var tracks = new Map();
 
-        Object.keys(labels).forEach(function (kind) {
-            var group = main[kind];
-            var extra = extras.filter(function (item) { return item && item.type === kind; });
-            var studios = kind === 'voice' && group && !Array.isArray(group) && !group.source && !group.url
-                ? Object.keys(group) : [];
+        function track(name) {
+            var key = name.toLowerCase();
+            if (!tracks.has(key)) tracks.set(key, {
+                title: name || 'Без указания студии', primary: [], extras: []
+            });
+            return tracks.get(key);
+        }
 
-            if (studios.length) {
-                studios.forEach(function (studio) {
-                    var matches = extra.filter(function (item) {
-                        return !item.edit || plain(item.edit).toLowerCase() === plain(studio).toLowerCase();
-                    });
-                    options.push({
-                        title: labels[kind] + (studios.length > 1 ? ' · ' + plain(studio) : ''),
-                        primary: streamsFor(group[studio]),
-                        backup: providers(studios.length === 1 ? extra : matches)
-                    });
-                });
-            } else {
-                options.push({ title: labels[kind], primary: streamsFor(group), backup: providers(extra) });
-            }
+        studios.forEach(function (studio) {
+            track(plain(studio)).primary = streamsFor(voice[studio]);
         });
-        return options.filter(function (option) { return option.primary.length || option.backup.length; });
+        if (voice && !studios.length) track('').primary = streamsFor(voice);
+        extras.filter(function (item) { return item && item.type === 'voice'; }).forEach(function (item) {
+            var studio = plain(item.edit);
+            if (!studio && tracks.size === 1) {
+                tracks.values().next().value.extras.push(item);
+            } else track(studio).extras.push(item);
+        });
+
+        return Object.keys(TRANSLATIONS).map(function (kind) {
+            var options = kind === 'voice' ? Array.from(tracks.values()).map(function (item) {
+                return { title: item.title, primary: item.primary, backup: providers(item.extras) };
+            }) : [{
+                title: TRANSLATIONS[kind],
+                primary: streamsFor(main[kind]),
+                backup: providers(extras.filter(function (item) { return item && item.type === kind; }))
+            }];
+            return {
+                kind: kind,
+                title: TRANSLATIONS[kind],
+                options: options.filter(function (item) { return item.primary.length || item.backup.length; })
+            };
+        }).filter(function (group) { return group.options.length; });
     }
 
     function restoreFocus(activity) {
@@ -640,21 +663,88 @@
         Lampa.Player.play(data);
     }
 
+    function mediaFromEmbed(html, stream) {
+        if (typeof html !== 'string' || html.length > 750000) return '';
+        function findUrl(value) {
+            if (typeof value !== 'string' || !value.trim()) return '';
+            try {
+                var url = directStream(new URL(plain(value), stream.embed).href);
+                if (stream.provider === 'MP4' && url && !/(^|\.)mp4upload\.com$/i.test(new URL(url).hostname)) {
+                    return '';
+                }
+                return url;
+            } catch (error) {
+                return '';
+            }
+        }
+
+        var patterns = [
+            /<video\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/ig,
+            /<source\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/ig,
+            /\bplayer\.src\(\s*\{[^{}]{0,500}?\bsrc\s*:\s*["']([^"']+)["']/ig
+        ];
+        var source = '';
+        patterns.some(function (pattern) {
+            var match;
+            while ((match = pattern.exec(html))) {
+                source = findUrl(match[1]);
+                if (source) return true;
+            }
+            return false;
+        });
+        if (source) return source;
+
+        if (stream.provider === 'Hydra') {
+            var config = html.match(/\bconst\s+datas\s*=\s*["']([a-z\d+/=]{1,16384})["']/i);
+            if (config) {
+                try {
+                    var data = asObject(atob(config[1]));
+                    if (data) return findUrl(data.media) || findUrl(data.file) || findUrl(data.url);
+                } catch (error) {
+                    return '';
+                }
+            }
+        }
+        return '';
+    }
+
+    function openEmbed(stream, activity) {
+        if (Lampa.Activity.active() !== activity) return;
+        var frame = Lampa.Iframe.render().find('iframe');
+        var permissions = { sandbox: 'allow-scripts allow-same-origin', allow: 'autoplay; fullscreen' };
+        var previous = {};
+        Object.keys(permissions).forEach(function (attribute) {
+            previous[attribute] = frame.attr(attribute);
+            frame.attr(attribute, permissions[attribute]);
+        });
+        Lampa.Iframe.show({
+            url: stream.embed,
+            onBack: function () {
+                Object.keys(previous).forEach(function (attribute) {
+                    if (previous[attribute] === undefined) frame.removeAttr(attribute);
+                    else frame.attr(attribute, previous[attribute]);
+                });
+                restoreFocus(activity);
+            }
+        });
+        if (Lampa.Storage.field('player') === 'android') {
+            Lampa.Noty.show(stream.provider + ' открыт во встроенном веб-плеере');
+        }
+    }
+
     function play(movie, video, item, activity) {
         var first = item.streams[0];
         if (first.embed) {
             function unavailable() {
-                if (Lampa.Activity.active() === activity) {
+                if (Lampa.Activity.active() !== activity) return;
+                if (first.provider === 'MP4') {
                     Lampa.Noty.show('Дополнительный плеер сейчас недоступен.');
-                }
+                } else openEmbed(first, activity);
             }
             nativeRequest(first.embed, 'GET', null, 'text', function (html) {
                 if (Lampa.Activity.active() !== activity) return;
-                // Read the public media source in the embed without running the page.
-                var match = typeof html === 'string' &&
-                    html.match(/\bplayer\.src\(\s*\{\s*type:\s*["']video\/mp4["']\s*,\s*src:\s*["']([^"']+)["']/i);
-                var url = match && directStream(match[1], 'mp4');
-                if (!url || !/(^|\.)mp4upload\.com$/i.test(new URL(url).hostname)) {
+                var url = mediaFromEmbed(html, first);
+                if (!url) {
                     unavailable();
                     return;
                 }
@@ -682,13 +772,17 @@
 
     function openPlayers(movie, video) {
         var external = Lampa.Storage.field('player') === 'android';
-        var options = video.options.map(function (option) {
-            var backup = option.backup.filter(function (provider) {
-                return provider.streams[0].url || external;
-            });
-            return { title: escapeHtml(option.title), primary: option.primary, backup: backup };
-        }).filter(function (option) { return option.primary.length || option.backup.length; });
-        if (!options.length) {
+        var groups = video.options.map(function (group) {
+            var options = group.options.map(function (option) {
+                var backup = option.backup.filter(function (provider) {
+                    var first = provider.streams[0];
+                    return first.url || first.provider !== 'MP4' || external;
+                });
+                return { title: escapeHtml(option.title), primary: option.primary, backup: backup };
+            }).filter(function (option) { return option.primary.length || option.backup.length; });
+            return { kind: group.kind, title: group.title, options: options };
+        }).filter(function (group) { return group.options.length; });
+        if (!groups.length) {
             Lampa.Noty.show('Для выбранного типа плеера видео недоступно.');
             return;
         }
@@ -700,33 +794,46 @@
             play(movie, video, { streams: streams }, activity);
         }
 
+        function showPlayer(option) {
+            var players = [];
+            if (option.primary.length) players.push({ title: 'Основной', streams: option.primary });
+            if (option.backup.length) players.push({ title: 'Дополнительный' });
+            Lampa.Select.show({
+                title: 'Плеер',
+                nohide: true,
+                items: players,
+                onSelect: function (player) {
+                    if (player.streams) {
+                        choose(player.streams);
+                        return;
+                    }
+                    Lampa.Select.show({
+                        title: 'Дополнительные плееры',
+                        nohide: true,
+                        items: option.backup.map(function (provider) {
+                            return { title: escapeHtml(provider.title), streams: provider.streams };
+                        }),
+                        onSelect: function (provider) { choose(provider.streams); }
+                    });
+                }
+            });
+        }
+
         Lampa.Select.show({
             title: 'Перевод',
-            items: options,
+            items: groups,
             nohide: true,
             onBack: function () { Lampa.Controller.toggle('content'); },
-            onSelect: function (option) {
-                var players = [];
-                if (option.primary.length) players.push({ title: 'Основной', streams: option.primary });
-                if (option.backup.length) players.push({ title: 'Дополнительный' });
+            onSelect: function (group) {
+                if (group.kind !== 'voice') {
+                    showPlayer(group.options[0]);
+                    return;
+                }
                 Lampa.Select.show({
-                    title: 'Плеер',
+                    title: 'Озвучка',
                     nohide: true,
-                    items: players,
-                    onSelect: function (player) {
-                        if (player.streams) {
-                            choose(player.streams);
-                            return;
-                        }
-                        Lampa.Select.show({
-                            title: 'Дополнительные плееры',
-                            nohide: true,
-                            items: option.backup.map(function (provider) {
-                                return { title: escapeHtml(provider.title), streams: provider.streams };
-                            }),
-                            onSelect: function (provider) { choose(provider.streams); }
-                        });
-                    }
+                    items: group.options,
+                    onSelect: showPlayer
                 });
             }
         });
@@ -750,23 +857,28 @@
     function showStatistics(card, movie) {
         var row = card.find('.full-start-new__rate-line');
         var format = new Intl.NumberFormat('ru-RU');
-        if (movie.animehub_rating !== null) {
-            var rating = row.find('.rate--tmdb').removeClass('hide');
-            rating.children().first().text((movie.animehub_rating > 0 ? '+' : '') + format.format(movie.animehub_rating));
-            rating.find('.source--name').text(NAME);
-        }
+        row.find('.full-start__rate').remove();
         var values = [];
         if (movie.animehub_views !== null) values.push(format.format(movie.animehub_views) + ' просмотров');
         if (movie.animehub_votes !== null) values.push(format.format(movie.animehub_votes) + ' голосов');
         if (values.length) {
             row.append($('<span class="animehub-view-stats"></span>')
-                .text('Статистика просмотра · ' + values.join(' · ')));
+                .text(values.join(' · ')));
         }
     }
 
+    function showTranslation(card, movie, video) {
+        var label = video && video.options.map(function (group) { return group.title; }).join(', ');
+        if (!label) label = /^raw$/i.test(movie.animehub_translation) ? 'Оригинал' : movie.animehub_translation;
+        var translation = $('<div class="full-start-new__details"></div>')
+            .append($('<strong></strong>').text('Перевод'));
+        if (label) translation.append($('<span></span>').text(' · ' + label));
+        // Use the native metadata style without leaving a reaction element that Lampa can repaint.
+        card.find('.full-start-new__reactions').replaceWith(translation);
+    }
+
     function onlyNativeActions(card) {
-        var standard = '.button--play, .button--book, .button--reaction, .button--subscribe, ' +
-            '.button--options, .view--trailer';
+        var standard = '.button--play, .button--book, .button--subscribe, .view--trailer';
         card.find('.button--priority').remove();
         card.find('.buttons--container > *, .full-start-new__buttons > .selector, .full-start__button')
             .not(standard).remove();
@@ -796,8 +908,9 @@
             showStudios(event.item, movie.animehub_studios);
             return;
         }
-        if (event.name === 'cards' && event.data.animehubRelated) {
-            event.item.render().find('.items-line__title').text('Связанные');
+        if (event.name === 'cards' && (event.data.animehubRelated || event.data.animehubRecommended)) {
+            event.item.render().find('.items-line__title')
+                .text(event.data.animehubRelated ? 'Связанные' : 'Рекомендуем также');
             return;
         }
         if (event.name !== 'start') return;
@@ -805,6 +918,7 @@
         var card = event.item.html;
         onlyNativeActions(card);
         showStatistics(card, movie);
+        showTranslation(card, movie, playback.get(movie));
         var video = canWatch.has(movie) && playback.get(movie);
         var observer = new MutationObserver(function () { onlyNativeActions(card); });
         var buttons = card.find('.full-start-new__buttons, .buttons--container');
