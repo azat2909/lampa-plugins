@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.6 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.7 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -13,11 +13,14 @@
     var HOME = 'animehub_home';
     var COLLECTIONS = 'animehub_collections';
     var COMMENTS = 'animehub_comments';
+    var RANDOM = 'animehub_random';
+    var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/animehub-dice.svg';
     var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
     var SECTIONS = [
         { title: 'Обновленные', url: 'editdate' },
         { title: 'Новые', url: 'date' },
         { title: 'Популярные', url: 'news_read' },
+        { title: 'Случайное', url: 'rand' },
         { title: 'Коллекции', url: 'collections' }
     ];
 
@@ -271,6 +274,11 @@
     function listing(object, page) {
         var body = { mode: 'short', page: page, limit: PAGE_SIZE };
         var ids = object.animehubCollection;
+        if (object.url === 'rand') {
+            body.sort = 'rand';
+            body.skipCache = true;
+            return { path: 'news', body: body, total: 1 };
+        }
         if (object.url === 'collections') {
             return { path: 'users/collections/list', body: { page: page, limit: PAGE_SIZE }, collections: true };
         }
@@ -311,6 +319,7 @@
             state.lastPage = page;
             object.page = page;
             if (component) component.total_pages = total;
+            if (object.component === RANDOM) cards.push(randomReloadCard());
             success({ results: cards, page: page, total_pages: total });
         }
 
@@ -360,8 +369,8 @@
                 title: section.title,
                 source: SOURCE,
                 url: section.url,
-                results: data.results,
-                total_pages: data.total_pages
+                results: section.url === 'rand' ? data.results.slice(0, 10) : data.results,
+                total_pages: section.url === 'rand' ? 2 : data.total_pages
             });
         }, function () { done(null); });
     }
@@ -405,6 +414,16 @@
     function animeHome(object) {
         return mainComponent('category', object, {
             onInstance: function (line, data) {
+                if (data.url === 'rand') {
+                    line.use({
+                        onlyMore: function () {
+                            Lampa.Activity.push({
+                                component: RANDOM, source: SOURCE, url: data.url, page: 1, title: data.title
+                            });
+                        }
+                    });
+                    return;
+                }
                 if (data.url !== 'collections') return;
                 line.use({
                     onInstance: collectionEnter,
@@ -420,6 +439,46 @@
 
     function animeCollections(object) {
         return mainComponent('category_full', object, { onInstance: collectionEnter });
+    }
+
+    function randomReloadCard() {
+        return {
+            id: SOURCE + ':random:reload',
+            source: SOURCE,
+            title: 'Загрузить другое',
+            animehubRandomReload: true,
+            params: {
+                emit: {
+                    onCreate: function () {
+                        var view = $(this.render(true)).find('.card__view');
+                        view.find('.card__img').css('visibility', 'hidden');
+                        view.css({
+                            position: 'relative',
+                            backgroundColor: '#292a2f'
+                        }).append($('<img alt="" draggable="false">').attr('src', DICE_ICON).css({
+                            position: 'absolute',
+                            top: '50%',
+                            left: '50%',
+                            width: '48%',
+                            height: 'auto',
+                            transform: 'translate(-50%, -50%)',
+                            pointerEvents: 'none'
+                        }));
+                    }
+                }
+            }
+        };
+    }
+
+    function animeRandom(object) {
+        return mainComponent('category_full', object, {
+            onInstance: function (card, data) {
+                if (!data.animehubRandomReload) return;
+                card.use({
+                    onlyEnter: function () { Lampa.Activity.replace({ page: 1 }); }
+                });
+            }
+        });
     }
 
     function commentPage(id, page, done) {
@@ -980,6 +1039,7 @@
         Lampa.Api.sources[SOURCE] = { category: loadHome, list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
+        Lampa.Component.add(RANDOM, animeRandom);
         Lampa.Component.add(COMMENTS, animeComments);
         Lampa.Listener.follow('full', onFull);
         Lampa.Player.listener.follow('close', function (event) {
