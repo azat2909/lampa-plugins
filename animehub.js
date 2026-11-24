@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.3 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.4 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.3';
+    var VERSION = '0.5.4';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -30,6 +30,10 @@
         { key: 'viewed', list: 0, title: 'Просмотрено' },
         { key: 'watch_later', list: 2, title: 'В планах' },
         { key: 'other', list: 3, title: 'Брошено' }
+    ];
+    var VOTE_LISTS = [
+        { key: 'likes', rating: 1, title: 'Лайки' },
+        { key: 'dislikes', rating: -1, title: 'Дизлайки' }
     ];
     var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/icons/animehub-dice.svg';
     var ELITE_STUDIOS = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/filter/studio-elite';
@@ -102,6 +106,7 @@
     var accountProfile = null;
     var profileRequest;
     var changingBookmark = false;
+    var pendingVotes = new Set();
     var signingIn = false;
     var loginEmail = '';
     var loginPassword = '';
@@ -141,6 +146,7 @@
     }
 
     function bookmarkIds(key, profile) {
+        if (key === 'likes' || key === 'dislikes') return entryIds(profile && profile[key]);
         return entryIds(profile && profile.lists && profile.lists[key]);
     }
 
@@ -271,7 +277,7 @@
     function bookmarkShelf() {
         return {
             title: '', source: SOURCE, total_pages: 1,
-            results: BOOKMARKS.map(function (entry) {
+            results: BOOKMARKS.concat(VOTE_LISTS).map(function (entry) {
                 return {
                     title: entry.title,
                     count: accountProfile && accountProfile.lists ? bookmarkIds(entry.key, accountProfile).length : '—',
@@ -305,11 +311,19 @@
     }
 
     function showBookmarks(movie, button) {
+        var activity = Lampa.Activity.active();
+        var controller = Lampa.Controller.enabled().name;
+        function back() {
+            if (Lampa.Activity.active() === activity) Lampa.Controller.toggle(controller);
+        }
         if (!accountToken) {
-            Lampa.Noty.show('Войдите в HentaiHub в настройках AnimeHub.');
+            Lampa.Select.show({
+                title: 'Закладки',
+                items: [{ title: 'Войдите в HentaiHub в настройках AnimeHub', noenter: true }],
+                onBack: back
+            });
             return;
         }
-        var activity = Lampa.Activity.active();
         var token = accountToken;
         readProfile().then(function (profile) {
             if (Lampa.Activity.active() !== activity || token !== accountToken) return;
@@ -327,7 +341,7 @@
                 title: 'Закладки',
                 items: items,
                 onDraw: function (element, item) { drawn.set(item.bookmark.key, { item: item, element: element }); },
-                onBack: function () { restoreFocus(activity); },
+                onBack: back,
                 onCheck: function (item, element) {
                     var entry = item.bookmark;
                     var desired = item.checked;
@@ -354,7 +368,7 @@
                                 row.item.checked = checked(row.item.bookmark);
                                 row.element.toggleClass('selectbox-item--checked', row.item.checked);
                             });
-                            updateBookmarkIcon(movie, button);
+                            if (button) updateBookmarkIcon(movie, button);
                             if (checked(entry) !== desired) fail();
                         });
                     }, fail);
@@ -368,6 +382,60 @@
             return bookmarkIds(entry.key, accountProfile).includes(movie.animehub_id);
         });
         button.find('svg path').attr('fill', stored ? 'currentColor' : 'transparent');
+    }
+
+    function voteState(id, profile) {
+        return {
+            likes: bookmarkIds('likes', profile).includes(id),
+            dislikes: bookmarkIds('dislikes', profile).includes(id)
+        };
+    }
+
+    function castVote(movie, rating, refresh) {
+        if (rating !== 1 && rating !== -1) return;
+        if (!accountToken) {
+            Lampa.Noty.show('Войдите в HentaiHub в настройках AnimeHub.');
+            return;
+        }
+        var id = movie.animehub_id;
+        if (pendingVotes.has(id)) return;
+        var token = accountToken;
+        pendingVotes.add(id);
+
+        function done(message) {
+            pendingVotes.delete(id);
+            if (message && accountToken === token) Lampa.Noty.show(message);
+        }
+
+        readProfile().then(function (profile) {
+            if (token !== accountToken) { done(); return; }
+            if (!profile) { done('Не удалось загрузить голос HentaiHub.'); return; }
+            var old = voteState(id, profile);
+            var selected = rating === 1 ? old.likes : old.dislikes;
+            var desired = selected ? 0 : rating;
+
+            function confirm() {
+                if (token !== accountToken) { done(); return; }
+                readProfile(true).then(function (latest) {
+                    if (token !== accountToken) { done(); return; }
+                    var current = voteState(id, latest);
+                    if (!latest || current.likes !== (desired === 1) || current.dislikes !== (desired === -1)) {
+                        done('Не удалось подтвердить голос в HentaiHub.');
+                        return;
+                    }
+                    if (Number.isSafeInteger(movie.animehub_likes) && Number.isSafeInteger(movie.animehub_dislikes)) {
+                        movie.animehub_likes = Math.max(0, movie.animehub_likes + Number(current.likes) - Number(old.likes));
+                        movie.animehub_dislikes = Math.max(0, movie.animehub_dislikes + Number(current.dislikes) - Number(old.dislikes));
+                        movie.animehub_votes = movie.animehub_likes + movie.animehub_dislikes;
+                    }
+                    done();
+                    refresh();
+                });
+            }
+
+            // The APK sends the pressed polarity even when tapping it again to remove the vote.
+            request('users/action/news_rating', { token: token, news_id: id, rating: rating }, confirm, confirm);
+        });
     }
 
     function signIn() {
@@ -646,6 +714,14 @@
         decoratePoster($(this.render(true)).find('.card__view'), this.data.animehub_episode);
     }
 
+    function setupTitleCover() {
+        decorateCover.call(this);
+        var card = this.data;
+        // Lampa's Menu module leaves long press unhandled when it has no actions.
+        if (Array.isArray(this.menu_list)) this.menu_list.length = 0;
+        $(this.render(true)).on('hover:long', function () { showBookmarks(card); });
+    }
+
     function collectionCard(record) {
         if (!record || !/^\d+$/.test(String(record.id))) return null;
         var title = plain(record.title);
@@ -685,7 +761,7 @@
             poster: imageUrl(fields.poster, true),
             adult: true,
             restrict: 18,
-            params: { emit: { onCreate: decorateCover } }
+            params: { emit: { onCreate: setupTitleCover } }
         };
     }
 
@@ -1794,7 +1870,7 @@
     function showStatistics(card, movie) {
         var row = card.find('.full-start-new__rate-line');
         var format = new Intl.NumberFormat('ru-RU');
-        row.find('.full-start__rate').remove();
+        row.find('.full-start__rate, .animehub-view-stats').remove();
         var values = [];
         if (movie.animehub_views !== null) values.push(format.format(movie.animehub_views) + ' просмотров');
         if (movie.animehub_votes !== null) values.push(format.format(movie.animehub_votes) + ' голосов');
@@ -1814,6 +1890,8 @@
             .animehub-vote__icon {
                 position: relative; display: inline-block; flex: none; color: #a0a5a8;
             }
+            .animehub-vote-button.focus { box-shadow: inset 0 0 0 .12em currentColor; }
+            .animehub-vote-button[aria-pressed="true"] .animehub-vote__icon { color: #f14b59; }
             .animehub-vote__icon::before, .animehub-vote__icon::after {
                 content: ""; position: absolute; top: 9%; width: 50%; height: 86%;
                 background: currentColor; border-radius: 100px 100px 0 0;
@@ -1847,23 +1925,34 @@
             details.append($('<span></span>').text(value));
         });
 
-        if (movie.animehub_likes !== undefined && movie.animehub_dislikes !== undefined) {
-            var reactions = $('<div class="animehub-reaction-counts"></div>');
-            var format = new Intl.NumberFormat('ru-RU');
-            [
-                { value: movie.animehub_likes, name: 'Лайки', broken: false },
-                { value: movie.animehub_dislikes, name: 'Дизлайки', broken: true }
-            ].forEach(function (entry) {
-                var value = $('<div class="reaction"></div>').attr('aria-label', entry.name + ' ' + entry.value);
-                value.append($('<span class="reaction__icon animehub-vote__icon" aria-hidden="true"></span>')
-                    .toggleClass('animehub-vote__icon--broken', entry.broken));
-                value.append($('<div class="reaction__count" aria-hidden="true"></div>').text(format.format(entry.value)));
-                reactions.append($('<div></div>').append(value));
-            });
-            card.find('.full-start-new__reactions').replaceWith(reactions);
-        } else {
-            card.find('.full-start-new__reactions').addClass('hide').removeClass('selector');
-        }
+        var reactions = $('<div class="animehub-reaction-counts"></div>');
+        VOTE_LISTS.forEach(function (entry) {
+            var button = $('<div class="reaction selector animehub-vote-button" role="button"></div>')
+                .attr('data-rating', entry.rating);
+            button.append($('<span class="reaction__icon animehub-vote__icon" aria-hidden="true"></span>')
+                .toggleClass('animehub-vote__icon--broken', entry.rating === -1));
+            button.append($('<div class="reaction__count" aria-hidden="true"></div>'));
+            reactions.append($('<div></div>').append(button));
+        });
+        var nativeReactions = card.find('.full-start-new__reactions');
+        if (nativeReactions.length) nativeReactions.replaceWith(reactions);
+        else details.after(reactions);
+        updateVoteButtons(reactions, movie);
+    }
+
+    function updateVoteButtons(reactions, movie) {
+        var votes = voteState(movie.animehub_id, accountProfile);
+        var format = new Intl.NumberFormat('ru-RU');
+        // Never highlight both, including when a stale profile returns conflicting flags.
+        var singleVote = votes.likes !== votes.dislikes;
+        VOTE_LISTS.forEach(function (entry) {
+            var button = reactions.find('[data-rating="' + entry.rating + '"]');
+            var count = movie['animehub_' + entry.key];
+            var label = Number.isSafeInteger(count) ? format.format(count) : '—';
+            button.attr('aria-pressed', String(singleVote && votes[entry.key]));
+            button.attr('aria-label', entry.title + ' ' + label);
+            button.find('.reaction__count').text(label);
+        });
     }
 
     function onlyNativeActions(card) {
@@ -1924,10 +2013,21 @@
         bookmark.on('hover:focus hover:enter', function () { event.item.last = this; });
         bookmark.on('hover:enter', function () { showBookmarks(movie, bookmark); });
         nativeBookmark.replaceWith(bookmark);
-        function refreshBookmark() { updateBookmarkIcon(movie, bookmark); }
-        accountEvents.follow('change', refreshBookmark);
-        refreshBookmark();
-        if (accountToken && !accountProfile) readProfile();
+        var reactions = card.find('.animehub-reaction-counts');
+        reactions.find('.animehub-vote-button').on('hover:focus hover:enter', function () { event.item.last = this; })
+            .on('hover:enter', function () {
+                castVote(movie, Number($(this).attr('data-rating')), function () {
+                    updateVoteButtons(reactions, movie);
+                    showStatistics(card, movie);
+                });
+            });
+        function refreshAccountCard() {
+            updateBookmarkIcon(movie, bookmark);
+            updateVoteButtons(reactions, movie);
+        }
+        accountEvents.follow('change', refreshAccountCard);
+        refreshAccountCard();
+        if (accountToken) readProfile();
         var video = canWatch.has(movie) && playback.get(movie);
         var observer = new MutationObserver(function () { onlyNativeActions(card); });
         var buttons = card.find('.full-start-new__buttons, .buttons--container');
@@ -1944,7 +2044,7 @@
             },
             onDestroy: function () {
                 observer.disconnect();
-                accountEvents.remove('change', refreshBookmark);
+                accountEvents.remove('change', refreshAccountCard);
             }
         });
     }
