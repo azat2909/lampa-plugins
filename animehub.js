@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.1 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.2 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.1';
+    var VERSION = '0.5.2';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -275,6 +275,7 @@
             signingIn = false;
             loginEmail = '';
             setAccount(data.token, data.user || null);
+            focusAccountRow('logout');
             readProfile();
             Lampa.Noty.show('Вы вошли в HentaiHub.');
         }, fail);
@@ -285,17 +286,27 @@
         var user = accountProfile || {};
         var values = {
             email: loginEmail,
-            password: loginPassword ? '••••••••' : '',
+            password: loginPassword ? '********' : '',
             name: plain(user.name) || '—',
             profile_email: plain(user.email) || '—'
         };
         Object.keys(settingsRows).forEach(function (key) {
             var row = settingsRows[key];
             var show = /^(name|profile_email|logout)$/.test(key) === signedIn;
-            var enabled = show && !signingIn && key !== 'name' && key !== 'profile_email';
-            row.toggleClass('hide', !show).toggleClass('selector', enabled);
+            // Settings binds its handlers once, including the action rows that start hidden.
+            row.toggleClass('hide', !show);
             row.find('.settings-param__value').text(values[key] || '');
         });
+    }
+
+    function focusAccountRow(key) {
+        if (Lampa.Controller.enabled().name !== 'settings_component') return;
+        var row = settingsRows[key];
+        var target = row && row[0];
+        if (!target || !target.isConnected || target.offsetParent === null) return;
+        var panel = target.parentElement;
+        Lampa.Controller.collectionSet(panel, false, true);
+        Lampa.Controller.collectionFocus(target, panel, true);
     }
 
     function installSettings() {
@@ -303,16 +314,6 @@
         function section(key, label) {
             Lampa.SettingsApi.addParam({
                 component: SOURCE, param: { name: key, type: 'title' }, field: { name: label }
-            });
-        }
-        function hint(key, label) {
-            Lampa.SettingsApi.addParam({
-                component: SOURCE,
-                param: { name: key, type: 'static' },
-                field: { name: label },
-                onRender: function (item) {
-                    item.removeClass('selector').find('.settings-param__name').addClass('settings-param__descr');
-                }
             });
         }
         section('animehub_account', 'Аккаунт');
@@ -324,6 +325,7 @@
                 onChange: action,
                 onRender: function (item) {
                     settingsRows[key] = item;
+                    if (!action) item.removeClass('selector');
                     if (!item.find('.settings-param__value').length) {
                         item.append('<div class="settings-param__value"></div>');
                     }
@@ -339,24 +341,29 @@
             });
         });
         row('password', 'Пароль', function () {
-            editText({ title: 'Пароль', value: loginPassword, nomic: true, nosave: true, password: true }, function (value) {
+            editText({ title: 'Пароль', value: loginPassword, nomic: true, nosave: true }, function (value) {
                 if (value !== null) loginPassword = value;
                 renderAccountSettings();
             });
         });
-        row('login', 'Войти', signIn);
+        row('login', 'Выполнить вход', signIn);
         row('name', 'Логин');
         row('profile_email', 'Email');
-        row('logout', 'Выйти из аккаунта', function () { setAccount('', null); });
+        row('logout', 'Выйти из аккаунта', function () {
+            setAccount('', null);
+            focusAccountRow('email');
+        });
         section('animehub_more', 'Еще');
         Lampa.SettingsApi.addParam({
             component: SOURCE,
             param: { name: UPDATE_SETTING, type: 'select', values: { yes: 'Да', no: 'Нет' }, default: 'yes' },
-            field: { name: 'Проверить обновление' }
+            field: { name: 'Проверить обновление', description: 'Версия APK: ' + HENTAIHUB_VERSION }
         });
-        hint('animehub_apk_version', 'Версия APK: ' + HENTAIHUB_VERSION);
-        section('animehub_about', 'О плагине');
-        hint('animehub_plugin_version', 'Версия: ' + VERSION);
+        Lampa.SettingsApi.addParam({
+            component: SOURCE,
+            param: { name: 'animehub_about', type: 'static' },
+            field: { name: 'О плагине', description: 'Версия: ' + VERSION }
+        });
         accountEvents.follow('change', renderAccountSettings);
     }
 
@@ -1657,16 +1664,12 @@
     function installVoteStyle() {
         $('<style id="animehub-vote-style"></style>').text(`
             .animehub-reaction-counts {
-                display: flex; flex-wrap: wrap; align-items: center; gap: .5em; margin: .55em 0;
+                display: flex; flex-wrap: wrap; align-items: center;
+                margin: -.5em; margin-bottom: 1em; min-height: 3.6em;
             }
-            .animehub-vote {
-                display: inline-flex; align-items: center; gap: .45em; padding: .38em .7em;
-                border-radius: 100px; background: rgba(0, 0, 0, .36); color: #f6f7f9;
-                font-size: 1.12em; font-variant-numeric: tabular-nums;
-            }
+            .animehub-reaction-counts > div { padding: .5em; }
             .animehub-vote__icon {
-                position: relative; display: inline-block; flex: none;
-                width: 1.14em; height: 1.05em; color: #a0a5a8;
+                position: relative; display: inline-block; flex: none; color: #a0a5a8;
             }
             .animehub-vote__icon::before, .animehub-vote__icon::after {
                 content: ""; position: absolute; top: 9%; width: 50%; height: 86%;
@@ -1689,14 +1692,14 @@
             return licensed.includes(normalizeFilterName(TRANSLATIONS[key])) ||
                 (key === 'raw' && licensed.includes('raw')) ||
                 (key === 'voice' && licensed.includes('русская озвучка'));
-        }).map(function (key) { return TRANSLATIONS[key]; }).join(', ');
+        }).map(function (key) { return TRANSLATIONS[key]; }).join(' | ');
         var tags = movie.genres.slice(0, 5).map(function (genre) {
             return Lampa.Utils.capitalizeFirstLetter(genre.id);
-        }).join(', ');
+        }).join(' | ');
         var time = movie.runtime ? String(Math.floor(movie.runtime / 60)).padStart(2, '0') +
             ':' + String(movie.runtime % 60).padStart(2, '0') : '';
         var details = card.find('.full-start-new__details').first().empty();
-        [time, translation || labels.join(', '), tags].filter(Boolean).forEach(function (value, index) {
+        [time, translation || labels.join(' | '), tags].filter(Boolean).forEach(function (value, index) {
             if (index) details.append('<span class="full-start-new__split">●</span>');
             details.append($('<span></span>').text(value));
         });
@@ -1708,11 +1711,11 @@
                 { value: movie.animehub_likes, name: 'Лайки', broken: false },
                 { value: movie.animehub_dislikes, name: 'Дизлайки', broken: true }
             ].forEach(function (entry) {
-                var value = $('<span class="animehub-vote"></span>').attr('aria-label', entry.name + ' ' + entry.value);
-                value.append($('<span class="animehub-vote__icon" aria-hidden="true"></span>')
+                var value = $('<div class="reaction"></div>').attr('aria-label', entry.name + ' ' + entry.value);
+                value.append($('<span class="reaction__icon animehub-vote__icon" aria-hidden="true"></span>')
                     .toggleClass('animehub-vote__icon--broken', entry.broken));
-                value.append($('<span aria-hidden="true"></span>').text(format.format(entry.value)));
-                reactions.append(value);
+                value.append($('<div class="reaction__count" aria-hidden="true"></div>').text(format.format(entry.value)));
+                reactions.append($('<div></div>').append(value));
             });
             card.find('.full-start-new__reactions').replaceWith(reactions);
         } else {
