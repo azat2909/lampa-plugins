@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.4 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.6 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -114,18 +114,25 @@
     }
 
     function detailTitles(title, alternatives) {
-        var parts = title.split(/\s+\/\s+|\s*\|\s*/).map(function (part) { return part.trim(); });
+        var slash = title.indexOf('/');
+        if (slash !== -1) {
+            var heading = title.slice(0, slash).trim();
+            var subtitle = title.slice(slash + 1).trim();
+            return { title: heading || subtitle || title, subtitle: heading ? subtitle : '' };
+        }
+
+        var parts = title.split(/\s*\|\s*/).map(function (part) { return part.trim(); });
         var english = parts.length > 1 && /[А-Яа-яЁё]/.test(parts[0]) &&
             parts.slice(1).find(latinTitle);
         if (english) {
-            return { title: parts[0], english: english };
+            return { title: parts[0], subtitle: english };
         }
 
         english = plain(alternatives).split(/\s+\/\s+|[|;\n]/).map(function (part) {
             return part.trim();
         }).find(latinTitle);
 
-        return { title: title, english: english && english.toLowerCase() !== title.toLowerCase() ? english : '' };
+        return { title: title, subtitle: english && english.toLowerCase() !== title.toLowerCase() ? english : '' };
     }
 
     function releaseDate(fields) {
@@ -207,6 +214,9 @@
     function catalogCard(record) {
         if (!record || !/^\d+$/.test(String(record.id)) || isManga(record.category)) return null;
         var fields = record.xfields_data || {};
+        if (plain(record.category).toLowerCase() === 'неизвестно' &&
+            !names(fields.studios, /[,;|]/).length && !plain(fields.translate_type)) return null;
+
         var title = plain(record.title);
         if (!title || /^(?:\[(?:манга|manga)\]|(?:манга|manga)\s*[:—–-])/i.test(title)) return null;
 
@@ -232,7 +242,7 @@
         var description = plain(record.full_story);
 
         card.title = escapeHtml(titles.title);
-        card.original_title = escapeHtml(titles.english);
+        card.original_title = escapeHtml(titles.subtitle);
         card.tagline = card.original_title;
         card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         card.overview = escapeHtml(description);
@@ -826,7 +836,7 @@
             nohide: true,
             onBack: function () { Lampa.Controller.toggle('content'); },
             onSelect: function (group) {
-                if (group.kind !== 'voice') {
+                if (group.kind !== 'voice' || group.options.length === 1) {
                     showPlayer(group.options[0]);
                     return;
                 }
@@ -913,7 +923,7 @@
         }
         if (event.name === 'cards' && (event.data.animehubRelated || event.data.animehubRecommended)) {
             event.item.render().find('.items-line__title')
-                .text(event.data.animehubRelated ? 'Связанные' : 'Рекомендуем также');
+                .text(event.data.animehubRelated ? 'Связанные' : 'Рекомендации');
             return;
         }
         if (event.name !== 'start') return;
