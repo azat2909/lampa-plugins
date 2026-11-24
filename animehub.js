@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.4 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.5 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -8,9 +8,9 @@
     var NAME = 'AnimeHub';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
-    var PAGE_SIZE = 30;
+    var PAGE_SIZE = 20;
+    var RELATED_LIMIT = 30;
     var INITIAL_PAGES = 5;
-    var SHELF_SIZE = 10;
     var RANDOM_PAGES = 40;
     var TIMEOUT = 15000;
     var HOME = 'animehub_home';
@@ -66,13 +66,14 @@
     window.animehub_catalog_ready = true;
 
     var catalogs = new WeakMap();
+    var menuPositions = new WeakMap();
     var playback = new WeakMap();
     var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
     var filterChoices = { tags: new Set(GENRES), studios: new Set(STUDIOS) };
     var eliteStudios = [];
     var catalogFilters = { sort: 'date' };
-    var randomShelf = [];
+    var randomShelf;
     var checkingUpdate = false;
 
     function request(path, body, success, failure) {
@@ -335,7 +336,7 @@
             body.page = ((object.animehubRandomPage || 1) + page - 2) % RANDOM_PAGES + 1;
             body.skipCache = true;
             if (object.animehubRandomPage) body.refresh = true;
-            return { path: 'news', body: body, total: object.component === RANDOM ? INITIAL_PAGES : 1 };
+            return { path: 'news', body: body, total: object.component === RANDOM || object.animehubShelf ? INITIAL_PAGES : 1 };
         }
         if (object.url === 'collections') {
             return { path: 'users/collections/list', body: { page: page, limit: PAGE_SIZE }, collections: true };
@@ -355,17 +356,33 @@
         var component = object.activity && object.activity.component;
         var state = catalogs.get(object);
         if (!state || state.component !== component) {
-            state = { component: component, ids: new Set(), lastPage: 0 };
+            state = { component: component, ids: new Set(), lastPage: 0, prefetched: new Map() };
             catalogs.set(object, state);
         }
         var visited = new Set();
-        var lastInitialPage = firstPage === 1 && object.component ? INITIAL_PAGES : firstPage;
+        var random = object.component === RANDOM;
+        var lastInitialPage = random && firstPage === 1 ? INITIAL_PAGES : firstPage;
         var results = [];
         var completed = 0;
         var totalPages = 1;
 
+        function isCurrent() {
+            return catalogs.get(object) === state && !(component && component.destroyed);
+        }
+
+        function prefetch(page) {
+            var last = listing(object, page).total || INITIAL_PAGES;
+            for (var next = page + 1; next <= Math.min(last, INITIAL_PAGES); next++) {
+                var query = listing(object, next);
+                if (query.body.ids && !query.body.ids.length) break;
+                state.prefetched.set(next, new Promise(function (resolve) {
+                    request(query.path, query.body, resolve, function () { resolve(null); });
+                }));
+            }
+        }
+
         function fail() {
-            if (catalogs.get(object) !== state || (component && component.destroyed)) return;
+            if (!isCurrent()) return;
             if (completed && results.length) {
                 finish(completed, totalPages);
                 return;
@@ -379,17 +396,20 @@
         function finish(page, total) {
             state.lastPage = page;
             object.page = page;
-            if (object.component === RANDOM) total = page;
+            if (random) total = page;
             if (component) component.total_pages = total;
-            if (object.component === RANDOM) results.push(randomReloadCard());
+            if (random) results.push(randomReloadCard());
             success({ results: results, page: page, total_pages: total });
+            if (firstPage === 1 && object.component && !random && total > page && isCurrent()) {
+                prefetch(page);
+            }
         }
 
         function accept(cards, page, total) {
             results.push.apply(results, cards);
             completed = page;
             totalPages = total;
-            if (page < lastInitialPage && page < total) load(page + 1);
+            if (page < total && (page < lastInitialPage || object.animehubShelf && results.length < PAGE_SIZE)) load(page + 1);
             else finish(page, total);
         }
 
@@ -400,8 +420,8 @@
                 return;
             }
 
-            request(query.path, query.body, function (data) {
-                if (catalogs.get(object) !== state || (component && component.destroyed)) return;
+            function consume(data) {
+                if (!isCurrent()) return;
                 var records = query.collections ? data && data.playlists : recordList(data);
                 if (!Array.isArray(records)) {
                     fail();
@@ -419,35 +439,49 @@
                     var order = new Map(query.body.ids.map(function (id, index) { return [id, index]; }));
                     cards.sort(function (a, b) { return order.get(a.animehub_id) - order.get(b.animehub_id); });
                 }
-                var total = query.total || page + Number(records.length >= PAGE_SIZE);
-                if (!cards.length && page < total && page >= lastInitialPage && !results.length && object.component !== RANDOM) {
+                var total = query.total || page + Number(records.length >= query.body.limit);
+                if (!cards.length && page < total && !random) {
                     var signature = records.map(function (record) { return record && record.id; }).sort().join(',');
-                    if (!visited.has(signature)) {
+                    if (visited.has(signature)) total = page;
+                    else {
                         visited.add(signature);
-                        load(page + 1);
-                        return;
+                        if (page >= lastInitialPage && !results.length && !object.animehubShelf) {
+                            load(page + 1);
+                            return;
+                        }
                     }
-                    total = page;
                 }
                 accept(cards, page, total);
-            }, fail);
+            }
+
+            var cached = state.prefetched.get(page);
+            state.prefetched.delete(page);
+            if (!cached) {
+                request(query.path, query.body, consume, fail);
+                return;
+            }
+            cached.then(function (data) {
+                if (!isCurrent()) return;
+                if (data == null) request(query.path, query.body, consume, fail);
+                else consume(data);
+            });
         }
 
-        if (object.component === RANDOM && object.animehubUseShelf && randomShelf.length) {
-            randomShelf.forEach(function (card) { state.ids.add(card.id); });
-            accept(randomShelf, 1, INITIAL_PAGES);
+        if (random && object.animehubUseShelf && randomShelf && randomShelf.results.length) {
+            randomShelf.results.forEach(function (card) { state.ids.add(card.id); });
+            accept(randomShelf.results, randomShelf.page, INITIAL_PAGES);
         } else load(firstPage);
     }
 
     function fetchShelf(section, done) {
-        loadList({ url: section.url, page: 1 }, function (data) {
-            if (section.url === 'rand') randomShelf = data.results;
-            var hasMore = data.results.length > SHELF_SIZE || section.url === 'rand' || section.url === 'news_read';
+        loadList({ url: section.url, page: 1, animehubShelf: true }, function (data) {
+            if (section.url === 'rand') randomShelf = data;
+            var hasMore = data.results.length > PAGE_SIZE || section.url === 'rand' || section.url === 'news_read';
             done({
                 title: section.title,
                 source: SOURCE,
                 url: section.url,
-                results: data.results.slice(0, SHELF_SIZE),
+                results: data.results.slice(0, PAGE_SIZE),
                 total_pages: Math.max(data.total_pages, hasMore ? 2 : 1)
             });
         }, function () { done(null); });
@@ -517,8 +551,10 @@
                 line.use({
                     onInstance: collectionEnter,
                     onlyMore: function () {
+                        var cover = $(this.render(true)).find('.card--collection')[0];
                         Lampa.Activity.push({
-                            component: COLLECTIONS, source: SOURCE, url: 'collections', page: 1, title: data.title
+                            component: COLLECTIONS, source: SOURCE, url: 'collections', page: 1, title: data.title,
+                            animehubCollectionWidth: cover && window.getComputedStyle(cover).width
                         });
                     }
                 });
@@ -527,7 +563,15 @@
     }
 
     function animeCollections(object) {
-        return mainComponent('category_full', object, { onInstance: collectionEnter });
+        return mainComponent('category_full', object, {
+            onInstance: function (card, data) {
+                collectionEnter(card, data);
+                if (!object.animehubCollectionWidth) return;
+                card.use({
+                    onCreate: function () { $(this.render(true)).css('width', object.animehubCollectionWidth); }
+                });
+            }
+        });
     }
 
     function randomReloadCard() {
@@ -587,7 +631,7 @@
 
     function showPopular(object) {
         function back() { restoreFocus(object); }
-        Lampa.Select.show({
+        showRememberedSelect('period', {
             title: 'Популярные',
             items: PERIODS.map(function (period) {
                 return { title: period.title, period: period, selected: period.value === object.animehubPeriod };
@@ -610,7 +654,41 @@
                 if (object.animehubPeriod) Lampa.Activity.replace(next);
                 else Lampa.Activity.push(next);
             }
-        });
+        }, object);
+    }
+
+    function showRememberedSelect(key, options, activity) {
+        activity = activity || Lampa.Activity.active();
+        if (!activity) {
+            Lampa.Select.show(options);
+            return;
+        }
+        var positions = menuPositions.get(activity);
+        if (!positions) {
+            positions = new Map();
+            menuPositions.set(activity, positions);
+        }
+        var previous = positions.get(key);
+        function isPrevious(item) {
+            return !item.separator && normalizeFilterName(item.title) === previous;
+        }
+        if (previous && options.items.some(isPrevious)) {
+            options.items = options.items.map(function (item) {
+                if (item.separator) return item;
+                return Object.assign({}, item, {
+                    picked: item.picked || item.selected,
+                    selected: isPrevious(item)
+                });
+            });
+            options.nomark = true;
+        }
+        var onSelect = options.onSelect;
+        options.onFocus = function (item) { positions.set(key, normalizeFilterName(item.title)); };
+        if (onSelect) options.onSelect = function (item) {
+            positions.set(key, normalizeFilterName(item.title));
+            return onSelect.apply(this, arguments);
+        };
+        Lampa.Select.show(options);
     }
 
     function collectFilters(fields) {
@@ -662,7 +740,7 @@
             return { title: escapeHtml(option.title), value: option.value, selected: option.value === draft[key] };
         });
         if (manual) items.push({ title: 'Ввести вручную', manual: true });
-        Lampa.Select.show({
+        showRememberedSelect('filter:' + key, {
             title: title,
             items: items,
             onBack: back,
@@ -777,12 +855,12 @@
                 repeat();
             } }
         );
-        Lampa.Select.show({
+        showRememberedSelect('filter', {
             title: 'Фильтр',
             items: items,
             onBack: function () { Lampa.Controller.toggle('head'); },
             onSelect: function (entry) { entry.action(); }
-        });
+        }, activity);
     }
 
     function installHeaderFilter() {
@@ -930,7 +1008,7 @@
         }, done);
 
         var ids = entryIds(record.related_ids).filter(function (id) { return id !== movie.animehub_id; })
-            .slice(0, PAGE_SIZE);
+            .slice(0, RELATED_LIMIT);
         if (!ids.length) {
             done();
             return;
@@ -1207,34 +1285,34 @@
             var players = [];
             if (option.primary.length) players.push({ title: 'Основной', streams: option.primary });
             if (option.backup.length) players.push({ title: 'Дополнительный', streams: option.backup });
-            Lampa.Select.show({
+            showRememberedSelect('player', {
                 title: 'Плеер',
                 nohide: true,
                 items: players,
                 onSelect: function (player) { choose(player.streams); }
-            });
+            }, activity);
         }
 
-        Lampa.Select.show({
+        showRememberedSelect('translation', {
             title: 'Перевод',
             items: groups,
             nohide: true,
-            onBack: function () { Lampa.Controller.toggle('content'); },
+            onBack: function () { restoreFocus(activity); },
             onSelect: function (group) {
                 if (group.kind !== 'voice' || group.options.length === 1) {
                     showPlayer(group.options[0]);
                     return;
                 }
-                Lampa.Select.show({
+                showRememberedSelect('voice', {
                     title: 'Озвучка',
                     nohide: true,
                     items: group.options.map(function (option) {
                         return { title: escapeHtml(option.title), option: option };
                     }),
                     onSelect: function (entry) { showPlayer(entry.option); }
-                });
+                }, activity);
             }
-        });
+        }, activity);
     }
 
     function openFilter(title, key, value) {
