@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.5 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.6 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.5';
+    var VERSION = '0.5.6';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -2010,9 +2010,10 @@
         onlyNativeActions(card);
         showStatistics(card, movie);
         showTitleMetadata(card, movie, playback.get(movie));
+        card.find('.button--play > span').css('display', 'block');
         var nativeBookmark = card.find('.button--book').first();
         var bookmark = nativeBookmark.clone(false).removeClass('button--book loading').addClass('animehub-bookmark-button');
-        bookmark.find('span').last().text('Закладки');
+        bookmark.find('span').last().text('Закладки').css('display', 'block');
         bookmark.on('hover:focus hover:enter', function () { event.item.last = this; });
         bookmark.on('hover:enter', function () { showBookmarks(movie, bookmark); });
         nativeBookmark.replaceWith(bookmark);
