@@ -1,11 +1,13 @@
 /*!
- * AnimeHub 0.5.0 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.1 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
+    var VERSION = '0.5.1';
+    var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 20;
@@ -297,10 +299,23 @@
     }
 
     function installSettings() {
-        Lampa.SettingsApi.addComponent({ component: SOURCE, name: NAME });
-        Lampa.SettingsApi.addParam({
-            component: SOURCE, param: { name: 'animehub_account', type: 'title' }, field: { name: 'Аккаунт' }
-        });
+        Lampa.SettingsApi.addComponent({ component: SOURCE, name: NAME, icon: ICON });
+        function section(key, label) {
+            Lampa.SettingsApi.addParam({
+                component: SOURCE, param: { name: key, type: 'title' }, field: { name: label }
+            });
+        }
+        function hint(key, label) {
+            Lampa.SettingsApi.addParam({
+                component: SOURCE,
+                param: { name: key, type: 'static' },
+                field: { name: label },
+                onRender: function (item) {
+                    item.removeClass('selector').find('.settings-param__name').addClass('settings-param__descr');
+                }
+            });
+        }
+        section('animehub_account', 'Аккаунт');
         function row(key, label, action) {
             Lampa.SettingsApi.addParam({
                 component: SOURCE,
@@ -318,26 +333,30 @@
             });
         }
         row('email', 'Email', function () {
-            editFilterText('Email', loginEmail, function (value) {
+            editText({ title: 'Email', value: loginEmail, nomic: true, nosave: true }, function (value) {
                 if (value !== null) loginEmail = value;
                 renderAccountSettings();
             });
         });
         row('password', 'Пароль', function () {
-            editFilterText('Пароль', loginPassword, function (value) {
+            editText({ title: 'Пароль', value: loginPassword, nomic: true, nosave: true, password: true }, function (value) {
                 if (value !== null) loginPassword = value;
                 renderAccountSettings();
-            }, true);
+            });
         });
         row('login', 'Войти', signIn);
         row('name', 'Логин');
         row('profile_email', 'Email');
         row('logout', 'Выйти из аккаунта', function () { setAccount('', null); });
+        section('animehub_more', 'Еще');
         Lampa.SettingsApi.addParam({
             component: SOURCE,
             param: { name: UPDATE_SETTING, type: 'select', values: { yes: 'Да', no: 'Нет' }, default: 'yes' },
             field: { name: 'Проверить обновление' }
         });
+        hint('animehub_apk_version', 'Версия APK: ' + HENTAIHUB_VERSION);
+        section('animehub_about', 'О плагине');
+        hint('animehub_plugin_version', 'Версия: ' + VERSION);
         accountEvents.follow('change', renderAccountSettings);
     }
 
@@ -555,7 +574,6 @@
         card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         card.overview = escapeHtml(description);
         card.animehub_translation = plain(fields.translate_type);
-        card.animehub_censored = plain(fields.censored);
         card.poster = imageUrl(fields.poster, false);
         card.img = card.poster || './img/img_broken.svg';
         card.background_image = imageUrl(fields.screen, false);
@@ -985,18 +1003,21 @@
         names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/).forEach(function (studio) { filterChoices.studios.add(studio); });
     }
 
-    function editFilterText(title, value, done, password) {
+    function editText(options, done) {
         var cancelled = false;
-        var keyboard = Lampa.Input.edit({
-            title: title, value: value || '', keyboard: 'lampa', layout: 'clarify', align: 'center', nosave: true,
-            password: Boolean(password)
-        }, function (input) {
+        var keyboard = Lampa.Input.edit(options, function (input) {
             // Input calls back for both Enter and Back. Let the Back listener run first.
             Promise.resolve().then(function () {
                 done(cancelled ? null : String(input || '').trim());
             });
         });
         keyboard.listener.follow('back', function () { cancelled = true; });
+    }
+
+    function editFilterText(title, value, done) {
+        editText({
+            title: title, value: value || '', keyboard: 'lampa', layout: 'clarify', align: 'center', nosave: true
+        }, done);
         if (title === 'Поиск') centerSearchKeyboard();
     }
 
@@ -1633,6 +1654,33 @@
         }
     }
 
+    function installVoteStyle() {
+        $('<style id="animehub-vote-style"></style>').text(`
+            .animehub-reaction-counts {
+                display: flex; flex-wrap: wrap; align-items: center; gap: .5em; margin: .55em 0;
+            }
+            .animehub-vote {
+                display: inline-flex; align-items: center; gap: .45em; padding: .38em .7em;
+                border-radius: 100px; background: rgba(0, 0, 0, .36); color: #f6f7f9;
+                font-size: 1.12em; font-variant-numeric: tabular-nums;
+            }
+            .animehub-vote__icon {
+                position: relative; display: inline-block; flex: none;
+                width: 1.14em; height: 1.05em; color: #a0a5a8;
+            }
+            .animehub-vote__icon::before, .animehub-vote__icon::after {
+                content: ""; position: absolute; top: 9%; width: 50%; height: 86%;
+                background: currentColor; border-radius: 100px 100px 0 0;
+            }
+            .animehub-vote__icon::before { left: 50%; transform: rotate(-45deg); transform-origin: 0 100%; }
+            .animehub-vote__icon::after { left: 0; transform: rotate(45deg); transform-origin: 100% 100%; }
+            .animehub-vote__icon--broken {
+                clip-path: polygon(evenodd, 0 0, 46% 0, 38% 32%, 58% 50%, 42% 82%, 42% 100%,
+                    54% 100%, 54% 82%, 71% 50%, 50% 27%, 58% 0, 100% 0, 100% 100%, 0 100%);
+            }
+        `).appendTo('head');
+    }
+
     function showTitleMetadata(card, movie, video) {
         var labels = names(movie.animehub_translation, /\s*[,;|]\s*/);
         var groups = video ? video.options : [];
@@ -1642,40 +1690,28 @@
                 (key === 'raw' && licensed.includes('raw')) ||
                 (key === 'voice' && licensed.includes('русская озвучка'));
         }).map(function (key) { return TRANSLATIONS[key]; }).join(', ');
-        var hd = movie.genres.some(function (genre) { return /^(?:HD|Full HD|UHD|4K)$/i.test(genre.id); }) ||
-            groups.some(function (group) {
-                return group.options.some(function (option) {
-                    return option.primary.some(function (stream) { return stream.quality >= 720; }) ||
-                        option.backup.some(function (provider) {
-                            return provider.streams.some(function (stream) { return stream.quality >= 720; });
-                        });
-                });
-            });
-        var censorship = '';
-        if (/^(?:uncensored|без цензуры)$/i.test(movie.animehub_censored)) censorship = 'без цензуры';
-        if (/^(?:censored|с цензурой)$/i.test(movie.animehub_censored)) censorship = 'с цензурой';
-        var quality = [hd ? 'HD' : '', censorship].filter(Boolean).join(' | ');
+        var tags = movie.genres.slice(0, 5).map(function (genre) {
+            return Lampa.Utils.capitalizeFirstLetter(genre.id);
+        }).join(', ');
         var time = movie.runtime ? String(Math.floor(movie.runtime / 60)).padStart(2, '0') +
             ':' + String(movie.runtime % 60).padStart(2, '0') : '';
         var details = card.find('.full-start-new__details').first().empty();
-        [time, translation || labels.join(', '), quality].filter(Boolean).forEach(function (value, index) {
+        [time, translation || labels.join(', '), tags].filter(Boolean).forEach(function (value, index) {
             if (index) details.append('<span class="full-start-new__split">●</span>');
             details.append($('<span></span>').text(value));
         });
 
-        var reactions = $('<div class="animehub-reaction-counts"></div>').css({
-            display: 'flex', gap: '0.9em', margin: '0.55em 0', alignItems: 'center'
-        });
         if (movie.animehub_likes !== undefined && movie.animehub_dislikes !== undefined) {
+            var reactions = $('<div class="animehub-reaction-counts"></div>');
+            var format = new Intl.NumberFormat('ru-RU');
             [
-                { icon: '♥', value: movie.animehub_likes, name: 'Лайки' },
-                { icon: '💔︎', value: movie.animehub_dislikes, name: 'Дизлайки' }
+                { value: movie.animehub_likes, name: 'Лайки', broken: false },
+                { value: movie.animehub_dislikes, name: 'Дизлайки', broken: true }
             ].forEach(function (entry) {
-                var value = $('<span></span>').attr('aria-label', entry.name + ' ' + entry.value);
-                value.append($('<span aria-hidden="true"></span>').text(entry.icon).css({
-                    color: '#92999c', marginRight: '0.35em', filter: 'grayscale(1)'
-                }));
-                value.append($('<span aria-hidden="true"></span>').text(new Intl.NumberFormat('ru-RU').format(entry.value)));
+                var value = $('<span class="animehub-vote"></span>').attr('aria-label', entry.name + ' ' + entry.value);
+                value.append($('<span class="animehub-vote__icon" aria-hidden="true"></span>')
+                    .toggleClass('animehub-vote__icon--broken', entry.broken));
+                value.append($('<span aria-hidden="true"></span>').text(format.format(entry.value)));
                 reactions.append(value);
             });
             card.find('.full-start-new__reactions').replaceWith(reactions);
@@ -1788,6 +1824,7 @@
         accountEvents = Lampa.Subscribe();
         accountToken = Lampa.Storage.get(ACCOUNT_TOKEN, '') || '';
         installSettings();
+        installVoteStyle();
         Lampa.Api.sources[SOURCE] = { category: loadHome, list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
@@ -1803,8 +1840,7 @@
             restoreFocus(activity);
         });
 
-        var icon = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
-        Lampa.Menu.addButton(icon, NAME, function () {
+        Lampa.Menu.addButton(ICON, NAME, function () {
             Lampa.Activity.push({ title: NAME, component: HOME, source: SOURCE, page: 1, url: '' });
             if (Lampa.Storage.field(UPDATE_SETTING) !== 'no') checkUpdate();
         });
