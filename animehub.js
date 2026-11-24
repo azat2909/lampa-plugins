@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.7 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.0 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -9,19 +9,55 @@
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 30;
+    var SHELF_SIZE = 10;
+    var RANDOM_PAGES = 40;
     var TIMEOUT = 15000;
     var HOME = 'animehub_home';
     var COLLECTIONS = 'animehub_collections';
     var COMMENTS = 'animehub_comments';
     var RANDOM = 'animehub_random';
-    var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/animehub-dice.svg';
+    var POPULAR = 'animehub_popular';
+    var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/icons/animehub-dice.svg';
     var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
     var SECTIONS = [
         { title: 'Обновленные', url: 'editdate' },
         { title: 'Новые', url: 'date' },
         { title: 'Популярные', url: 'news_read' },
+        { title: 'Горячее', url: 'hot' },
         { title: 'Случайное', url: 'rand' },
         { title: 'Коллекции', url: 'collections' }
+    ];
+    var PERIODS = [
+        { title: 'За день', value: 'views_1' },
+        { title: 'За неделю', value: 'views_7' },
+        { title: 'За месяц', value: 'views_31' },
+        { title: 'За полгода', value: 'views_180' },
+        { title: 'За год', value: 'views_365' }
+    ];
+    var SORT_OPTIONS = [
+        { title: 'По новизне', value: 'date' },
+        { title: 'По обновлению', value: 'editdate' },
+        { title: 'По популярности', value: 'news_read' }
+    ];
+    // Initial catalog choices from HentaiHub 0.49's FilterScreen.
+    var GENRES = ['Исекай', 'Романтика', 'Классика', 'Комедия', 'Махо-сёдзё', 'Ужасы', 'Фэнтези', 'Юри', 'Эротика'];
+    // The API matches some studio names with non-breaking spaces.
+    var STUDIOS = [
+        'Moonstone Cherry', 'Studio Deen', 'Pink Pineapple', 'MS Pictures', '3D-Works',
+        'PoRO', 'Mary Jane', 'Queen Bee', 'Vanilla', 'Suzuki Mirano',
+        '2D-Works', 'T-Rex', 'Bunnywalker', 'Pixy Soft', 'MediaBank',
+        'nur', 'Magin Label', 'Collaboration Works', 'Showten', '37c-Binetsu',
+        'Green Bunny', 'Majin Petit', 'Discovery', 'NuTech Digital', 'SELFISH',
+        'ChiChinoya', 'Edge', 'Suiseisha', 'Digital Works', 'Pashmina',
+        'ZIZ', 'Lune Pictures', 'White Bear', 'GOLD BEAR', 'Amour',
+        'Arms', 'Schoolzone', 'Five Ways', 'Milky', 'Umemaro-3D',
+        'Studio 9 Maiami', 'Y.O.U.C.', 'Lemon Heart', 'King Bee', 'Marigold',
+        'Soft on Demand', 'Antechinus', 'Bootleg', 'Mousou Senka', 'BOMB! CUTE! BOMB!',
+        'X City', 'Media Blasters', 'Animac', 'Valkyria', 'Nihikime no Dozeu',
+        'Hot Bear', 'Blue Eyes', 'D3', 'Vicineko', 'Studio FOW',
+        'Toranoana', 'Magic Bus', 'Comic Media', 'Shadow Prod. Co.', 'Shinyusha',
+        'Rabbit Gate', 'Celeb', 'BugBug', 'Central Park Media', 'L.',
+        'Studio Fantasia', 'Cranberry', 'Echo', 'Любительский'
     ];
 
     if (window.animehub_catalog_ready) return;
@@ -31,6 +67,9 @@
     var playback = new WeakMap();
     var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
+    var filterChoices = { tags: new Set(GENRES), studios: new Set(STUDIOS) };
+    var catalogFilters = { sort: 'date' };
+    var randomShelf = [];
     var checkingUpdate = false;
 
     function request(path, body, success, failure) {
@@ -274,9 +313,24 @@
     function listing(object, page) {
         var body = { mode: 'short', page: page, limit: PAGE_SIZE };
         var ids = object.animehubCollection;
+        if (object.animehubSearch) {
+            return { path: 'search', body: { search: object.animehubSearch }, total: 1 };
+        }
+        if (object.animehubFilters || object.animehubPeriod || object.genres || object.companies) {
+            var filters = object.animehubFilters || {};
+            var tag = filters.tags || object.genres;
+            var studio = filters.studios || object.companies;
+            if (tag) body.tags = [String(tag)];
+            if (studio) body.studios = [String(studio)];
+            if (filters.year) body.yearFrom = body.yearTo = filters.year;
+            if (filters.sort || object.animehubPeriod) body.sort = object.animehubPeriod || filters.sort;
+            return { path: 'filter', body: body };
+        }
         if (object.url === 'rand') {
             body.sort = 'rand';
+            body.page = object.animehubRandomPage || 1;
             body.skipCache = true;
+            if (object.animehubRandomPage) body.refresh = true;
             return { path: 'news', body: body, total: 1 };
         }
         if (object.url === 'collections') {
@@ -287,11 +341,6 @@
             body.limit = body.ids.length;
             body.page = 1;
             return { path: 'news', body: body, total: Math.ceil(ids.length / PAGE_SIZE) };
-        }
-        if (object.genres || object.companies) {
-            if (object.genres) body.tags = [String(object.genres)];
-            if (object.companies) body.studios = [String(object.companies)];
-            return { path: 'filter', body: body };
         }
         if (SECTIONS.some(function (section) { return section.url === object.url; })) body.sort = object.url;
         return { path: 'news', body: body };
@@ -337,10 +386,13 @@
                     fail();
                     return;
                 }
-                var cards = records.map(query.collections ? collectionCard : catalogCard).filter(Boolean).filter(function (card) {
-                    if (state.ids.has(card.id)) return false;
+                var cards = [];
+                records.forEach(function (record) {
+                    var card = query.collections ? collectionCard(record) : catalogCard(record);
+                    if (!card || state.ids.has(card.id)) return;
                     state.ids.add(card.id);
-                    return true;
+                    if (!query.collections) collectFilters(record.xfields_data || {});
+                    cards.push(card);
                 });
                 if (query.body.ids) {
                     var order = new Map(query.body.ids.map(function (id, index) { return [id, index]; }));
@@ -360,17 +412,21 @@
             }, fail);
         }
 
-        load(firstPage);
+        if (object.component === RANDOM && object.animehubUseShelf && randomShelf.length) {
+            finish(randomShelf.slice(), 1, 1);
+        } else load(firstPage);
     }
 
     function fetchShelf(section, done) {
         loadList({ url: section.url, page: 1 }, function (data) {
+            if (section.url === 'rand') randomShelf = data.results;
+            var hasMore = data.results.length > SHELF_SIZE || section.url === 'rand' || section.url === 'news_read';
             done({
                 title: section.title,
                 source: SOURCE,
                 url: section.url,
-                results: section.url === 'rand' ? data.results.slice(0, 10) : data.results,
-                total_pages: section.url === 'rand' ? 2 : data.total_pages
+                results: data.results.slice(0, SHELF_SIZE),
+                total_pages: Math.max(data.total_pages, hasMore ? 2 : 1)
             });
         }, function () { done(null); });
     }
@@ -418,7 +474,18 @@
                     line.use({
                         onlyMore: function () {
                             Lampa.Activity.push({
-                                component: RANDOM, source: SOURCE, url: data.url, page: 1, title: data.title
+                                component: RANDOM, source: SOURCE, url: data.url, page: 1, title: data.title,
+                                animehubUseShelf: true
+                            });
+                        }
+                    });
+                    return;
+                }
+                if (data.url === 'news_read') {
+                    line.use({
+                        onlyMore: function () {
+                            Lampa.Activity.push({
+                                component: POPULAR, source: SOURCE, url: data.url, page: 1, title: data.title
                             });
                         }
                     });
@@ -475,9 +542,171 @@
             onInstance: function (card, data) {
                 if (!data.animehubRandomReload) return;
                 card.use({
-                    onlyEnter: function () { Lampa.Activity.replace({ page: 1 }); }
+                    onlyEnter: function () {
+                        // Repeated requests for the same API page can return the cached sequence.
+                        var currentPage = object.animehubRandomPage || 1;
+                        Lampa.Activity.replace({
+                            page: 1, animehubUseShelf: false, animehubRandomPage: currentPage % RANDOM_PAGES + 1
+                        });
+                    }
                 });
             }
+        });
+    }
+
+    function animePopular(object) {
+        var pendingMenu = !object.animehubPeriod;
+        function openMenu() {
+            if (!pendingMenu) return;
+            pendingMenu = false;
+            setTimeout(function () {
+                if (Lampa.Activity.active() === object) {
+                    showPopular(object, function () { restoreFocus(object); });
+                }
+            }, 0);
+        }
+        return mainComponent('category_full', object, { onBuild: openMenu, onEmpty: openMenu });
+    }
+
+    function showPopular(object, onBack) {
+        Lampa.Select.show({
+            title: 'Популярное',
+            items: PERIODS.map(function (period) {
+                return { title: period.title, period: period, selected: period.value === object.animehubPeriod };
+            }),
+            onBack: onBack,
+            onSelect: function (entry) {
+                Lampa.Activity.replace({
+                    page: 1,
+                    title: 'Популярные · ' + entry.period.title.toLowerCase(),
+                    animehubPeriod: entry.period.value
+                });
+            }
+        });
+    }
+
+    function collectFilters(fields) {
+        names(fields.hentai_tags, /\s*[,;|]\s*/).forEach(function (tag) { filterChoices.tags.add(tag); });
+        names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/).forEach(function (studio) { filterChoices.studios.add(studio); });
+    }
+
+    function editFilterText(title, value, done) {
+        var cancelled = false;
+        var keyboard = Lampa.Input.edit({ title: title, value: value || '', keyboard: 'lampa', layout: 'clarify' }, function (input) {
+            // Input calls back for both Enter and Back. Let the Back listener run first.
+            Promise.resolve().then(function () {
+                done(cancelled ? null : String(input || '').trim());
+            });
+        });
+        keyboard.listener.follow('back', function () { cancelled = true; });
+    }
+
+    function selectFilter(title, key, options, draft, back, manual) {
+        var items = options.map(function (option) {
+            return { title: escapeHtml(option.title), value: option.value, selected: option.value === draft[key] };
+        });
+        if (manual) items.push({ title: 'Ввести вручную', manual: true });
+        Lampa.Select.show({
+            title: title,
+            items: items,
+            onBack: back,
+            onSelect: function (entry) {
+                if (entry.manual) {
+                    editFilterText(title, draft[key], function (input) {
+                        if (input) {
+                            var normalized = input.replace(/\s+/g, ' ').toLowerCase();
+                            var match = options.find(function (option) {
+                                return option.title.replace(/\s+/g, ' ').toLowerCase() === normalized;
+                            });
+                            draft[key] = match ? match.value : input;
+                        }
+                        back();
+                    });
+                    return;
+                }
+                draft[key] = entry.value;
+                back();
+            }
+        });
+    }
+
+    function filterOptions(key) {
+        var options = [{ title: 'Все', value: '' }];
+        return options.concat(Array.from(filterChoices[key]).sort(function (a, b) {
+            return a.localeCompare(b, 'ru');
+        }).map(function (value) { return { title: value, value: value }; }));
+    }
+
+    function filterYears() {
+        var options = [{ title: 'Любой', value: 0 }];
+        for (var year = new Date().getFullYear() + 1; year >= 1900; year--) {
+            options.push({ title: String(year), value: year });
+        }
+        return options;
+    }
+
+    function showCatalogFilter(activity, draft) {
+        if (Lampa.Activity.active() !== activity) return;
+        function repeat() { showCatalogFilter(activity, draft); }
+        function select(title, key, options, manual) {
+            return function () { selectFilter(title, key, options(), draft, repeat, manual); };
+        }
+        function search() {
+            editFilterText('Поиск', activity.animehubSearch, function (query) {
+                if (Lampa.Activity.active() !== activity) return;
+                if (!query) {
+                    repeat();
+                    return;
+                }
+                openFilter('Поиск AnimeHub', 'animehubSearch', query);
+            });
+        }
+        var sort = SORT_OPTIONS.find(function (option) { return option.value === draft.sort; }) || SORT_OPTIONS[0];
+        var items = [
+            { title: 'Поиск', action: search },
+            { title: 'Жанры', subtitle: escapeHtml(draft.tags || 'Все'), action: select('Жанры', 'tags', function () { return filterOptions('tags'); }, true) },
+            { title: 'Студии', subtitle: escapeHtml(draft.studios || 'Все'), action: select('Студии', 'studios', function () { return filterOptions('studios'); }, true) },
+            { title: 'Год выпуска', subtitle: String(draft.year || 'Любой'), action: select('Год выпуска', 'year', filterYears) },
+            { title: 'Сортировка', subtitle: sort.title, action: select('Сортировка', 'sort', function () { return SORT_OPTIONS; }) },
+            { title: 'Показать', action: function () {
+                catalogFilters = Object.assign({}, draft);
+                openFilter('Фильтр AnimeHub', 'animehubFilters', catalogFilters);
+            } },
+            { title: 'Сбросить', action: function () {
+                catalogFilters = { sort: 'date' };
+                draft = { tags: '', studios: '', year: 0, sort: catalogFilters.sort };
+                repeat();
+            } }
+        ];
+        if (activity.component === POPULAR) {
+            items.push({ title: 'Популярное', action: function () { showPopular(activity, repeat); } });
+        }
+        Lampa.Select.show({
+            title: 'Фильтр',
+            items: items,
+            onBack: function () { Lampa.Controller.toggle('head'); },
+            onSelect: function (entry) { entry.action(); }
+        });
+    }
+
+    function installHeaderFilter() {
+        var filter = Lampa.Head.addIcon('<svg><use xlink:href="#sprite-filter"></use></svg>', function () {
+            var activity = Lampa.Activity.active();
+            if (activity && activity.source === SOURCE) {
+                showCatalogFilter(activity, Object.assign({ tags: '', studios: '', year: 0 }, catalogFilters));
+            }
+        }).addClass('animehub-header-filter').attr({ title: 'Фильтр', 'aria-label': 'Фильтр' });
+
+        function sync(activity) {
+            var visible = Boolean(activity && activity.source === SOURCE);
+            filter.toggleClass('hide', !visible).toggleClass('selector', visible);
+            var search = Lampa.Head.render().find('.open--search').first();
+            if (search.length && filter.next()[0] !== search[0]) filter.insertBefore(search);
+        }
+        sync(Lampa.Activity.active());
+        Lampa.Listener.follow('activity', function (event) {
+            if (event.type === 'start') sync(event.object);
+            if (event.type === 'destroy') setTimeout(function () { sync(Lampa.Activity.active()); }, 0);
         });
     }
 
@@ -642,6 +871,7 @@
             }
 
             var movie = fullCard(record);
+            collectFilters(record.xfields_data || {});
             playback.set(movie, { title: plain(movie.title), options: playerOptions(record.xfields_data || {}) });
             if (!Lampa.Utils.canWatchChildren('18+', Lampa.Account.Permit.profile.age)) {
                 success({ movie: movie });
@@ -977,6 +1207,7 @@
         }
         if (event.type !== 'build') return;
         if (event.name === 'description') {
+            event.item.render().find('.warning-box--full-adult').addClass('hide').removeClass('selector');
             showStudios(event.item, movie.animehub_studios);
             return;
         }
@@ -1040,7 +1271,9 @@
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
         Lampa.Component.add(RANDOM, animeRandom);
+        Lampa.Component.add(POPULAR, animePopular);
         Lampa.Component.add(COMMENTS, animeComments);
+        installHeaderFilter();
         Lampa.Listener.follow('full', onFull);
         Lampa.Player.listener.follow('close', function (event) {
             var activity = playbackOrigins.get(event.data);
