@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.0 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.1 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -9,6 +9,7 @@
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 30;
+    var INITIAL_PAGES = 5;
     var SHELF_SIZE = 10;
     var RANDOM_PAGES = 40;
     var TIMEOUT = 15000;
@@ -18,6 +19,7 @@
     var RANDOM = 'animehub_random';
     var POPULAR = 'animehub_popular';
     var DICE_ICON = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/icons/animehub-dice.svg';
+    var ELITE_STUDIOS = 'https://raw.githubusercontent.com/azat2909/lampa-plugins/main/filter/studio-elite';
     var TRANSLATIONS = { voice: 'Озвучка', subs: 'Субтитры', raw: 'Оригинал' };
     var SECTIONS = [
         { title: 'Обновленные', url: 'editdate' },
@@ -68,6 +70,7 @@
     var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
     var filterChoices = { tags: new Set(GENRES), studios: new Set(STUDIOS) };
+    var eliteStudios = [];
     var catalogFilters = { sort: 'date' };
     var randomShelf = [];
     var checkingUpdate = false;
@@ -76,7 +79,7 @@
         nativeRequest(API + path, 'POST', body, 'json', success, failure);
     }
 
-    function nativeRequest(url, method, body, type, success, failure) {
+    function nativeRequest(url, method, body, type, success, failure, timeout) {
         var bridge = window.AndroidJS;
         if (!bridge || typeof bridge.httpReq !== 'function' || !Lampa.Platform.is('android')) {
             Lampa.Noty.show('Для AnimeHub нужен Android-клиент Lampa.');
@@ -111,13 +114,14 @@
             success(data);
         });
 
-        timer = setTimeout(fail, TIMEOUT + 2000);
+        timeout = timeout || TIMEOUT;
+        timer = setTimeout(fail, timeout + 2000);
         try {
             network.native(url, complete, fail, body ? JSON.stringify(body) : undefined, {
                 type: method,
                 dataType: type,
                 headers: body ? { 'Content-Type': 'application/json' } : {},
-                timeout: TIMEOUT
+                timeout: timeout
             });
         } catch (error) {
             fail();
@@ -328,10 +332,10 @@
         }
         if (object.url === 'rand') {
             body.sort = 'rand';
-            body.page = object.animehubRandomPage || 1;
+            body.page = ((object.animehubRandomPage || 1) + page - 2) % RANDOM_PAGES + 1;
             body.skipCache = true;
             if (object.animehubRandomPage) body.refresh = true;
-            return { path: 'news', body: body, total: 1 };
+            return { path: 'news', body: body, total: object.component === RANDOM ? INITIAL_PAGES : 1 };
         }
         if (object.url === 'collections') {
             return { path: 'users/collections/list', body: { page: page, limit: PAGE_SIZE }, collections: true };
@@ -355,27 +359,44 @@
             catalogs.set(object, state);
         }
         var visited = new Set();
+        var lastInitialPage = firstPage === 1 && object.component ? INITIAL_PAGES : firstPage;
+        var results = [];
+        var completed = 0;
+        var totalPages = 1;
 
         function fail() {
             if (catalogs.get(object) !== state || (component && component.destroyed)) return;
+            if (completed && results.length) {
+                finish(completed, totalPages);
+                return;
+            }
             if (firstPage > state.lastPage && state.lastPage > 0 && Number(object.page) === firstPage) {
                 object.page = state.lastPage;
             }
             failure();
         }
 
-        function finish(cards, page, total) {
+        function finish(page, total) {
             state.lastPage = page;
             object.page = page;
+            if (object.component === RANDOM) total = page;
             if (component) component.total_pages = total;
-            if (object.component === RANDOM) cards.push(randomReloadCard());
-            success({ results: cards, page: page, total_pages: total });
+            if (object.component === RANDOM) results.push(randomReloadCard());
+            success({ results: results, page: page, total_pages: total });
+        }
+
+        function accept(cards, page, total) {
+            results.push.apply(results, cards);
+            completed = page;
+            totalPages = total;
+            if (page < lastInitialPage && page < total) load(page + 1);
+            else finish(page, total);
         }
 
         function load(page) {
             var query = listing(object, page);
             if (query.body.ids && !query.body.ids.length) {
-                finish([], page, query.total || 1);
+                finish(page, query.total || 1);
                 return;
             }
 
@@ -399,7 +420,7 @@
                     cards.sort(function (a, b) { return order.get(a.animehub_id) - order.get(b.animehub_id); });
                 }
                 var total = query.total || page + Number(records.length >= PAGE_SIZE);
-                if (!cards.length && page < total) {
+                if (!cards.length && page < total && page >= lastInitialPage && !results.length && object.component !== RANDOM) {
                     var signature = records.map(function (record) { return record && record.id; }).sort().join(',');
                     if (!visited.has(signature)) {
                         visited.add(signature);
@@ -408,12 +429,13 @@
                     }
                     total = page;
                 }
-                finish(cards, page, total);
+                accept(cards, page, total);
             }, fail);
         }
 
         if (object.component === RANDOM && object.animehubUseShelf && randomShelf.length) {
-            finish(randomShelf.slice(), 1, 1);
+            randomShelf.forEach(function (card) { state.ids.add(card.id); });
+            accept(randomShelf, 1, INITIAL_PAGES);
         } else load(firstPage);
     }
 
@@ -546,7 +568,8 @@
                         // Repeated requests for the same API page can return the cached sequence.
                         var currentPage = object.animehubRandomPage || 1;
                         Lampa.Activity.replace({
-                            page: 1, animehubUseShelf: false, animehubRandomPage: currentPage % RANDOM_PAGES + 1
+                            page: 1, animehubUseShelf: false,
+                            animehubRandomPage: (currentPage - 1 + INITIAL_PAGES) % RANDOM_PAGES + 1
                         });
                     }
                 });
@@ -554,33 +577,25 @@
         });
     }
 
-    function animePopular(object) {
-        var pendingMenu = !object.animehubPeriod;
-        function openMenu() {
-            if (!pendingMenu) return;
-            pendingMenu = false;
-            setTimeout(function () {
-                if (Lampa.Activity.active() === object) {
-                    showPopular(object, function () { restoreFocus(object); });
-                }
-            }, 0);
-        }
-        return mainComponent('category_full', object, { onBuild: openMenu, onEmpty: openMenu });
-    }
-
-    function showPopular(object, onBack) {
+    function showPopular(object) {
         Lampa.Select.show({
             title: 'Популярное',
             items: PERIODS.map(function (period) {
                 return { title: period.title, period: period, selected: period.value === object.animehubPeriod };
             }),
-            onBack: onBack,
+            onBack: function () { Lampa.Controller.toggle('head'); },
             onSelect: function (entry) {
-                Lampa.Activity.replace({
+                if (Lampa.Activity.active() !== object || entry.period.value === object.animehubPeriod) return;
+                var next = {
+                    component: POPULAR,
+                    source: SOURCE,
+                    url: 'news_read',
                     page: 1,
                     title: 'Популярные · ' + entry.period.title.toLowerCase(),
                     animehubPeriod: entry.period.value
-                });
+                };
+                if (object.animehubPeriod) Lampa.Activity.replace(next);
+                else Lampa.Activity.push(next);
             }
         });
     }
@@ -592,13 +607,40 @@
 
     function editFilterText(title, value, done) {
         var cancelled = false;
-        var keyboard = Lampa.Input.edit({ title: title, value: value || '', keyboard: 'lampa', layout: 'clarify' }, function (input) {
+        var keyboard = Lampa.Input.edit({
+            title: title, value: value || '', keyboard: 'lampa', layout: 'clarify', align: 'center', nosave: true
+        }, function (input) {
             // Input calls back for both Enter and Back. Let the Back listener run first.
             Promise.resolve().then(function () {
                 done(cancelled ? null : String(input || '').trim());
             });
         });
         keyboard.listener.follow('back', function () { cancelled = true; });
+        if (title === 'Поиск') centerSearchKeyboard();
+    }
+
+    function centerSearchKeyboard() {
+        var overlay = $('.settings-input').last();
+        var inner = overlay.find('.settings-input__content');
+        var surfaces = [inner[0], overlay[0], document.body];
+        var color = surfaces.map(function (surface) {
+            return surface && window.getComputedStyle(surface).backgroundColor;
+        }).find(function (value) {
+            return value && value !== 'transparent' && !/^rgba\(.*?,\s*0\)$/.test(value);
+        });
+        // Make the theme color opaque to cover the catalog behind the keyboard.
+        if (color) color = color.replace(/^rgba\(([^,]+,[^,]+,[^,]+),[^)]+\)$/, 'rgb($1)');
+        overlay.css({
+            position: 'fixed', top: 0, right: 0, bottom: 0, left: 0,
+            width: '100%', height: '100%', padding: 0, boxSizing: 'border-box',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backgroundColor: color || '#202024', backdropFilter: 'none', transform: 'none'
+        });
+        inner.css({
+            position: 'relative', top: 'auto', right: 'auto', bottom: 'auto', left: 'auto',
+            margin: 0, transform: 'none', maxWidth: '94vw', maxHeight: '94vh',
+            background: 'transparent', boxShadow: 'none'
+        });
     }
 
     function selectFilter(title, key, options, draft, back, manual) {
@@ -614,9 +656,9 @@
                 if (entry.manual) {
                     editFilterText(title, draft[key], function (input) {
                         if (input) {
-                            var normalized = input.replace(/\s+/g, ' ').toLowerCase();
+                            var normalized = normalizeFilterName(input);
                             var match = options.find(function (option) {
-                                return option.title.replace(/\s+/g, ' ').toLowerCase() === normalized;
+                                return normalizeFilterName(option.title) === normalized;
                             });
                             draft[key] = match ? match.value : input;
                         }
@@ -630,11 +672,37 @@
         });
     }
 
+    function normalizeFilterName(name) {
+        return name.trim().replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    function loadEliteStudios(done) {
+        nativeRequest(ELITE_STUDIOS + '?t=' + Date.now(), 'GET', null, 'text', function (data) {
+            if (typeof data === 'string') {
+                eliteStudios = data.split(/\r?\n/).map(normalizeFilterName).filter(Boolean);
+            }
+            done();
+        }, done, 4000);
+    }
+
     function filterOptions(key) {
-        var options = [{ title: 'Все', value: '' }];
-        return options.concat(Array.from(filterChoices[key]).sort(function (a, b) {
+        var sorted = Array.from(filterChoices[key]).sort(function (a, b) {
             return a.localeCompare(b, 'ru');
-        }).map(function (value) { return { title: value, value: value }; }));
+        });
+        if (key === 'studios') {
+            var known = new Map();
+            sorted.forEach(function (value) {
+                var name = normalizeFilterName(value);
+                if (!known.has(name) || value.indexOf('\u00a0') !== -1) known.set(name, value);
+            });
+            var order = new Set(eliteStudios.concat(Array.from(known.keys())));
+            sorted = Array.from(order).filter(function (name) { return known.has(name); }).map(function (name) {
+                return known.get(name);
+            });
+        }
+        return [{ title: 'Все', value: '' }].concat(sorted.map(function (value) {
+            return { title: value.replace(/\s+/g, ' '), value: value };
+        }));
     }
 
     function filterYears() {
@@ -661,11 +729,18 @@
                 openFilter('Поиск AnimeHub', 'animehubSearch', query);
             });
         }
+        function studios() {
+            loadEliteStudios(function () {
+                if (Lampa.Activity.active() === activity) {
+                    selectFilter('Студии', 'studios', filterOptions('studios'), draft, repeat, true);
+                }
+            });
+        }
         var sort = SORT_OPTIONS.find(function (option) { return option.value === draft.sort; }) || SORT_OPTIONS[0];
         var items = [
             { title: 'Поиск', action: search },
             { title: 'Жанры', subtitle: escapeHtml(draft.tags || 'Все'), action: select('Жанры', 'tags', function () { return filterOptions('tags'); }, true) },
-            { title: 'Студии', subtitle: escapeHtml(draft.studios || 'Все'), action: select('Студии', 'studios', function () { return filterOptions('studios'); }, true) },
+            { title: 'Студии', subtitle: escapeHtml(draft.studios || 'Все'), action: studios },
             { title: 'Год выпуска', subtitle: String(draft.year || 'Любой'), action: select('Год выпуска', 'year', filterYears) },
             { title: 'Сортировка', subtitle: sort.title, action: select('Сортировка', 'sort', function () { return SORT_OPTIONS; }) },
             { title: 'Показать', action: function () {
@@ -678,9 +753,6 @@
                 repeat();
             } }
         ];
-        if (activity.component === POPULAR) {
-            items.push({ title: 'Популярное', action: function () { showPopular(activity, repeat); } });
-        }
         Lampa.Select.show({
             title: 'Фильтр',
             items: items,
@@ -689,7 +761,7 @@
         });
     }
 
-    function installHeaderFilter() {
+    function installHeaderActions() {
         var filter = Lampa.Head.addIcon('<svg><use xlink:href="#sprite-filter"></use></svg>', function () {
             var activity = Lampa.Activity.active();
             if (activity && activity.source === SOURCE) {
@@ -697,11 +769,20 @@
             }
         }).addClass('animehub-header-filter').attr({ title: 'Фильтр', 'aria-label': 'Фильтр' });
 
+        var popular = Lampa.Head.addIcon('<svg><use xlink:href="#sprite-top"></use></svg>', function () {
+            var activity = Lampa.Activity.active();
+            if (activity && activity.component === POPULAR && activity.source === SOURCE) showPopular(activity);
+        }).addClass('animehub-header-popular').attr({ title: 'Популярное', 'aria-label': 'Популярное' })
+            .append('<span>Популярное</span>').css({ width: 'auto', gap: '0.4em', whiteSpace: 'nowrap' });
+
         function sync(activity) {
             var visible = Boolean(activity && activity.source === SOURCE);
+            var popularVisible = visible && activity.component === POPULAR;
             filter.toggleClass('hide', !visible).toggleClass('selector', visible);
+            popular.toggleClass('hide', !popularVisible).toggleClass('selector', popularVisible);
             var search = Lampa.Head.render().find('.open--search').first();
             if (search.length && filter.next()[0] !== search[0]) filter.insertBefore(search);
+            if (search.length && popular.prev()[0] !== search[0]) popular.insertAfter(search);
         }
         sync(Lampa.Activity.active());
         Lampa.Listener.follow('activity', function (event) {
@@ -1271,9 +1352,9 @@
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
         Lampa.Component.add(RANDOM, animeRandom);
-        Lampa.Component.add(POPULAR, animePopular);
+        Lampa.Component.add(POPULAR, Lampa.Component.get('category_full'));
         Lampa.Component.add(COMMENTS, animeComments);
-        installHeaderFilter();
+        installHeaderActions();
         Lampa.Listener.follow('full', onFull);
         Lampa.Player.listener.follow('close', function (event) {
             var activity = playbackOrigins.get(event.data);
