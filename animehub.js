@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.2 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.3 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -577,7 +577,46 @@
         });
     }
 
-    function showPopular(object, back) {
+    function animePopular(object) {
+        var tab = $('<button type="button" class="simple-button selector animehub-popular-tab" aria-haspopup="dialog">Популярное</button>').css({
+            position: 'fixed',
+            top: '50%',
+            right: 0,
+            zIndex: 2,
+            transform: 'translateY(-50%)',
+            writingMode: 'vertical-rl',
+            whiteSpace: 'nowrap',
+            padding: '0.9em 0.45em',
+            font: 'inherit',
+            color: 'inherit',
+            border: 0
+        });
+        function open() {
+            if (Lampa.Activity.active() === object) showPopular(object);
+        }
+        function offerTab() {
+            if (Lampa.Controller.own(this)) Lampa.Controller.collectionAppend(tab);
+        }
+        tab.on('hover:enter', open);
+
+        return mainComponent('category_full', object, {
+            onStart: function () { this.render().append(tab.show()); },
+            onPause: function () { tab.hide(); },
+            onToggle: offerTab,
+            onScroll: offerTab,
+            onController: function (controller) {
+                var nativeRight = controller.right;
+                controller.right = function () {
+                    var navigator = window.Navigator;
+                    if (navigator && typeof navigator.canmove === 'function' && !navigator.canmove('right')) open();
+                    else nativeRight.apply(this, arguments);
+                };
+            }
+        });
+    }
+
+    function showPopular(object) {
+        function back() { restoreFocus(object); }
         Lampa.Select.show({
             title: 'Популярное',
             items: PERIODS.map(function (period) {
@@ -748,14 +787,6 @@
             { title: 'Год выпуска', subtitle: String(draft.year || 'Любой'), action: select('Год выпуска', 'year', filterYears) },
             { title: 'Сортировка', subtitle: sort.title, action: select('Сортировка', 'sort', function () { return SORT_OPTIONS; }) }
         ];
-        if (activity.component === POPULAR) {
-            var period = PERIODS.find(function (option) { return option.value === activity.animehubPeriod; });
-            items.push({
-                title: 'Популярное',
-                subtitle: period ? period.title : 'Все периоды',
-                action: function () { showPopular(activity, repeat); }
-            });
-        }
         items.push(
             { title: 'Показать', action: function () {
                 catalogFilters = Object.assign({}, draft);
@@ -1357,7 +1388,7 @@
         Lampa.Component.add(HOME, animeHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
         Lampa.Component.add(RANDOM, animeRandom);
-        Lampa.Component.add(POPULAR, Lampa.Component.get('category_full'));
+        Lampa.Component.add(POPULAR, animePopular);
         Lampa.Component.add(COMMENTS, animeComments);
         installHeaderFilter();
         Lampa.Listener.follow('full', onFull);
