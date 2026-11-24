@@ -1,17 +1,17 @@
 /*!
- * AnimeHub 0.5.4 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.5 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.4';
+    var VERSION = '0.5.5';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 20;
-    var GENRE_FIRST_PAGE_SIZE = 40;
+    var FILTER_FIRST_PAGE_SIZE = 40;
     var RELATED_LIMIT = 30;
     var INITIAL_PAGES = 5;
     var RANDOM_PAGES = 40;
@@ -59,7 +59,6 @@
         { title: 'По названию', value: 'title' },
         { title: 'По числу просмотров', value: 'news_read' },
         { title: 'По рейтингу', value: 'rating' },
-        { title: 'По длительности', value: 'duration' },
         { title: 'Горячее', value: 'hot' },
         { title: 'По популярности за день', value: 'views_1' },
         { title: 'По популярности за неделю', value: 'views_7' },
@@ -818,10 +817,11 @@
             var filters = object.animehubFilters || {};
             var tag = genreTag(object);
             var studio = filters.studios || object.companies;
+            var sort = filters.sort === 'duration' ? 'date' : filters.sort;
             if (tag) body.tags = [String(tag)];
             if (studio) body.studios = [String(studio)];
             if (filters.year) body.yearFrom = body.yearTo = filters.year;
-            if (filters.sort || object.animehubPeriod) body.sort = object.animehubPeriod || filters.sort;
+            if (sort || object.animehubPeriod) body.sort = object.animehubPeriod || sort;
             return { path: 'filter', body: body };
         }
         if (object.url === 'rand') {
@@ -859,10 +859,12 @@
         }
         var visited = new Set();
         var random = object.component === RANDOM;
-        var genre = !object.animehubSearch && Boolean(genreTag(object));
-        var genrePageSize = firstPage === 1 ? GENRE_FIRST_PAGE_SIZE : PAGE_SIZE;
+        var filters = object.animehubFilters || {};
+        var countVisible = !object.animehubSearch &&
+            Boolean(genreTag(object) || filters.sortSelected || (filters.sort && filters.sort !== 'date'));
+        var visiblePageSize = firstPage === 1 ? FILTER_FIRST_PAGE_SIZE : PAGE_SIZE;
         var lastInitialPage = random && firstPage === 1 ? INITIAL_PAGES : firstPage;
-        var results = genre && state.genreBuffer ? state.genreBuffer.slice() : [];
+        var results = countVisible && state.visibleBuffer ? state.visibleBuffer.slice() : [];
         var completed = 0;
         var totalPages = 1;
 
@@ -895,13 +897,13 @@
 
         function finish(page, total) {
             var lastApiPage = page;
-            if (genre) {
+            if (countVisible) {
                 // Keep the extra visible cards from the last API page for the next Lampa page.
-                state.genreNextPage = lastApiPage + 1;
-                state.genreExhausted = total <= lastApiPage;
-                state.genreBuffer = results.splice(genrePageSize);
+                state.visibleNextPage = lastApiPage + 1;
+                state.visibleExhausted = total <= lastApiPage;
+                state.visibleBuffer = results.splice(visiblePageSize);
                 page = firstPage;
-                total = page + Number(!state.genreExhausted || state.genreBuffer.length > 0);
+                total = page + Number(!state.visibleExhausted || state.visibleBuffer.length > 0);
             }
             state.lastPage = page;
             object.page = page;
@@ -909,7 +911,7 @@
             if (component) component.total_pages = total;
             if (random) results.push(randomReloadCard());
             success({ results: results, page: page, total_pages: total });
-            if (firstPage === 1 && object.component && !random && total > page && !state.genreExhausted && isCurrent()) {
+            if (firstPage === 1 && object.component && !random && total > page && !state.visibleExhausted && isCurrent()) {
                 prefetch(lastApiPage);
             }
         }
@@ -918,7 +920,7 @@
             results.push.apply(results, cards);
             completed = page;
             totalPages = total;
-            var needsCards = genre ? results.length < genrePageSize : object.animehubShelf && results.length < PAGE_SIZE;
+            var needsCards = countVisible ? results.length < visiblePageSize : object.animehubShelf && results.length < PAGE_SIZE;
             if (page < total && (page < lastInitialPage || needsCards)) load(page + 1);
             else finish(page, total);
         }
@@ -955,7 +957,7 @@
                     if (visited.has(signature)) total = page;
                     else {
                         visited.add(signature);
-                        if (!genre && page >= lastInitialPage && !results.length && !object.animehubShelf) {
+                        if (!countVisible && page >= lastInitialPage && !results.length && !object.animehubShelf) {
                             load(page + 1);
                             return;
                         }
@@ -980,9 +982,9 @@
         if (random && object.animehubUseShelf && randomShelf && randomShelf.results.length) {
             randomShelf.results.forEach(function (card) { state.ids.add(card.id); });
             accept(randomShelf.results, randomShelf.page, INITIAL_PAGES);
-        } else if (genre && state.genreExhausted) {
-            finish(state.genreNextPage - 1, state.genreNextPage - 1);
-        } else load(genre && state.genreNextPage ? state.genreNextPage : firstPage);
+        } else if (countVisible && state.visibleExhausted) {
+            finish(state.visibleNextPage - 1, state.visibleNextPage - 1);
+        } else load(countVisible && state.visibleNextPage ? state.visibleNextPage : firstPage);
     }
 
     function fetchShelf(section, done) {
@@ -1296,6 +1298,7 @@
                     return;
                 }
                 draft[key] = entry.value;
+                if (key === 'sort') draft.sortSelected = true;
                 back();
             }
         });
@@ -2029,14 +2032,19 @@
         refreshAccountCard();
         if (accountToken) readProfile();
         var video = canWatch.has(movie) && playback.get(movie);
+        var initialFocus = true;
         var observer = new MutationObserver(function () { onlyNativeActions(card); });
         var buttons = card.find('.full-start-new__buttons, .buttons--container');
         buttons.each(function () { observer.observe(this, { childList: true, subtree: true }); });
         event.item.use({
-            onGroupButtons: function () {
+            onlyGroupButtons: function () {
                 onlyNativeActions(this.html);
                 var available = Boolean(video && playbackGroups(video).length);
                 var button = this.html.find('.button--play').off('hover:enter').toggleClass('hide', !available);
+                if (initialFocus) {
+                    initialFocus = false;
+                    if (available && button.length) this.last = button[0];
+                }
                 if (!available) return;
                 button.on('hover:enter', function () {
                     openPlayers(movie, video);
