@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.4.5 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.4.6 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -9,6 +9,7 @@
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
     var PAGE_SIZE = 20;
+    var GENRE_FIRST_PAGE_SIZE = 40;
     var RELATED_LIMIT = 30;
     var INITIAL_PAGES = 5;
     var RANDOM_PAGES = 40;
@@ -315,6 +316,10 @@
         return Number.isSafeInteger(number) ? number : null;
     }
 
+    function genreTag(object) {
+        return (object.animehubFilters || {}).tags || object.genres;
+    }
+
     function listing(object, page) {
         var body = { mode: 'short', page: page, limit: PAGE_SIZE };
         var ids = object.animehubCollection;
@@ -323,7 +328,7 @@
         }
         if (object.animehubFilters || object.animehubPeriod || object.genres || object.companies) {
             var filters = object.animehubFilters || {};
-            var tag = filters.tags || object.genres;
+            var tag = genreTag(object);
             var studio = filters.studios || object.companies;
             if (tag) body.tags = [String(tag)];
             if (studio) body.studios = [String(studio)];
@@ -361,8 +366,10 @@
         }
         var visited = new Set();
         var random = object.component === RANDOM;
+        var genre = !object.animehubSearch && Boolean(genreTag(object));
+        var genrePageSize = firstPage === 1 ? GENRE_FIRST_PAGE_SIZE : PAGE_SIZE;
         var lastInitialPage = random && firstPage === 1 ? INITIAL_PAGES : firstPage;
-        var results = [];
+        var results = genre && state.genreBuffer ? state.genreBuffer.slice() : [];
         var completed = 0;
         var totalPages = 1;
 
@@ -394,14 +401,23 @@
         }
 
         function finish(page, total) {
+            var lastApiPage = page;
+            if (genre) {
+                // Keep the extra visible cards from the last API page for the next Lampa page.
+                state.genreNextPage = lastApiPage + 1;
+                state.genreExhausted = total <= lastApiPage;
+                state.genreBuffer = results.splice(genrePageSize);
+                page = firstPage;
+                total = page + Number(!state.genreExhausted || state.genreBuffer.length > 0);
+            }
             state.lastPage = page;
             object.page = page;
             if (random) total = page;
             if (component) component.total_pages = total;
             if (random) results.push(randomReloadCard());
             success({ results: results, page: page, total_pages: total });
-            if (firstPage === 1 && object.component && !random && total > page && isCurrent()) {
-                prefetch(page);
+            if (firstPage === 1 && object.component && !random && total > page && !state.genreExhausted && isCurrent()) {
+                prefetch(lastApiPage);
             }
         }
 
@@ -409,7 +425,8 @@
             results.push.apply(results, cards);
             completed = page;
             totalPages = total;
-            if (page < total && (page < lastInitialPage || object.animehubShelf && results.length < PAGE_SIZE)) load(page + 1);
+            var needsCards = genre ? results.length < genrePageSize : object.animehubShelf && results.length < PAGE_SIZE;
+            if (page < total && (page < lastInitialPage || needsCards)) load(page + 1);
             else finish(page, total);
         }
 
@@ -445,7 +462,7 @@
                     if (visited.has(signature)) total = page;
                     else {
                         visited.add(signature);
-                        if (page >= lastInitialPage && !results.length && !object.animehubShelf) {
+                        if (!genre && page >= lastInitialPage && !results.length && !object.animehubShelf) {
                             load(page + 1);
                             return;
                         }
@@ -470,7 +487,9 @@
         if (random && object.animehubUseShelf && randomShelf && randomShelf.results.length) {
             randomShelf.results.forEach(function (card) { state.ids.add(card.id); });
             accept(randomShelf.results, randomShelf.page, INITIAL_PAGES);
-        } else load(firstPage);
+        } else if (genre && state.genreExhausted) {
+            finish(state.genreNextPage - 1, state.genreNextPage - 1);
+        } else load(genre && state.genreNextPage ? state.genreNextPage : firstPage);
     }
 
     function fetchShelf(section, done) {
