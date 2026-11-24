@@ -1,5 +1,5 @@
 /*!
- * AnimeHub 0.3.1 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.3.2 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
@@ -560,6 +560,7 @@
             /^\/e\/[\w-]+\/?$/i.test(parsed.pathname)) return 'Moon';
         if (/^(?:abyssplayer\.com|(?:[\w-]+\.)?abyss\.to)$/i.test(parsed.hostname) &&
             /^\/[\w-]+\/?$/i.test(parsed.pathname)) return 'Hydra';
+        if (parsed.hostname === 'hentai-hub.upns.online') return 'UPS';
         return '';
     }
 
@@ -588,11 +589,12 @@
     function providers(items) {
         var byName = new Map();
         items.forEach(function (item) {
-            var url = directStream(item.source || item.link || item.url, item.format || item.type);
-            var source = !url && embedProvider(item.link);
-            var embed = source ? httpsUrl(item.link) : '';
+            var link = item.source || item.link || item.url;
+            var url = directStream(link, item.format || item.type);
+            var embed = url ? '' : httpsUrl(link);
             if (!url && !embed) return;
-            var name = source || plain(item.title) || new URL(url).hostname;
+            var source = embed && embedProvider(embed);
+            var name = source || plain(item.title) || new URL(url || embed).hostname;
             if (/^(?:mp4|mp4upload)$/i.test(name)) name = 'MP4';
             if (!byName.has(name)) byName.set(name, { title: name, streams: [] });
             var streams = byName.get(name).streams;
@@ -600,7 +602,10 @@
                 streams.push({ url: url, embed: embed, provider: source, quality: qualityOf(item.quality) });
             }
         });
-        return Array.from(byName.values()).map(function (provider) {
+        var ordered = Array.from(byName.values()).sort(function (a, b) {
+            return Number(b.title === 'MP4') - Number(a.title === 'MP4');
+        });
+        return ordered.map(function (provider) {
             provider.streams.sort(function (a, b) {
                 return Number(Boolean(b.url)) - Number(Boolean(a.url)) || b.quality - a.quality;
             });
@@ -711,7 +716,10 @@
     function openEmbed(stream, activity) {
         if (Lampa.Activity.active() !== activity) return;
         var frame = Lampa.Iframe.render().find('iframe');
-        var permissions = { sandbox: 'allow-scripts allow-same-origin', allow: 'autoplay; fullscreen' };
+        var permissions = {
+            sandbox: stream.provider ? 'allow-scripts allow-same-origin' : 'allow-scripts',
+            allow: 'autoplay; fullscreen'
+        };
         var previous = {};
         Object.keys(permissions).forEach(function (attribute) {
             previous[attribute] = frame.attr(attribute);
@@ -728,18 +736,20 @@
             }
         });
         if (Lampa.Storage.field('player') === 'android') {
-            Lampa.Noty.show(stream.provider + ' открыт во встроенном веб-плеере');
+            Lampa.Noty.show('Источник открыт во встроенном веб-плеере');
         }
     }
 
     function play(movie, video, item, activity) {
         var first = item.streams[0];
         if (first.embed) {
+            if (!first.provider || first.provider === 'MP4' && Lampa.Storage.field('player') !== 'android') {
+                openEmbed(first, activity);
+                return;
+            }
+
             function unavailable() {
-                if (Lampa.Activity.active() !== activity) return;
-                if (first.provider === 'MP4') {
-                    Lampa.Noty.show('Дополнительный плеер сейчас недоступен.');
-                } else openEmbed(first, activity);
+                openEmbed(first, activity);
             }
             nativeRequest(first.embed, 'GET', null, 'text', function (html) {
                 if (Lampa.Activity.active() !== activity) return;
@@ -771,17 +781,7 @@
     }
 
     function openPlayers(movie, video) {
-        var external = Lampa.Storage.field('player') === 'android';
-        var groups = video.options.map(function (group) {
-            var options = group.options.map(function (option) {
-                var backup = option.backup.filter(function (provider) {
-                    var first = provider.streams[0];
-                    return first.url || first.provider !== 'MP4' || external;
-                });
-                return { title: escapeHtml(option.title), primary: option.primary, backup: backup };
-            }).filter(function (option) { return option.primary.length || option.backup.length; });
-            return { kind: group.kind, title: group.title, options: options };
-        }).filter(function (group) { return group.options.length; });
+        var groups = video.options;
         if (!groups.length) {
             Lampa.Noty.show('Для выбранного типа плеера видео недоступно.');
             return;
@@ -832,8 +832,10 @@
                 Lampa.Select.show({
                     title: 'Озвучка',
                     nohide: true,
-                    items: group.options,
-                    onSelect: showPlayer
+                    items: group.options.map(function (option) {
+                        return { title: escapeHtml(option.title), option: option };
+                    }),
+                    onSelect: function (entry) { showPlayer(entry.option); }
                 });
             }
         });
