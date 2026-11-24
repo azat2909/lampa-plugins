@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.2 — источник HentaiHub 0.49 для Lampa на Android TV.
+ * AnimeHub 0.5.3 — источник HentaiHub 0.49 для Lampa на Android TV.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.2';
+    var VERSION = '0.5.3';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -17,6 +17,8 @@
     var RANDOM_PAGES = 40;
     var TIMEOUT = 15000;
     var HOME = 'animehub_home';
+    var BOOKMARK_HOME = 'animehub_bookmark_home';
+    var BOOKMARK_BATCH_SIZE = 60;
     var COLLECTIONS = 'animehub_collections';
     var COMMENTS = 'animehub_comments';
     var RANDOM = 'animehub_random';
@@ -48,9 +50,18 @@
         { title: 'За год', value: 'views_365' }
     ];
     var SORT_OPTIONS = [
-        { title: 'По новизне', value: 'date' },
-        { title: 'По обновлению', value: 'editdate' },
-        { title: 'По популярности', value: 'news_read' }
+        { title: 'По дате добавления', value: 'date' },
+        { title: 'По дате редактирования', value: 'editdate' },
+        { title: 'По названию', value: 'title' },
+        { title: 'По числу просмотров', value: 'news_read' },
+        { title: 'По рейтингу', value: 'rating' },
+        { title: 'По длительности', value: 'duration' },
+        { title: 'Горячее', value: 'hot' },
+        { title: 'По популярности за день', value: 'views_1' },
+        { title: 'По популярности за неделю', value: 'views_7' },
+        { title: 'По популярности за месяц', value: 'views_31' },
+        { title: 'По популярности за полгода', value: 'views_180' },
+        { title: 'По популярности за год', value: 'views_365' }
     ];
     // Initial catalog choices from HentaiHub 0.49's FilterScreen.
     var GENRES = ['Исекай', 'Романтика', 'Классика', 'Комедия', 'Махо-сёдзё', 'Ужасы', 'Фэнтези', 'Юри', 'Эротика'];
@@ -78,6 +89,7 @@
 
     var catalogs = new WeakMap();
     var menuPositions = new WeakMap();
+    var bookmarkGroupCache = new Map();
     var playback = new WeakMap();
     var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
@@ -122,6 +134,7 @@
         accountToken = token;
         accountProfile = profile;
         profileRequest = null;
+        bookmarkGroupCache.clear();
         loginPassword = '';
         Lampa.Storage.set(ACCOUNT_TOKEN, token);
         accountEvents.send('change');
@@ -132,21 +145,126 @@
     }
 
     function openBookmarkList(entry) {
-        var activity = Lampa.Activity.active();
         if (!accountToken) {
             Lampa.Noty.show('Войдите в HentaiHub в настройках AnimeHub.');
             return;
         }
+        Lampa.Activity.push({
+            component: BOOKMARK_HOME, source: SOURCE, url: '', page: 1,
+            title: entry.title, animehubBookmark: entry.key
+        });
+    }
+
+    function groupBookmarkCards(ids, cardsById) {
+        var groups = new Map();
+        ids.forEach(function (id) {
+            var card = cardsById.get(id);
+            if (!card) return;
+            var studios = card.animehub_studios;
+            var seen = new Set();
+            (studios.length ? studios : ['']).forEach(function (studio) {
+                var key = normalizeFilterName(studio);
+                if (seen.has(key)) return;
+                seen.add(key);
+                if (!groups.has(key)) {
+                    groups.set(key, { title: studio.replace(/\s+/g, ' ') || 'Без студии', cards: [] });
+                }
+                groups.get(key).cards.push(card);
+            });
+        });
+        return groups;
+    }
+
+    function loadBookmarkGroups(key, profile) {
+        var ids = bookmarkIds(key, profile);
+        var signature = ids.join(',');
+        var cached = bookmarkGroupCache.get(key);
+        if (cached && cached.signature === signature) return cached.pending;
+        var token = accountToken;
+        var cardsById = new Map();
+        var offset = 0;
+        var failed = false;
+
+        function fetchBatch() {
+            if (failed || accountToken !== token || offset >= ids.length) return Promise.resolve();
+            var batch = ids.slice(offset, offset + BOOKMARK_BATCH_SIZE);
+            offset += BOOKMARK_BATCH_SIZE;
+            return new Promise(function (resolve, reject) {
+                request('news', { mode: 'short', ids: batch, page: 1, limit: batch.length }, function (data) {
+                    var records = recordList(data);
+                    if (records) resolve(records);
+                    else reject();
+                }, reject);
+            }).then(function (records) {
+                records.forEach(function (record) {
+                    var card = catalogCard(record);
+                    if (card) cardsById.set(card.animehub_id, card);
+                });
+                return fetchBatch();
+            });
+        }
+
+        var workers = Math.min(3, Math.ceil(ids.length / BOOKMARK_BATCH_SIZE));
+        var pending = Promise.all(Array.from({ length: workers }, fetchBatch)).then(function () {
+            return accountToken === token ? groupBookmarkCards(ids, cardsById) : null;
+        }).catch(function () {
+            failed = true;
+            var current = bookmarkGroupCache.get(key);
+            if (current && current.pending === pending) bookmarkGroupCache.delete(key);
+            return null;
+        });
+        bookmarkGroupCache.set(key, { signature: signature, pending: pending });
+        return pending;
+    }
+
+    function loadBookmarkHome(object, success, failure) {
+        if (!accountToken) { failure(); return; }
+        var token = accountToken;
+        var component = object.activity && object.activity.component;
         readProfile().then(function (profile) {
-            if (Lampa.Activity.active() !== activity) return;
-            if (!profile) {
-                Lampa.Noty.show('Не удалось загрузить списки HentaiHub.');
+            return profile && token === accountToken ? loadBookmarkGroups(object.animehubBookmark, profile) : null;
+        }).then(function (groups) {
+            if (component && component.destroyed) return;
+            if (token !== accountToken || !groups || !groups.size) {
+                failure();
                 return;
             }
-            Lampa.Activity.push({
-                component: 'category_full', source: SOURCE, url: '', page: 1,
-                title: entry.title, animehubBookmark: entry.key
+            var sorted = Array.from(groups.entries()).sort(function (a, b) {
+                if (!a[0]) return 1;
+                if (!b[0]) return -1;
+                return a[1].title.localeCompare(b[1].title, 'ru');
             });
+            success(sorted.map(function (entry) {
+                return {
+                    title: escapeHtml(entry[1].title), source: SOURCE,
+                    animehubBookmarkStudio: entry[0], animehubStudioTitle: entry[1].title,
+                    results: entry[1].cards.slice(0, PAGE_SIZE),
+                    total_pages: Math.ceil(entry[1].cards.length / PAGE_SIZE)
+                };
+            }));
+        });
+    }
+
+    function loadBookmarkStudio(object, success, failure) {
+        if (!accountToken) { failure(); return; }
+        var page = Number(object.page) || 1;
+        var component = object.activity && object.activity.component;
+        var token = accountToken;
+        var profile = accountProfile && accountProfile.lists ? Promise.resolve(accountProfile) : readProfile();
+        profile.then(function (data) {
+            return data && token === accountToken ? loadBookmarkGroups(object.animehubBookmark, data) : null;
+        }).then(function (groups) {
+            if (component && component.destroyed) return;
+            if (token !== accountToken || !groups) {
+                if (page > 1 && Number(object.page) === page) object.page = page - 1;
+                failure();
+                return;
+            }
+            var group = groups.get(object.animehubBookmarkStudio);
+            var cards = group ? group.cards : [];
+            var total = Math.max(1, Math.ceil(cards.length / PAGE_SIZE));
+            if (component) component.total_pages = total;
+            success({ results: cards.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), page: page, total_pages: total });
         });
     }
 
@@ -548,8 +666,9 @@
     function catalogCard(record) {
         if (!record || !/^\d+$/.test(String(record.id)) || isManga(record.category)) return null;
         var fields = record.xfields_data || {};
+        var studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         if (plain(record.category).toLowerCase() === 'неизвестно' &&
-            !names(fields.studios, /[,;|]/).length && !plain(fields.translate_type)) return null;
+            !studios.length && !plain(fields.translate_type)) return null;
 
         var title = plain(record.title);
         if (!title || /^(?:\[(?:манга|manga)\]|(?:манга|manga)\s*[:—–-])/i.test(title)) return null;
@@ -557,6 +676,7 @@
         return {
             id: SOURCE + ':' + record.id,
             animehub_id: Number(record.id),
+            animehub_studios: studios,
             animehub_episode: episodeNumber(record, title),
             source: SOURCE,
             media_type: 'movie',
@@ -578,7 +698,6 @@
         card.title = escapeHtml(titles.title);
         card.original_title = escapeHtml(titles.subtitle);
         card.tagline = card.original_title;
-        card.animehub_studios = names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/);
         card.overview = escapeHtml(description);
         card.animehub_translation = plain(fields.translate_type);
         card.poster = imageUrl(fields.poster, false);
@@ -650,6 +769,10 @@
     }
 
     function loadList(object, success, failure) {
+        if (object.animehubBookmark && typeof object.animehubBookmarkStudio === 'string') {
+            loadBookmarkStudio(object, success, failure);
+            return;
+        }
         var firstPage = Number(object.page) || 1;
         var component = object.activity && object.activity.component;
         var state = catalogs.get(object);
@@ -801,6 +924,10 @@
     }
 
     function loadHome(object, success, failure) {
+        if (object.component === BOOKMARK_HOME) {
+            loadBookmarkHome(object, success, failure);
+            return;
+        }
         readProfile();
         var component = object.activity && object.activity.component;
         var pending = SECTIONS.length;
@@ -869,6 +996,22 @@
                         Lampa.Activity.push({
                             component: COLLECTIONS, source: SOURCE, url: 'collections', page: 1, title: data.title,
                             animehubCollectionWidth: cover && window.getComputedStyle(cover).width
+                        });
+                    }
+                });
+            }
+        });
+    }
+
+    function animeBookmarkHome(object) {
+        return mainComponent('category', object, {
+            onInstance: function (line, data) {
+                line.use({
+                    onlyMore: function () {
+                        Lampa.Activity.push({
+                            component: 'category_full', source: SOURCE, url: '', page: 1, title: data.animehubStudioTitle,
+                            animehubBookmark: object.animehubBookmark,
+                            animehubBookmarkStudio: data.animehubBookmarkStudio
                         });
                     }
                 });
@@ -1150,7 +1293,7 @@
         function studios() {
             loadEliteStudios(function () {
                 if (Lampa.Activity.active() === activity) {
-                    selectFilter('Студии', 'studios', filterOptions('studios'), draft, repeat, true);
+                    selectFilter('Студия', 'studios', filterOptions('studios'), draft, repeat, true);
                 }
             });
         }
@@ -1158,7 +1301,7 @@
         var items = [
             { title: 'Поиск', action: search },
             { title: 'Жанры', subtitle: escapeHtml(draft.tags || 'Все'), action: select('Жанры', 'tags', function () { return filterOptions('tags'); }, true) },
-            { title: 'Студии', subtitle: escapeHtml(draft.studios || 'Все'), action: studios },
+            { title: 'Студия', subtitle: escapeHtml(draft.studios || 'Все'), action: studios },
             { title: 'Год выпуска', subtitle: String(draft.year || 'Любой'), action: select('Год выпуска', 'year', filterYears) },
             { title: 'Сортировка', subtitle: sort.title, action: select('Сортировка', 'sort', function () { return SORT_OPTIONS; }) }
         ];
@@ -1830,6 +1973,7 @@
         installVoteStyle();
         Lampa.Api.sources[SOURCE] = { category: loadHome, list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add(HOME, animeHome);
+        Lampa.Component.add(BOOKMARK_HOME, animeBookmarkHome);
         Lampa.Component.add(COLLECTIONS, animeCollections);
         Lampa.Component.add(RANDOM, animeRandom);
         Lampa.Component.add(POPULAR, animePopular);
