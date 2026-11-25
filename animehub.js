@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.13 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.14 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.13';
+    var VERSION = '0.5.14';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -608,14 +608,19 @@
         }
     }
 
-    function httpsUrl(value) {
-        if (typeof value !== 'string' || !value.trim()) return '';
+    function parseHttpsUrl(value, base) {
+        if (typeof value !== 'string' || !value.trim()) return null;
         try {
-            var url = new URL(value, API);
-            return url.protocol === 'https:' && !url.username && !url.password ? url.href : '';
+            var url = new URL(value, base === undefined ? API : base);
+            return url.protocol === 'https:' && !url.username && !url.password ? url : null;
         } catch (error) {
-            return '';
+            return null;
         }
+    }
+
+    function httpsUrl(value) {
+        var url = parseHttpsUrl(value);
+        return url ? url.href : '';
     }
 
     function imageUrl(value, preferThumb) {
@@ -722,11 +727,12 @@
     }
 
     function setupTitleCover() {
-        decorateCover.call(this);
+        var cover = $(this.render(true));
         var card = this.data;
+        decoratePoster(cover.find('.card__view'), card.animehub_episode);
         // Lampa's Menu module leaves long press unhandled when it has no actions.
         if (Array.isArray(this.menu_list)) this.menu_list.length = 0;
-        $(this.render(true)).on('hover:long', function () { showBookmarks(card); });
+        cover.on('hover:long', function () { showBookmarks(card); });
     }
 
     function collectionCard(record) {
@@ -1621,14 +1627,9 @@
         return value && typeof value === 'object' ? [value] : [];
     }
 
-    function directStream(value, format) {
-        var url = httpsUrl(value);
-        if (!url) return '';
-        var path = new URL(url).pathname;
-        var type = String(format || '').toLowerCase();
-        if (/\.(?:mp4|m3u8|webm|mkv|mpd)$/i.test(path) ||
-            /^(?:video\/(?:mp4|webm)|mp4|hls|m3u8|webm|mpd)$/.test(type)) return url;
-        return '';
+    function isDirectStream(url, format) {
+        return /\.(?:mp4|m3u8|webm|mkv|mpd)$/i.test(url.pathname) ||
+            /^(?:video\/(?:mp4|webm)|mp4|hls|m3u8|webm|mpd)$/.test(String(format || '').toLowerCase());
     }
 
     function qualityOf(value) {
@@ -1642,23 +1643,21 @@
         return match ? Number(match[1]) : 0;
     }
 
-    function mp4Embed(value) {
-        var url = httpsUrl(value);
-        if (!url) return '';
-        var parsed = new URL(url);
-        return /^(?:www\.)?mp4upload\.com$/i.test(parsed.hostname) &&
-            /^\/embed-[\w-]+\.html$/i.test(parsed.pathname) ? url : '';
+    function isMp4Embed(url) {
+        return /^(?:www\.)?mp4upload\.com$/i.test(url.hostname) && /^\/embed-[\w-]+\.html$/i.test(url.pathname);
     }
 
     function streamsFor(value) {
         var unique = new Set();
-        return rows(value).map(function (item) {
-            if (!item) return null;
-            var url = directStream(item.source || item.link || item.url, item.format || item.type);
-            if (!url || unique.has(url)) return null;
-            unique.add(url);
-            return { url: url, quality: qualityOf(item.quality) };
-        }).filter(Boolean).sort(function (a, b) {
+        var streams = [];
+        rows(value).forEach(function (item) {
+            if (!item) return;
+            var url = parseHttpsUrl(item.source || item.link || item.url);
+            if (!url || !isDirectStream(url, item.format || item.type) || unique.has(url.href)) return;
+            unique.add(url.href);
+            streams.push({ url: url.href, quality: qualityOf(item.quality) });
+        });
+        return streams.sort(function (a, b) {
             return b.quality - a.quality;
         });
     }
@@ -1675,11 +1674,12 @@
     function providers(items) {
         var byName = new Map();
         items.forEach(function (item) {
-            var link = item.source || item.link || item.url;
-            var url = directStream(link, item.format || item.type);
-            var embed = url ? '' : mp4Embed(link);
+            var link = parseHttpsUrl(item.source || item.link || item.url);
+            if (!link) return;
+            var url = isDirectStream(link, item.format || item.type) ? link.href : '';
+            var embed = !url && isMp4Embed(link) ? link.href : '';
             if (!url && !embed) return;
-            var name = embed ? 'MP4' : (plain(item.title) || new URL(url).hostname);
+            var name = embed ? 'MP4' : (plain(item.title) || link.hostname);
             if (/^(?:mp4|mp4upload)$/i.test(name)) name = 'MP4';
             if (!byName.has(name)) byName.set(name, { title: name, streams: [] });
             var streams = byName.get(name).streams;
@@ -1690,12 +1690,12 @@
         var ordered = Array.from(byName.values()).sort(function (a, b) {
             return Number(b.title === 'MP4') - Number(a.title === 'MP4');
         });
-        return ordered.map(function (provider) {
+        ordered.forEach(function (provider) {
             provider.streams.sort(function (a, b) {
                 return Number(Boolean(b.url)) - Number(Boolean(a.url)) || b.quality - a.quality;
             });
-            return provider;
         });
+        return ordered;
     }
 
     function playerOptions(fields) {
@@ -1756,10 +1756,9 @@
     function mediaFromEmbed(html, embed) {
         if (typeof html !== 'string' || html.length > 750000) return '';
         function findUrl(value) {
-            if (typeof value !== 'string' || !value.trim()) return '';
             try {
-                var url = directStream(new URL(plain(value), embed).href);
-                return url && /(^|\.)mp4upload\.com$/i.test(new URL(url).hostname) ? url : '';
+                var url = parseHttpsUrl(plain(value), embed);
+                return url && isDirectStream(url) && /(^|\.)mp4upload\.com$/i.test(url.hostname) ? url.href : '';
             } catch (error) {
                 return '';
             }
@@ -1823,7 +1822,7 @@
             var options = group.options.map(function (option) {
                 var backup = [];
                 option.backup.some(function (provider) {
-                    backup = provider.streams.filter(function (stream) { return stream.url || external; });
+                    backup = external ? provider.streams : provider.streams.filter(function (stream) { return stream.url; });
                     return backup.length > 0;
                 });
                 return { title: option.title, primary: option.primary, backup: backup };
