@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.9 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.10 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.9';
+    var VERSION = '0.5.10';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -624,6 +624,7 @@
 
     function plain(value) {
         if (typeof value !== 'string') return '';
+        if (!/[<&\r\u0000]/.test(value)) return value.trim();
         var text = document.createElement('textarea');
         text.innerHTML = value.replace(/<br\s*\/?>|<\/p\s*>/gi, '\n').replace(/<[^>]*>/g, '').replace(/</g, '&lt;');
         return text.value.trim();
@@ -772,6 +773,7 @@
 
     function fullCard(record) {
         var card = catalogCard(record);
+        if (!card) return null;
         var fields = record.xfields_data || {};
         var titles = detailTitles(card.title, fields.alt_titles);
         var description = plain(record.full_story);
@@ -950,7 +952,7 @@
                     var card = query.collections ? collectionCard(record) : catalogCard(record);
                     if (!card || state.ids.has(card.id)) return;
                     state.ids.add(card.id);
-                    if (!query.collections) collectFilters(record.xfields_data || {});
+                    if (!query.collections) collectFilters(record.xfields_data || {}, card.animehub_studios);
                     cards.push(card);
                 });
                 if (query.body.ids) {
@@ -1235,9 +1237,9 @@
         Lampa.Select.show(options);
     }
 
-    function collectFilters(fields) {
+    function collectFilters(fields, studios) {
         names(fields.hentai_tags, /\s*[,;|]\s*/).forEach(function (tag) { filterChoices.tags.add(tag); });
-        names(fields.studios, /\s*[,;|]\s*|\s+\/\s+/).forEach(function (studio) { filterChoices.studios.add(studio); });
+        studios.forEach(function (studio) { filterChoices.studios.add(studio); });
     }
 
     function editText(options, done) {
@@ -1588,14 +1590,15 @@
             if (component && component.destroyed) return;
             var records = recordList(data) || [];
             var record = records.find(function (item) { return item && Number(item.id) === id; });
-            if (!record || !catalogCard(record)) {
+            var movie = fullCard(record);
+            if (!movie) {
                 failure();
                 return;
             }
 
-            var movie = fullCard(record);
-            collectFilters(record.xfields_data || {});
-            playback.set(movie, { title: plain(movie.title), options: playerOptions(record.xfields_data || {}) });
+            var fields = record.xfields_data || {};
+            collectFilters(fields, movie.animehub_studios);
+            playback.set(movie, { title: plain(movie.title), options: playerOptions(fields) });
             if (!Lampa.Utils.canWatchChildren('18+', Lampa.Account.Permit.profile.age)) {
                 success({ movie: movie });
                 return;
