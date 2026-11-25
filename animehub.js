@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.7 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.8 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.7';
+    var VERSION = '0.5.8';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -1622,7 +1622,13 @@
     }
 
     function qualityOf(value) {
-        var match = String(value || '').match(/(?:^|\D)(\d{3,4})(?:p|\D|$)/i);
+        var quality = String(value || '').trim();
+        var named = { HD: 720, FHD: 1080, '2K': 1440, '4K': 2160 };
+        var height = named[quality.toUpperCase()];
+        if (typeof height === 'number') return height;
+        var dimensions = quality.match(/^\d{3,4}\s*[x×]\s*(\d{3,4})$/i);
+        if (dimensions) return Number(dimensions[1]);
+        var match = quality.match(/(?:^|\D)(\d{3,4})(?:p|\D|$)/i);
         return match ? Number(match[1]) : 0;
     }
 
@@ -1816,6 +1822,24 @@
         }).filter(function (group) { return group.options.length; });
     }
 
+    function playerMenuItem(title, streams) {
+        var item = { title: title, streams: streams };
+        var available = streams[0].embed ? [streams[0]] : streams.filter(function (stream) { return stream.url; });
+        var labels = [
+            { height: 720, title: 'HD' }, { height: 1080, title: 'FHD' },
+            { height: 1440, title: '2K' }, { height: 2160, title: '4K' }
+        ].filter(function (quality) {
+            return available.some(function (stream) { return stream.quality === quality.height; });
+        }).map(function (quality) { return quality.title; });
+        if (labels.length) {
+            item.html = Lampa.Template.get('selectbox_item', item);
+            item.html.find('.selectbox-item__title').append(
+                $('<span>').css({ opacity: 0.6, marginLeft: '0.45em' }).text(' ' + labels.join(' · '))
+            );
+        }
+        return item;
+    }
+
     function openPlayers(movie, video) {
         var groups = playbackGroups(video);
         if (!groups.length) {
@@ -1832,8 +1856,8 @@
 
         function showPlayer(option) {
             var players = [];
-            if (option.primary.length) players.push({ title: 'Основной', streams: option.primary });
-            if (option.backup.length) players.push({ title: 'Дополнительный', streams: option.backup });
+            if (option.primary.length) players.push(playerMenuItem('Основной', option.primary));
+            if (option.backup.length) players.push(playerMenuItem('Дополнительный', option.backup));
             showRememberedSelect('player', {
                 title: 'Плеер',
                 nohide: true,
