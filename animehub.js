@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.8 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.9 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.8';
+    var VERSION = '0.5.9';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -1623,8 +1623,8 @@
 
     function qualityOf(value) {
         var quality = String(value || '').trim();
-        var named = { HD: 720, FHD: 1080, '2K': 1440, '4K': 2160 };
-        var height = named[quality.toUpperCase()];
+        var named = { HD: 720, FHD: 1080, FULLHD: 1080, '2K': 1440, '4K': 2160 };
+        var height = named[quality.toUpperCase().replace(/\s+/g, '')];
         if (typeof height === 'number') return height;
         var dimensions = quality.match(/^\d{3,4}\s*[x×]\s*(\d{3,4})$/i);
         if (dimensions) return Number(dimensions[1]);
@@ -1825,16 +1825,13 @@
     function playerMenuItem(title, streams) {
         var item = { title: title, streams: streams };
         var available = streams[0].embed ? [streams[0]] : streams.filter(function (stream) { return stream.url; });
-        var labels = [
-            { height: 720, title: 'HD' }, { height: 1080, title: 'FHD' },
-            { height: 1440, title: '2K' }, { height: 2160, title: '4K' }
-        ].filter(function (quality) {
-            return available.some(function (stream) { return stream.quality === quality.height; });
-        }).map(function (quality) { return quality.title; });
-        if (labels.length) {
-            item.html = Lampa.Template.get('selectbox_item', item);
+        var maxHeight = available.reduce(function (max, stream) { return Math.max(max, stream.quality); }, 0);
+        if (maxHeight) {
+            var labels = { 720: 'HD', 1080: 'FHD', 1440: '2K', 2160: '4K' };
+            var label = labels[maxHeight] || maxHeight + 'p';
+            item.html = Lampa.Template.get('selectbox_item', { title: title });
             item.html.find('.selectbox-item__title').append(
-                $('<span>').css({ opacity: 0.6, marginLeft: '0.45em' }).text(' ' + labels.join(' · '))
+                $('<span>').css({ opacity: 0.6, marginLeft: '0.45em' }).text(' • ' + label)
             );
         }
         return item;
