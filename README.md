@@ -1,6 +1,6 @@
 # AnimeHub для Lampa
 
-**Версия плагина — 0.5.9.** AnimeHub добавляет каталог HentaiHub в Lampa и использует API HentaiHub 0.49. Для Android TV используется сетевой модуль Android, для установленного приложения Samsung Tizen (`.wgt`) добавлен прямой запрос через Lampa.
+**Версия плагина — 0.5.10.** AnimeHub добавляет каталог HentaiHub в Lampa и использует API HentaiHub 0.49. Для Android TV используется сетевой модуль Android, для установленного приложения Samsung Tizen (`.wgt`) добавлен прямой запрос через Lampa.
 
 ## Установка
 
