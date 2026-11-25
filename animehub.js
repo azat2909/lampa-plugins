@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.15 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.16 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.15';
+    var VERSION = '0.5.16';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -70,7 +70,7 @@
         { title: 'По популярности за полгода', value: 'views_180' },
         { title: 'По популярности за год', value: 'views_365' }
     ];
-    // Genres from the public catalog, plus the unused option in HentaiHub 0.49.
+    // Initial genres from the public catalog.
     var GENRES = [
         "3D Хентай", "Анал", "Анилингус", "Афродизиак",
         "Ахегао", "Бдсм", "Без лифчика", "Без цензуры",
@@ -86,7 +86,7 @@
         "Женский оргазм", "ЖЖМ Втроём", "Замужние", "Золотой дождь",
         "Игра со спермой", "Игрушки", "Идол", "Изнасилование",
         "Инцест", "Исекай", "Классика", "Коллега",
-        "Комедия", "Конский хвост", "Контроль сознания", "Кончил в попку",
+        "Комедия", "Контроль сознания", "Кончил в попку",
         "Кончил на тело", "Короткие волосы", "Косплей", "Красные волосы",
         "Куннилингус", "Купальник", "Лактация", "Лизание",
         "Лизать яйца", "Линии загара", "Лобковые волосы", "Любительское 2D",
@@ -1314,6 +1314,7 @@
         tags.forEach(function (tag) {
             if (typeof tag !== 'string') return;
             var name = normalizeFilterName(tag);
+            if (name === 'конский хвост') return;
             if (name && (!target.has(name) || tag.indexOf('\u00a0') !== -1)) target.set(name, tag);
         });
     }
