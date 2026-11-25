@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.14 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.15 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.14';
+    var VERSION = '0.5.15';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -26,6 +26,9 @@
     var POPULAR = 'animehub_popular';
     var ACCOUNT_TOKEN = 'animehub_account_token';
     var UPDATE_SETTING = 'animehub_check_update';
+    var GENRE_CACHE = 'animehub_genre_cache';
+    var GENRE_REFRESH_INTERVAL = 7 * 24 * 60 * 60 * 1000;
+    var GENRE_PAGE_SIZE = 400;
     var BOOKMARKS = [
         { key: 'favorite', list: 1, title: 'Избранное' },
         { key: 'viewed', list: 0, title: 'Просмотрено' },
@@ -67,8 +70,53 @@
         { title: 'По популярности за полгода', value: 'views_180' },
         { title: 'По популярности за год', value: 'views_365' }
     ];
-    // Initial catalog choices from HentaiHub 0.49's FilterScreen.
-    var GENRES = ['Исекай', 'Романтика', 'Классика', 'Комедия', 'Махо-сёдзё', 'Ужасы', 'Фэнтези', 'Юри', 'Эротика'];
+    // Genres from the public catalog, plus the unused option in HentaiHub 0.49.
+    var GENRES = [
+        "3D Хентай", "Анал", "Анилингус", "Афродизиак",
+        "Ахегао", "Бдсм", "Без лифчика", "Без цензуры",
+        "Белые волосы", "Беременные", "Блондинка", "Большая грудь",
+        "Большая задница", "Бондаж", "Брюнетка", "Буккакэ",
+        "В очках", "В шортиках", "В юбке", "Возлюбленные детства",
+        "Втроём с сестрой", "Втянутые соски", "Вчетвером", "Гарем",
+        "Гигантская грудь", "Глотать сперму", "Глубокая глотка", "Голый фартук",
+        "Горничные", "Горячие источники", "Гэнгбэнг", "Гяру",
+        "Двойное проникновение", "Двойной минет", "Двойной хвост", "Девственность",
+        "Девушки-монстры", "Демоны", "Дерьмо", "Домогательства",
+        "Домохозяйки", "Дрочка", "Дрочка подмышками", "Дядя и племянница",
+        "Женский оргазм", "ЖЖМ Втроём", "Замужние", "Золотой дождь",
+        "Игра со спермой", "Игрушки", "Идол", "Изнасилование",
+        "Инцест", "Исекай", "Классика", "Коллега",
+        "Комедия", "Конский хвост", "Контроль сознания", "Кончил в попку",
+        "Кончил на тело", "Короткие волосы", "Косплей", "Красные волосы",
+        "Куннилингус", "Купальник", "Лактация", "Лизание",
+        "Лизать яйца", "Линии загара", "Лобковые волосы", "Любительское 2D",
+        "Маленькая грудь", "Мастурбация", "Мать и дочь", "Мать и сын",
+        "Махо-сёдзё", "Медсестры", "Мертвецки пьяная", "Месть",
+        "Милфы", "Минет", "Миссионерская поза", "ММЖ Втроём",
+        "Монстры", "Мускулистая девушка", "На лицо", "Неко",
+        "НТР", "Обман", "Обмочилась", "Обратное изнасилование",
+        "Огромный член", "Оргия", "От первого лица", "Офис",
+        "Пара", "Паузури", "Пацанка", "Переполнение спермой",
+        "Пирсинг сосков", "Пляж", "Подглядывание", "Поза 69",
+        "Поза Наездница", "Поза ножницы", "Поза По-собачьи", "Поцелуи",
+        "Презерватив", "Проникновение в матку", "Проникновение в соски", "Проституция",
+        "Противный ублюдок", "Публичный секс", "Раздувание", "Риск быть замеченным",
+        "Розовые волосы", "Романтика", "Русская озвучка", "Рыжеволосая",
+        "С сюжетом", "С цензурой", "Свести с ума", "Секс в воде",
+        "Секс в душе", "Секс по случайности", "Секс по телефону", "Сексуальное Бельё",
+        "Сестра", "Сестра с братом", "Сестра с сестрой", "Сидение на лице",
+        "Синие волосы", "Сквиртинг", "Слоеный пирог", "Спортивная одежда",
+        "Стимуляция промежностью", "Стимуляция сосков", "Стимуляция через трусики", "Суккубы",
+        "Съемка", "Темная кожа", "Тентакли", "Трап",
+        "Тройничок", "Тройное проникновение", "Ужасы", "Унижение",
+        "Униформа", "Ученики", "Учитель", "Фингеринг",
+        "Фурри", "Фут-фетиш", "Футанари", "Футджоб",
+        "Фэнтези", "Цундере", "Чулки", "Шантаж",
+        "Шатенка", "Школа", "Школьницы", "Шлюхи",
+        "Шота", "Эльфы", "Эротика", "Юри",
+        "Яндере", "AI-Upscale", "creampie", "HD",
+        "X-ray"
+    ];
     // The API matches some studio names with non-breaking spaces.
     var STUDIOS = [
         'Moonstone Cherry', 'Studio Deen', 'Pink Pineapple', 'MS Pictures', '3D-Works',
@@ -97,7 +145,10 @@
     var playback = new WeakMap();
     var playbackOrigins = new WeakMap();
     var canWatch = new WeakSet();
-    var filterChoices = { tags: new Set(GENRES), studios: new Set(STUDIOS) };
+    var filterChoices = { tags: new Map(), studios: new Set(STUDIOS) };
+    mergeGenreTags(filterChoices.tags, GENRES);
+    var nextGenreRefresh = 0;
+    var genreRefreshPending = false;
     var eliteStudios = [];
     var catalogFilters = { sort: 'date' };
     var randomShelf;
@@ -876,7 +927,7 @@
         var random = object.component === RANDOM;
         var filters = object.animehubFilters || {};
         var countVisible = !object.animehubSearch &&
-            Boolean(genreTag(object) || filters.sortSelected || (filters.sort && filters.sort !== 'date'));
+            Boolean(genreTag(object) || filters.year || filters.sortSelected || (filters.sort && filters.sort !== 'date'));
         var visiblePageSize = firstPage === 1 ? FILTER_FIRST_PAGE_SIZE : PAGE_SIZE;
         var lastInitialPage = random && firstPage === 1 ? INITIAL_PAGES : firstPage;
         var results = countVisible && state.visibleBuffer ? state.visibleBuffer.slice() : [];
@@ -1251,8 +1302,69 @@
     }
 
     function collectFilters(fields, studios) {
-        names(fields.hentai_tags, /\s*[,;|]\s*/).forEach(function (tag) { filterChoices.tags.add(tag); });
+        mergeGenreTags(filterChoices.tags, genreTags(fields));
         studios.forEach(function (studio) { filterChoices.studios.add(studio); });
+    }
+
+    function genreTags(fields) {
+        return names(fields.hentai_tags, /\s*[,;|]\s*/);
+    }
+
+    function mergeGenreTags(target, tags) {
+        tags.forEach(function (tag) {
+            if (typeof tag !== 'string') return;
+            var name = normalizeFilterName(tag);
+            if (name && (!target.has(name) || tag.indexOf('\u00a0') !== -1)) target.set(name, tag);
+        });
+    }
+
+    function refreshGenres() {
+        var now = Date.now();
+        if (genreRefreshPending || now < nextGenreRefresh) return;
+        var cached = Lampa.Storage.get(GENRE_CACHE, {}) || {};
+        if (Array.isArray(cached.tags)) {
+            mergeGenreTags(filterChoices.tags, cached.tags);
+            if (typeof cached.updated === 'number' && cached.updated <= now && cached.updated + GENRE_REFRESH_INTERVAL > now) {
+                nextGenreRefresh = cached.updated + GENRE_REFRESH_INTERVAL;
+                return;
+            }
+        }
+        var tags = new Map();
+        var pages = new Set();
+        genreRefreshPending = true;
+
+        function finish() {
+            genreRefreshPending = false;
+            nextGenreRefresh = Date.now() + 5 * 60 * 1000;
+        }
+
+        function load(page) {
+            request('news', { mode: 'full', sort: 'date', page: page, limit: GENRE_PAGE_SIZE }, function (data) {
+                var records = recordList(data);
+                if (!records) { finish(); return; }
+                if (records.length) {
+                    var signature = (records[0] || {}).id + ':' + (records[records.length - 1] || {}).id;
+                    if (pages.has(signature)) { finish(); return; }
+                    pages.add(signature);
+                    records.forEach(function (record) {
+                        if (record && record.xfields_data) mergeGenreTags(tags, genreTags(record.xfields_data));
+                    });
+                }
+                if (records.length >= GENRE_PAGE_SIZE) {
+                    load(page + 1);
+                    return;
+                }
+                finish();
+                if (!tags.size) return;
+                var values = Array.from(tags.values());
+                var updated = Date.now();
+                mergeGenreTags(filterChoices.tags, values);
+                Lampa.Storage.set(GENRE_CACHE, { tags: values, updated: updated });
+                nextGenreRefresh = updated + GENRE_REFRESH_INTERVAL;
+            }, finish);
+        }
+
+        load(1);
     }
 
     function editText(options, done) {
@@ -1342,7 +1454,7 @@
     }
 
     function filterOptions(key) {
-        var sorted = Array.from(filterChoices[key]).sort(function (a, b) {
+        var sorted = Array.from(filterChoices[key].values()).sort(function (a, b) {
             return a.localeCompare(b, 'ru');
         });
         function option(value) {
@@ -1400,10 +1512,14 @@
                 }
             });
         }
+        function genres() {
+            refreshGenres();
+            selectFilter('Жанры', 'tags', filterOptions('tags'), draft, repeat, true);
+        }
         var sort = SORT_OPTIONS.find(function (option) { return option.value === draft.sort; }) || SORT_OPTIONS[0];
         var items = [
             { title: 'Поиск', action: search },
-            { title: 'Жанры', subtitle: escapeHtml(draft.tags || 'Все'), action: select('Жанры', 'tags', function () { return filterOptions('tags'); }, true) },
+            { title: 'Жанры', subtitle: escapeHtml(draft.tags || 'Все'), action: genres },
             { title: 'Студия', subtitle: escapeHtml(draft.studios || 'Все'), action: studios },
             { title: 'Год выпуска', subtitle: String(draft.year || 'Любой'), action: select('Год выпуска', 'year', filterYears) },
             { title: 'Сортировка', subtitle: sort.title, action: select('Сортировка', 'sort', function () { return SORT_OPTIONS; }) }
