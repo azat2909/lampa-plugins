@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.12 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.13 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.12';
+    var VERSION = '0.5.13';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -1832,14 +1832,22 @@
         }).filter(function (group) { return group.options.length; });
     }
 
-    function playerMenuItem(title, streams) {
-        var item = { title: title, streams: streams };
+    function singlePlayer(option) {
+        if (option.primary.length && option.backup.length) return null;
+        return option.primary.length ? option.primary : option.backup;
+    }
+
+    function maxStreamHeight(streams) {
+        if (!streams || !streams.length) return 0;
         var available = streams[0].embed ? [streams[0]] : streams.filter(function (stream) { return stream.url; });
-        var maxHeight = available.reduce(function (max, stream) { return Math.max(max, stream.quality); }, 0);
+        return available.reduce(function (max, stream) { return Math.max(max, stream.quality); }, 0);
+    }
+
+    function qualityMenuItem(item, maxHeight) {
         if (maxHeight) {
             var labels = { 720: 'HD', 1080: 'FHD', 1440: '2K', 2160: '4K' };
             var label = labels[maxHeight] || maxHeight + 'p';
-            item.html = Lampa.Template.get('selectbox_item', { title: title });
+            item.html = Lampa.Template.get('selectbox_item', { title: item.title });
             item.html.find('.selectbox-item__title').append(
                 $('<span>').css({ opacity: 0.6, whiteSpace: 'nowrap' }).append(
                     $('<span>').css({ display: 'inline-block', margin: '0 0.45em', fontWeight: 700 }).text('•'),
@@ -1848,6 +1856,16 @@
             );
         }
         return item;
+    }
+
+    function translationHeight(group) {
+        var maxHeight = 0;
+        for (var i = 0; i < group.options.length; i++) {
+            var streams = singlePlayer(group.options[i]);
+            if (!streams) return 0;
+            maxHeight = Math.max(maxHeight, maxStreamHeight(streams));
+        }
+        return maxHeight;
     }
 
     function openPlayers(movie, video) {
@@ -1865,20 +1883,25 @@
         }
 
         function showPlayer(option) {
-            var players = [];
-            if (option.primary.length) players.push(playerMenuItem('Основной', option.primary));
-            if (option.backup.length) players.push(playerMenuItem('Дополнительный', option.backup));
+            var streams = singlePlayer(option);
+            if (streams) {
+                choose(streams);
+                return;
+            }
             showRememberedSelect('player', {
                 title: 'Плеер',
                 nohide: true,
-                items: players,
+                items: [
+                    qualityMenuItem({ title: 'Основной', streams: option.primary }, maxStreamHeight(option.primary)),
+                    qualityMenuItem({ title: 'Дополнительный', streams: option.backup }, maxStreamHeight(option.backup))
+                ],
                 onSelect: function (player) { choose(player.streams); }
             }, activity);
         }
 
         showRememberedSelect('translation', {
             title: 'Перевод',
-            items: groups,
+            items: groups.map(function (group) { return qualityMenuItem(group, translationHeight(group)); }),
             nohide: true,
             onBack: function () { restoreFocus(activity); },
             onSelect: function (group) {
@@ -1890,7 +1913,7 @@
                     title: 'Озвучка',
                     nohide: true,
                     items: group.options.map(function (option) {
-                        return { title: escapeHtml(option.title), option: option };
+                        return qualityMenuItem({ title: escapeHtml(option.title), option: option }, maxStreamHeight(singlePlayer(option)));
                     }),
                     onSelect: function (entry) { showPlayer(entry.option); }
                 }, activity);
