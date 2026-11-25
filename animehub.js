@@ -1,12 +1,12 @@
 /*!
- * AnimeHub 0.5.10 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
+ * AnimeHub 0.5.11 — источник HentaiHub 0.49 для Lampa на Android TV и Tizen.
  */
 (function () {
     'use strict';
 
     var SOURCE = 'animehub';
     var NAME = 'AnimeHub';
-    var VERSION = '0.5.10';
+    var VERSION = '0.5.11';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h7v7H4zm9 0h7v7h-7zm0 9h7v7h-7zm-9 0h7v7H4z"/></svg>';
     var API = 'https://api.hentaigo.me/api/';
     var HENTAIHUB_VERSION = '0.49';
@@ -1082,9 +1082,15 @@
                     onInstance: collectionEnter,
                     onlyMore: function () {
                         var cover = $(this.render(true)).find('.card--collection')[0];
+                        var width = cover && window.getComputedStyle(cover).width;
+                        if (cover && Lampa.Platform.is('tizen')) {
+                            var poster = cover.querySelector('.card__view');
+                            var posterWidth = poster && poster.offsetWidth;
+                            width = posterWidth ? posterWidth + 'px' : '';
+                        }
                         Lampa.Activity.push({
                             component: COLLECTIONS, source: SOURCE, url: 'collections', page: 1, title: data.title,
-                            animehubCollectionWidth: cover && window.getComputedStyle(cover).width
+                            animehubCollectionWidth: width
                         });
                     }
                 });
@@ -1109,12 +1115,20 @@
     }
 
     function animeCollections(object) {
+        var tizen = Lampa.Platform.is('tizen');
+        var width = object.animehubCollectionWidth || (tizen ? '19.7em' : '');
         return mainComponent('category_full', object, {
             onInstance: function (card, data) {
                 collectionEnter(card, data);
-                if (!object.animehubCollectionWidth) return;
+                if (!width) return;
                 card.use({
-                    onCreate: function () { $(this.render(true)).css('width', object.animehubCollectionWidth); }
+                    onCreate: function () {
+                        var element = $(this.render(true));
+                        if (tizen) {
+                            // The grid adds horizontal padding around the measured poster width.
+                            element.css({ boxSizing: 'content-box', width: width, flex: '0 0 ' + width, maxWidth: 'calc(100% - 1em)' });
+                        } else element.css('width', width);
+                    }
                 });
             }
         });
@@ -1834,7 +1848,10 @@
             var label = labels[maxHeight] || maxHeight + 'p';
             item.html = Lampa.Template.get('selectbox_item', { title: title });
             item.html.find('.selectbox-item__title').append(
-                $('<span>').css({ opacity: 0.6, marginLeft: '0.45em' }).text(' • ' + label)
+                $('<span>').css({ opacity: 0.6, whiteSpace: 'nowrap' }).append(
+                    $('<span>').css({ display: 'inline-block', margin: '0 0.45em', fontWeight: 700 }).text('•'),
+                    label
+                )
             );
         }
         return item;
