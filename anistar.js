@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.19
+ * Версия 0.5.20
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.19';
+    var VERSION = '0.5.20';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -45,8 +45,8 @@
         ['По алфавиту', 'title']
     ].reduce(function (options, field) {
         return options.concat([
-            { title: field[0] + ' ↑', key: field[1], direction: 'asc' },
-            { title: field[0] + ' ↓', key: field[1], direction: 'desc' }
+            { title: field[0] + ' ↓', key: field[1], direction: 'desc' },
+            { title: field[0] + ' ↑', key: field[1], direction: 'asc' }
         ]);
     }, []);
     var GENRES = [
@@ -708,7 +708,7 @@
     function readCatalogPage(cursor, state) {
         if (state.anistarList) return readBookmarkPage(siteUrl(cursor));
         var url = state.query ? searchUrl(state, cursor) : desktopUrl(cursor);
-        var sorting = Boolean(!state.query && state.sortApplied);
+        var sorting = Boolean(!state.query && (state.sortApplied || state.anistarHome));
         var sort = SORT[state.sort] || SORT[0];
         var plan;
         if (sorting) {
@@ -767,14 +767,18 @@
             }
             return ordinary().then(function (doc) {
                 var baseline = read(doc, address);
+                if (sortApplied(doc, sort)) return baseline;
                 var fields = sortForm(doc, address);
-                if (!fields) { plan.mode = 'local'; return local(baseline); }
+                if (!fields) {
+                    if (!state.sortApplied) return baseline;
+                    plan.mode = 'local';
+                    return local(baseline);
+                }
                 return pageDocument(fields.url, sortOptions(sort, fields, plan.jar)).then(function (response) {
                     return sortedGet().catch(function () { return response; });
                 }).then(function (sorted) {
                     var page = read(sorted, address);
-                    if (sortApplied(sorted, sort) && page.rows.length &&
-                        (browserOrder(page) !== browserOrder(baseline) || sortApplied(doc, sort))) {
+                    if (sortApplied(sorted, sort) && page.rows.length && browserOrder(page) !== browserOrder(baseline)) {
                         plan.mode = 'server';
                         return page;
                     }
@@ -2488,7 +2492,7 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
-            '.anistar-released{display:block;margin:0 0 .65em;color:inherit;font-weight:700;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
+            '.anistar-released{display:block;margin:0 0 .65em;color:inherit;text-align:center;font-size:1.3em;font-weight:800;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
             '.anistar-settings-row .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
             '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
             '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
