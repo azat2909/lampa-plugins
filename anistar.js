@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.10
+ * Версия 0.5.11
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.10';
+    var VERSION = '0.5.11';
     var DEFAULT_SITE = 'https://anistar.org';
     var SITE = DEFAULT_SITE;
     var previousSite = DEFAULT_SITE;
@@ -20,6 +20,8 @@
     var SEARCH_PAGE_SIZE = 10;
     var SEARCH_PATH = '/?do=search&mode=advanced&subaction=search&titleonly=3&story=';
     var TIMEOUT = 18000;
+    var ACCOUNT_LOGIN = 'anistar_login';
+    var ACCOUNT_PASSWORD = 'anistar_password';
     var ACCOUNT_KEY = 'anistar_account_v1';
     var GENRE_CACHE = 'anistar_anime_genres_v1';
     var LOGIN_PROMPT = 'Войдите в аккаунт в настройках Anistar';
@@ -59,9 +61,11 @@
     var genreRefresh;
     var playerOrigin;
     var session;
+    var loginWork;
     var nativeCookies = new Map();
     var bookmarkPages = new Map();
     var watchPlaylists = new WeakMap();
+    var sortCookies = new WeakMap();
 
     function clean(value) {
         return String(value || '').replace(/\s+/g, ' ').trim();
@@ -173,8 +177,9 @@
         });
     }
 
-    function saveCookies(headers) {
-        var cookies = headers && (headers['set-cookie'] || headers['Set-Cookie']);
+    function saveCookies(headers, jar) {
+        var key = headers && Object.keys(headers).find(function (name) { return name.toLowerCase() === 'set-cookie'; });
+        var cookies = key && headers[key];
         if (!cookies) return;
         if (!Array.isArray(cookies)) cookies = [cookies];
         var changed = false;
@@ -185,13 +190,13 @@
             var key = pair.slice(0, delimiter).trim();
             var value = pair.slice(delimiter + 1);
             if (!value || /(?:^|;)\s*max-age=0(?:;|$)/i.test(cookie)) {
-                changed = nativeCookies.delete(key) || changed;
-            } else if (nativeCookies.get(key) !== value) {
-                nativeCookies.set(key, value);
+                changed = jar.delete(key) || changed;
+            } else if (jar.get(key) !== value) {
+                jar.set(key, value);
                 changed = true;
             }
         });
-        if (changed && session) persistAccount();
+        if (changed && session && jar === nativeCookies) persistAccount();
     }
 
     function request(url, options) {
@@ -226,8 +231,9 @@
                 finish(reject, new Error(message));
             }
 
-            if (native && options.auth && nativeCookies.size) {
-                headers.Cookie = Array.from(nativeCookies, function (entry) { return entry.join('='); }).join('; ');
+            var jar = options.cookieJar || (options.auth ? nativeCookies : null);
+            if (native && jar && jar.size) {
+                headers.Cookie = Array.from(jar, function (entry) { return entry.join('='); }).join('; ');
             }
             if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
             var settings = { dataType: 'text', timeout: timeout };
@@ -237,7 +243,7 @@
             } else {
                 settings.type = method;
                 settings.headers = headers;
-                settings.returnHeaders = native && (options.auth === true || options.returnHeaders === true);
+                settings.returnHeaders = native && Boolean(jar || options.returnHeaders);
                 settings.withCredentials = options.auth === true;
             }
             try {
@@ -253,7 +259,7 @@
                     }
                     if (native && response && typeof response.body === 'string') {
                         html = response.body;
-                        if (options.auth && (!response.currentUrl || response.currentUrl.indexOf(SITE + '/') === 0)) saveCookies(response.headers);
+                        if (jar && (!response.currentUrl || response.currentUrl.indexOf(SITE + '/') === 0)) saveCookies(response.headers, jar);
                     }
                     if (typeof html !== 'string') {
                         finish(reject, new Error('AniStar вернул неизвестный ответ.'));
@@ -266,6 +272,73 @@
             } catch (error) {
                 fail(error);
             }
+        });
+    }
+
+    function freshUrl(url) {
+        url = desktopUrl(url);
+        return url + '&_=' + Date.now();
+    }
+
+    function loginPassword() { return Lampa.Storage.get(hostStorageKey(ACCOUNT_PASSWORD), ''); }
+    function loginName() { return Lampa.Storage.get(hostStorageKey(ACCOUNT_LOGIN), ''); }
+
+    function loginAccount() {
+        if (loginWork) return loginWork;
+        var name = loginName();
+        var password = loginPassword();
+        if (!name || !password) return Promise.reject(new Error(LOGIN_PROMPT));
+        var origin = SITE;
+        var url = SITE + '/anime/';
+        var home = pageDocument(freshUrl(url), { auth: true });
+        loginWork = home.then(function (page) {
+            var known = readSession(page);
+            if (known && known.name.toLowerCase() === name.toLowerCase()) return known;
+            var login = page.querySelector('input[name="login_name"]');
+            var loginForm = login && login.closest('form');
+            if (!loginForm || !loginForm.querySelector('input[name="login_password"]')) throw new Error('AniStar не вернул форму входа.');
+            var target = siteUrl(loginForm.getAttribute('action') || url, url);
+            if (!target || (loginForm.getAttribute('method') || '').toLowerCase() !== 'post') throw new Error('Форма входа AniStar изменилась.');
+            var fields = Object.create(null);
+            Array.prototype.forEach.call(loginForm.querySelectorAll('input[type="hidden"][name]'), function (field) {
+                fields[field.name] = field.value;
+            });
+            fields.login_name = name;
+            fields.login_password = password;
+            return pageDocument(desktopUrl(target), { body: form(fields), auth: true, headers: { Referer: url } }).then(function () {
+                return pageDocument(freshUrl(url), { auth: true });
+            }).then(function (verified) {
+                var account = readSession(verified);
+                if (!account || account.name.toLowerCase() !== name.toLowerCase()) throw new Error('AniStar не подтвердил вход. Проверьте логин и пароль.');
+                return account;
+            });
+        }).then(function (account) {
+            if (origin !== SITE) throw new Error('Адрес AniStar изменился.');
+            setSession(account);
+            return account;
+        });
+        var pending = loginWork;
+        pending.then(clear, clear);
+        function clear() { if (loginWork === pending) loginWork = null; }
+        return pending;
+    }
+
+    function accountDocument(url) {
+        var origin = SITE;
+        function get() { return pageDocument(freshUrl(url), { auth: true }); }
+        if (!session && !loginName()) return Promise.reject(new Error(LOGIN_PROMPT));
+        return get().then(function (doc) {
+            var account = readSession(doc);
+            if (account && (!loginName() || account.name.toLowerCase() === loginName().toLowerCase())) {
+                if (!session) setSession(account);
+                return doc;
+            }
+            if (origin !== SITE) throw new Error('Адрес AniStar изменился.');
+            if (session) { nativeCookies.clear(); setSession(null); }
+            return loginAccount().then(get).then(function (verified) {
+                if (!readSession(verified)) throw new Error(LOGIN_PROMPT);
+                return verified;
+            });
         });
     }
 
@@ -320,8 +393,9 @@
         var titles = joinedTitle.split(/\s*\/\s*/).map(clean).filter(Boolean);
         var mainTitle = titles.find(function (title) { return /[А-Яа-яЁё]/.test(title); }) || titles[0];
         var alternate = titles.filter(function (title) { return title !== mainTitle; }).join(' / ');
-        var yearLink = node.querySelector('a[href*="/filter/year/"]');
+        var yearLink = node.querySelector('a[href*="/filter/year/"], a[href*="type=year"][href*="xf="]');
         var year = yearLink && clean(yearLink.textContent);
+        if (!/^\d{4}$/.test(year)) year = (nodeText(node, '.head, .news_text, .news_info').match(/Год\s+(?:выпуска|выхода)\s*:\s*(\d{4})/i) || [])[1];
         var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
         var poster = posterUrl(image, article);
         var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
@@ -335,6 +409,7 @@
             release_date: /^\d{4}$/.test(year) ? year + '-01-01' : (fallback && fallback.release_date) || '',
             poster: poster || (fallback && fallback.poster) || '',
             adult: isAdult,
+            anistarReleased: releaseNote(node) || (fallback && fallback.anistarReleased) || '',
             restrict: isAdult ? 18 : 0
         };
     }
@@ -443,11 +518,11 @@
         return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + '/anime/';
     }
 
-    function sortOptions(state, url) {
+    function sortOptions(state, url, jar) {
         var sort = SORT[state.sort] || SORT[0];
         return {
             body: form({ dlenewssortby: sort.key, dledirection: sort.direction, set_new_sort: '', set_direction_sort: '' }),
-            headers: { Referer: url }, auth: Boolean(session), returnHeaders: true
+            headers: android() ? { Referer: url, 'Cache-Control': 'no-cache' } : {}, auth: true, cookieJar: jar
         };
     }
 
@@ -464,32 +539,23 @@
     }
 
     function readBookmarkPage(url) {
-        var account = session;
-        var saved = account && bookmarkPages.get(url);
+        var saved = bookmarkPages.get(url);
         if (saved) return saved;
-        var pending = pageDocument(desktopUrl(url), { auth: true }).then(function (doc) {
-            if (!readSession(doc)) {
-                if (account && session === account && doc.querySelector('input[name="login_name"]')) {
-                    nativeCookies.clear();
-                    setSession(null);
-                }
-                throw new Error(LOGIN_PROMPT);
-            }
-            return catalogPage(doc, url, true);
+        var pending = accountDocument(url).then(function (doc) { return catalogPage(doc, url, true); });
+        bookmarkPages.set(url, pending);
+        pending.catch(function () {
+            if (bookmarkPages.get(url) === pending) bookmarkPages.delete(url);
         });
-        if (account) {
-            bookmarkPages.set(url, pending);
-            pending.catch(function () {
-                if (bookmarkPages.get(url) === pending) bookmarkPages.delete(url);
-            });
-        }
         return pending;
     }
 
     function sortApplied(doc, sort) {
         var active = doc.querySelector('#news_set_sort .sort-actv[onclick]');
-        var choice = active && active.getAttribute('onclick').match(/dle_change_sort\(\s*['"](\w+)['"]\s*,\s*['"](asc|desc)['"]/);
-        return Boolean(choice && choice[1] === sort.key && choice[2] !== sort.direction);
+        var choice = active && active.getAttribute('onclick').match(/dle_change_sort\(\s*['"](\w+)['"]\s*,\s*['"](asc|desc)['"]/i);
+        if (!choice || choice[1].toLowerCase() !== sort.key) return false;
+        var image = doc.querySelector('#news_set_sort img[src*="asc.gif"], #news_set_sort img[src*="desc.gif"]');
+        var direction = image && image.getAttribute('src').match(/\b(asc|desc)\.gif/i);
+        return direction ? direction[1].toLowerCase() === sort.direction : choice[2].toLowerCase() !== sort.direction;
     }
 
     function compareCards(state, left, right) {
@@ -506,7 +572,11 @@
         var url = state.query ? searchUrl(state, cursor) : desktopUrl(cursor);
         var sorting = Boolean(!state.query && state.sortApplied);
         var sort = SORT[state.sort] || SORT[0];
-        var options = sorting ? sortOptions(state, url) : { plainGet: true };
+        var jar;
+        if (sorting) {
+            jar = sortCookies.get(state) || new Map(nativeCookies);
+            sortCookies.set(state, jar);
+        }
         var backup = !state.query && state.year && !state.anistarRoute && cursor === yearUrl(state.year) ?
             desktopUrl(SITE + '/index.php?' + form({ do: 'xfsearch', xf: state.year, type: 'year', r: 'anime' })) : '';
 
@@ -530,10 +600,17 @@
         }
 
         function fetchPage(address) {
-            return pageDocument(address, options).then(function (doc) { return read(doc, address); }).catch(function (error) {
-                if (!sorting) throw error;
-                return pageDocument(address, { plainGet: true }).then(function (doc) { return read(doc, address); });
-            });
+            if (!sorting) return pageDocument(address, { plainGet: true }).then(function (doc) { return read(doc, address); });
+            function retry() {
+                return pageDocument(freshUrl(address), { auth: true, cookieJar: jar })
+                    .catch(function () { return pageDocument(address, { plainGet: true }); })
+                    .then(function (doc) { return read(doc, address); });
+            }
+            return pageDocument(address, sortOptions(state, address, jar)).then(function (doc) {
+                var page = read(doc, address);
+                if (page.localSort) return retry().catch(function () { return page; });
+                return page;
+            }, retry);
         }
 
         return fetchPage(url).then(function (page) {
@@ -684,7 +761,10 @@
             if (Lampa.Activity.active() !== origin) return;
             if (!list.cards.length) Lampa.Noty.show(emptyMessage(list));
             else {
-                if (list.localSort) Lampa.Noty.show('AniStar не подтвердил сортировку. Упорядочены загруженные карточки.');
+                if (list.localSort && !list.cards.some(function (card) {
+                    var field = (SORT[state.sort] || SORT[0]).key;
+                    return field === 'title' || field === 'date' || (card.anistarSort && card.anistarSort[field]);
+                })) Lampa.Noty.show('AniStar не предоставил данные для этой сортировки.');
                 origin.activity.loader(false);
                 if (origin.anistarResults && state.anistarResults) Lampa.Activity.replace(state, true);
                 else Lampa.Activity.push(state);
@@ -753,7 +833,9 @@
                 fallback = '';
             }).attr('src', data.poster || './img/img_broken.svg');
             item.find('.card__title').text(data.title);
-            item.find('.card__age').text(data.release_date.slice(0, 4));
+            var age = item.find('.card__age');
+            if (!age.length) age = $('<div class="card__age"></div>').appendTo(item);
+            age.text((data.release_date || '').slice(0, 4));
             item.appendTo(grid);
             itemsById.set(data.id, item);
             item.on('hover:enter', function () {
@@ -888,12 +970,12 @@
             optionMenu(label, options, draft[key], function (value) {
                 draft[key] = value;
                 if (key === 'sort') draft.sortApplied = true;
-                apply();
+                render();
             }, render);
         }
 
         function search() {
-            editText({ title: 'Поиск по AniStar', value: draft.query, free: true },
+            editText({ title: 'Поиск по AniStar', value: draft.query, keyboard: 'lampa', layout: 'clarify', align: 'center' },
                 function (value) {
                     if (value === null) render();
                     else {
@@ -905,6 +987,7 @@
                         }
                     }
                 });
+            $('.settings-input').last().addClass('anistar-search-keyboard');
         }
 
         function bookmarks() {
@@ -987,8 +1070,12 @@
 
     function readSession(doc) {
         var logout = doc.querySelector('a[href*="action=logout"], a[href*="do=logout"]');
-        var menu = logout && logout.closest('ul');
+        var menu = logout && logout.closest('ul, .login, .loginbox, .login-box');
         var profile = menu && menu.querySelector('a[href*="/user/"]');
+        var accountName = loginName();
+        if (!profile && logout && accountName) profile = Array.prototype.find.call(doc.querySelectorAll('a[href*="/user/"]'), function (link) {
+            return clean(link.textContent).toLowerCase() === accountName.toLowerCase();
+        });
         var profileUrl = profile && siteUrl(profile.getAttribute('href'));
         var logoutUrl = logout && siteUrl(logout.getAttribute('href'));
         var match = profileUrl && new URL(profileUrl).pathname.match(/^\/user\/([^/]+)\/?$/);
@@ -996,15 +1083,39 @@
     }
 
     function articleSettings(doc, movie) {
-        var active = nodeText(doc, '.anime_status .status_val');
-        var status = Array.from(doc.querySelectorAll('.anime_status .selected_form [data-value]')).find(function (item) {
-            return active && clean(item.textContent) === active;
+        var id = String(newsId(movie.url));
+        var active = doc.querySelector('.anime_status .status_val');
+        var label = active && clean(active.textContent).toLowerCase();
+        var option = Array.from(doc.querySelectorAll('.anime_status .selected_form [data-value]')).find(function (item) {
+            return label && clean(item.textContent).toLowerCase() === label;
         });
-        var favorite = doc.getElementById('fav-id-' + newsId(movie.url));
-        var favoriteUrl = favorite && siteUrl(favorite.getAttribute('href'));
-        var action = favoriteUrl && new URL(favoriteUrl).searchParams.get('doaction');
-        return { status: status ? Number(status.getAttribute('data-value')) : 0, favorite: action === 'del',
-            favoriteUrl: action === 'add' || action === 'del' ? favoriteUrl : '' };
+        var status = active && active.getAttribute('data-value');
+        var value = status !== null && status !== undefined && /^\d$/.test(status) ? Number(status) : option && Number(option.getAttribute('data-value'));
+        var favorite = doc.getElementById('fav-id-' + id);
+        var controls = Array.from(doc.querySelectorAll('a[href*="doaction="], [onclick*="doFavorites"]'));
+        if (favorite) controls.unshift(favorite);
+        var favoriteUrl = '';
+        var favoriteState;
+        controls.some(function (control) {
+            var anchor = control.matches('a[href]') ? control : control.querySelector('a[href]');
+            var href = anchor && siteUrl(anchor.getAttribute('href'), movie.url);
+            if (!href) return false;
+            var url = new URL(href);
+            var action = url.searchParams.get('doaction');
+            if (url.searchParams.get('do') !== 'favorites' || url.searchParams.get('id') !== id || !/^(add|del)$/.test(action)) return false;
+            favoriteUrl = href;
+            favoriteState = action === 'del';
+            return true;
+        });
+        if (!favoriteUrl) controls.some(function (control) {
+            var handler = control.getAttribute('onclick') || '';
+            var args = handler.match(/doFavorites\(\s*['"]?(\d+)['"]?\s*,\s*['"](plus|minus)['"]/i);
+            if (!args || args[1] !== id) return false;
+            favoriteState = args[2].toLowerCase() === 'minus';
+            favoriteUrl = SITE + '/index.php?' + form({ do: 'favorites', doaction: favoriteState ? 'del' : 'add', id: id });
+            return true;
+        });
+        return { status: value, favorite: favoriteState === true, favoriteUrl: favoriteUrl };
     }
 
     function openAccountSettings() {
@@ -1030,8 +1141,8 @@
                 onSelect: openAccountSettings, onBack: restore });
         }
 
-        if (!session) { prompt(); return; }
-        pageDocument(movie.url, { auth: true }).then(function (doc) {
+        if (!session && !loginName()) { prompt(); return; }
+        accountDocument(movie.url).then(function (doc) {
             if (Lampa.Activity.active() !== activity) return;
             if (!readSession(doc)) { prompt(); return; }
             var current = articleSettings(doc, movie);
@@ -1057,26 +1168,35 @@
                     var update = entry.id
                         ? request(SITE + '/engine/ajax/statuspost.php', {
                             body: form({ id: newsId(movie.url), status: desired ? entry.id : 0 }),
-                            headers: { 'X-Requested-With': 'XMLHttpRequest' }, auth: true
+                            headers: { 'X-Requested-With': 'XMLHttpRequest', Referer: desktopUrl(movie.url) }, auth: true
                         })
-                        : current.favoriteUrl && request(current.favoriteUrl, { auth: true });
+                        : current.favoriteUrl && request(current.favoriteUrl, { auth: true, headers: { Referer: desktopUrl(movie.url) } });
                     if (!update) {
-                        Lampa.Noty.show('AniStar не предоставил ссылку для добавления.');
+                        Lampa.Noty.show('В этой карточке AniStar нет кнопки закладки для вашего аккаунта.');
                         return;
                     }
                     pending = true;
                     update.then(function () {
-                        return pageDocument(movie.url, { auth: true });
+                        bookmarkPages.clear();
+                        return accountDocument(movie.url);
                     }).then(function (updated) {
                         if (!readSession(updated)) throw new Error(LOGIN_PROMPT);
                         bookmarkPages.clear();
                         current = articleSettings(updated, movie);
+                        var actual = entry.id ? current.status === entry.id : current.favorite;
+                        if (actual === desired || !desired) return actual;
+                        return readBookmarkPage(SITE + entry.path).then(function (page) {
+                            var found = page.rows.some(function (row) { return newsId(row.card.url) === newsId(movie.url); });
+                            if (found && entry.id) current.status = entry.id;
+                            if (found && !entry.id) current.favorite = true;
+                            return found;
+                        });
+                    }).then(function (actual) {
                         items.forEach(function (row) {
                             row.checked = row.entry.id ? row.entry.id === current.status : current.favorite;
                             var element = elements.get(row.entry.path);
                             if (element) element.toggleClass('selectbox-item--checked', row.checked);
                         });
-                        var actual = entry.id ? current.status === entry.id : current.favorite;
                         if (actual !== desired) {
                             throw new Error('AniStar не подтвердил изменение статуса.');
                         }
@@ -1087,17 +1207,19 @@
                     });
                 }
             });
-        }).catch(function (error) { Lampa.Noty.show(error.message); });
+        }).catch(function (error) {
+            if (Lampa.Activity.active() !== activity) return;
+            if (error.message === LOGIN_PROMPT) prompt();
+            else Lampa.Noty.show(error.message);
+        });
     }
 
     function installSettings() {
         var rows = {};
-        var username = '';
-        var password = '';
         var busy = false;
 
         function render() {
-            var values = { login: username, password: password ? '••••••••' : '', profile: session ? session.name : '', address: SITE };
+            var values = { login: loginName(), password: loginPassword() ? '••••••••' : '', profile: session ? session.name : '', address: SITE };
             Object.keys(rows).forEach(function (key) {
                 var personal = key === 'profile' || key === 'signout';
                 rows[key].toggleClass('hide', key !== 'address' && personal !== Boolean(session));
@@ -1114,52 +1236,18 @@
 
         function signIn() {
             if (busy) return;
-            if (!username || !password) {
+            if (!loginName() || !loginPassword()) {
                 Lampa.Noty.show('Введите логин и пароль AniStar.');
                 return;
             }
             busy = true;
-            pageDocument(SITE + '/anime/', { auth: true }).then(function (doc) {
-                var known = readSession(doc);
-                if (known) return known;
-                var login = doc.querySelector('input[name="login_name"]');
-                var loginForm = login && login.closest('form');
-                if (!loginForm || !loginForm.querySelector('[name="login_password"]')) {
-                    throw new Error('AniStar не вернул форму входа.');
-                }
-                var fields = Object.create(null);
-                Array.prototype.forEach.call(loginForm.querySelectorAll('input[type="hidden"][name]'), function (input) {
-                    fields[input.name] = input.value;
-                });
-                fields.login_name = username;
-                fields.login_password = password;
-                password = '';
-                var target = siteUrl(loginForm.getAttribute('action') || SITE + '/anime/', SITE + '/anime/');
-                if (!target || !/^post$/i.test(loginForm.getAttribute('method') || '')) {
-                    throw new Error('Форма входа AniStar изменилась.');
-                }
-                // Android APK 1.13.7 sends post_data as-is, so pass the form string.
-                return pageDocument(target, { body: form(fields), auth: true }).then(function (signed) {
-                    return pageDocument(SITE + '/anime/', { auth: true }).then(function (check) {
-                        var verified = readSession(check);
-                        if (verified) return verified;
-                        if (readSession(signed)) throw new Error('Lampa не сохранила сессию AniStar.');
-                        throw new Error('AniStar не подтвердил вход.');
-                    });
-                });
-            }).then(function (signedIn) {
-                setSession(signedIn);
-                username = '';
+            loginAccount().then(function () {
                 render();
                 focus('signout');
                 Lampa.Noty.show('Вы вошли в AniStar.');
             }).catch(function (error) {
                 Lampa.Noty.show(error.message);
-            }).finally(function () {
-                busy = false;
-                password = '';
-                render();
-            });
+            }).finally(function () { busy = false; render(); });
         }
 
         function signOut() {
@@ -1169,6 +1257,7 @@
                 if (readSession(doc)) throw new Error('AniStar не завершил сеанс.');
                 nativeCookies.clear();
                 setSession(null);
+                Lampa.Storage.set(hostStorageKey(ACCOUNT_PASSWORD), '');
                 render();
                 focus('login');
             }).catch(function (error) {
@@ -1184,6 +1273,7 @@
                 onChange: action,
                 onRender: function (item) {
                     rows[key] = item;
+                    if (key === 'address') item.addClass('anistar-address');
                     if (!action) item.removeClass('selector');
                     if (!item.find('.settings-param__value').length) {
                         item.append('<div class="settings-param__value"></div>');
@@ -1201,15 +1291,15 @@
         });
         row('login', 'Логин', function () {
             if (busy) return;
-            editText({ title: 'Логин', value: username, nomic: true }, function (value) {
-                if (value !== null) username = value.trim();
+            editText({ title: 'Логин', value: loginName(), nomic: true }, function (value) {
+                if (value !== null) Lampa.Storage.set(hostStorageKey(ACCOUNT_LOGIN), value.trim());
                 render();
             });
         });
         row('password', 'Пароль', function () {
             if (busy) return;
-            editText({ title: 'Пароль', value: password, nomic: true }, function (value) {
-                if (value !== null) password = value;
+            editText({ title: 'Пароль', value: loginPassword(), password: true, nomic: true }, function (value) {
+                if (value !== null) Lampa.Storage.set(hostStorageKey(ACCOUNT_PASSWORD), value);
                 render();
             });
         });
@@ -1228,13 +1318,13 @@
                 if (address === SITE) return;
                 previousSite = SITE;
                 SITE = address;
-                username = '';
-                password = '';
                 session = null;
+                loginWork = null;
                 nativeCookies.clear();
                 bookmarkPages.clear();
                 lists = new WeakMap();
                 watchPlaylists = new WeakMap();
+                sortCookies = new WeakMap();
                 genreRefresh = null;
                 genreIndex.clear();
                 Lampa.Storage.set(SITE_KEY, address === DEFAULT_SITE ? '' : address);
@@ -1328,6 +1418,15 @@
         return player;
     }
 
+    function releaseNote(scope) {
+        var entries = scope.querySelectorAll('.reason, .release-note, .series-added, .news_reason');
+        for (var index = 0; index < entries.length; index++) {
+            var text = clean(entries[index].textContent);
+            if (/^Добавлен[аоы]?\b/i.test(text) || /^Добавлен[аоы]?\s/i.test(text)) return text;
+        }
+        return '';
+    }
+
     function readArticle(doc, card) {
         var content = doc.querySelector('#dle-content');
         var scope = content || doc;
@@ -1356,7 +1455,7 @@
             authors: readLinks(head, '/filter/author/'),
             translation: labeledValue(root, /^Озвучка:/i),
             series: labeledValue(root, /^Серии:/i),
-            released: nodeText(root, '.reason'),
+            released: releaseNote(root) || (content && releaseNote(content)) || movie.anistarReleased,
             player: player,
             comments: readComments(doc)
         };
@@ -1879,6 +1978,9 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.anistar-released{font-weight:700;margin:.7em 0}',
+            '.anistar-address .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
+            '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
+            '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
             '.anistar-online{display:flex;gap:1.5em;padding:0 1.5em;align-items:flex-start}',
             '.anistar-online__info{flex:0 0 27%;max-height:72vh;overflow:hidden}',
             '.anistar-online__info>img{display:block;width:6.5em;border-radius:.3em;margin:0 0 .8em}',
