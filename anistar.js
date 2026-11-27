@@ -1,16 +1,17 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.2
+ * Версия 0.5.3
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.2';
+    var VERSION = '0.5.3';
     var SITE = 'https://anistar.org';
     var CATALOG = SITE + '/anime/';
-    var CATALOG_PATH = /^\/anime\/(?:page\/\d+\/)?$/i;
+    var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
+    var LEGACY_CARD = '.shortstory, .base, .news, .item, .anime-item, .movie-item, article, li';
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
     var PAGE_SIZE = 20;
@@ -76,11 +77,17 @@
         }
     }
 
-    function siteUrl(value) {
-        var url = urlOf(value);
-        if (!url || url.origin !== SITE) return '';
-        url.hash = '';
-        return url.href;
+    function siteUrl(value, base) {
+        if (!value || !String(value).trim()) return '';
+        try {
+            var url = new URL(value, base || SITE);
+            if (url.protocol === 'http:' && url.hostname === 'anistar.org' && !url.port) url.protocol = 'https:';
+            if (url.protocol !== 'https:' || url.hostname !== 'anistar.org' || url.port || url.username || url.password) return '';
+            url.hash = '';
+            return url.href;
+        } catch (error) {
+            return '';
+        }
     }
 
     function desktopUrl(value) {
@@ -90,12 +97,12 @@
     }
 
     function sitePath(value) {
-        var url = urlOf(value);
-        return url && url.origin === SITE ? url.pathname : '';
+        var url = siteUrl(value);
+        return url ? new URL(url).pathname : '';
     }
 
     function hasCategory(node, pattern) {
-        var categories = node.querySelectorAll('.title_left .tags a');
+        var categories = node.querySelectorAll('.tags a, .category a');
         return Array.prototype.some.call(categories, function (link) {
             return pattern.test(sitePath(link.getAttribute('href')));
         });
@@ -215,9 +222,11 @@
     function readLinks(scope, prefix) {
         var links = new Map();
         Array.prototype.forEach.call(scope.querySelectorAll('a[href]'), function (link) {
-            var url = urlOf(link.getAttribute('href'));
+            var href = siteUrl(link.getAttribute('href'));
             var title = clean(link.textContent);
-            if (!url || url.origin !== SITE || !title || url.pathname.indexOf(prefix) !== 0) return;
+            if (!href || !title) return;
+            var url = new URL(href);
+            if (url.pathname.indexOf(prefix) !== 0) return;
             var slug = url.pathname.slice(prefix.length).replace(/\/$/, '');
             if (slug && slug.indexOf('/') === -1) links.set(url.href, { url: url.href, title: title });
         });
@@ -225,20 +234,38 @@
     }
 
     function newsId(url) {
-        var parsed = urlOf(url);
-        var match = parsed && parsed.origin === SITE && parsed.pathname.match(/^\/(\d+)-[^/]+\.html$/i);
+        var match = sitePath(url).match(/^\/(\d+)-[^/]+\.html$/i);
         return match ? Number(match[1]) : 0;
+    }
+
+    function usableTitle(value) {
+        var title = clean(value);
+        return title.length >= 2 && title.length <= 220 &&
+            !/^(смотреть(?: онлайн)?|подробнее|читать|перейти|следующая|скачать)$/i.test(title) ? title : '';
+    }
+
+    function posterUrl(node, article) {
+        if (!node) return '';
+        var attributes = ['data-original', 'data-original-src', 'data-poster', 'data-lazy-src', 'data-src', 'src'];
+        for (var i = 0; i < attributes.length; i++) {
+            var value = node.getAttribute(attributes[i]);
+            var local = siteUrl(value, article);
+            if (local) return local;
+            var external = urlOf(value, article);
+            if (external) return external.href;
+        }
+        return '';
     }
 
     function basicCard(node, article, fallback) {
         var id = newsId(article);
-        var joinedTitle = nodeText(node, '.title_left h1, .title_left > a, h1, h2') || (fallback && fallback.title);
+        var joinedTitle = usableTitle(nodeText(node, '.title_left h1, .title_left > a, h1, h2')) || (fallback && fallback.title);
         if (!id || !joinedTitle) return null;
         var titles = joinedTitle.split(/\s+\/\s+/, 2);
-        var yearLink = node.querySelector('.head a[href*="/filter/year/"]');
+        var yearLink = node.querySelector('a[href*="/filter/year/"]');
         var year = yearLink && clean(yearLink.textContent);
-        var image = node.querySelector('.news_avatar img.main-img, .news_avatar img[itemprop="image"], .news_avatar img');
-        var poster = image && urlOf(image.getAttribute('data-src') || image.getAttribute('src'), article);
+        var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
+        var poster = posterUrl(image, article);
         var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
         return {
             id: SOURCE + ':' + id,
@@ -248,28 +275,73 @@
             title: titles[0],
             tagline: titles[1] || (fallback && fallback.tagline) || '',
             release_date: /^\d{4}$/.test(year) ? year + '-01-01' : (fallback && fallback.release_date) || '',
-            poster: poster ? poster.href : (fallback && fallback.poster) || '',
+            poster: poster || (fallback && fallback.poster) || '',
             adult: isAdult,
             restrict: isAdult ? 18 : 0
         };
     }
 
+    function legacyCatalogRows(scope, url) {
+        var rows = new Map();
+        Array.prototype.forEach.call(scope.querySelectorAll('a[href]'), function (link) {
+            var article = siteUrl(link.getAttribute('href'), url);
+            var id = newsId(article);
+            if (!id || rows.has(id)) return;
+            var node = link.closest(LEGACY_CARD) || link.parentElement;
+            if (!node) return;
+            var image = node.querySelector('img');
+            var title = usableTitle(link.getAttribute('title')) || usableTitle(link.textContent) ||
+                usableTitle(nodeText(node, 'h1, h2, h3, h4, .title, .name')) ||
+                usableTitle(image && image.getAttribute('alt'));
+            if (!title) return;
+            var poster = posterUrl(image, article) || SITE + '/uploads/posters/' + id + '/original.jpg';
+            var card = basicCard(node, article, { title: title, poster: poster });
+            if (card) rows.set(id, { card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
+        });
+        return Array.from(rows.values());
+    }
+
+    function animePageNumber(url) {
+        var match = sitePath(url).match(CATALOG_PATH);
+        return match ? Number(match[1] || 1) : 0;
+    }
+
+    function nextAnimePage(doc, url) {
+        var current = animePageNumber(url);
+        var next = '';
+        var best = Infinity;
+        Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
+            var href = siteUrl(link.getAttribute('href'), url);
+            var page = animePageNumber(href);
+            if (page > current && page < best) {
+                next = href;
+                best = page;
+            }
+        });
+        return next;
+    }
+
     function catalogPage(doc, url, animeOnly) {
         var animeCatalog = CATALOG_PATH.test(sitePath(url));
-        var root = doc.querySelector('#dle-content') || (animeCatalog && doc.querySelector('.news .title_left') && doc);
+        var root = doc.querySelector('#dle-content') || (animeCatalog && doc);
         if (!root) throw new Error('AniStar не вернул список тайтлов.');
         var rows = [];
         var seen = new Set();
         Array.prototype.forEach.call(root.querySelectorAll('.news'), function (node) {
             if (animeOnly && !animeCatalog && !hasCategory(node, /^\/anime(?:\/|$)/i)) return;
             var link = node.querySelector('.title_left > a[href], .title_left h2 a[href]');
-            var card = link && basicCard(node, siteUrl(link.getAttribute('href')));
+            var card = link && basicCard(node, siteUrl(link.getAttribute('href'), url));
             if (!card || seen.has(card.id)) return;
             seen.add(card.id);
             rows.push({ card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
         });
+        if (animeCatalog && !rows.length) {
+            rows = legacyCatalogRows(root, url);
+            if (!rows.length && root !== doc) rows = legacyCatalogRows(doc, url);
+        }
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
-        var next = link && siteUrl(link.getAttribute('href'));
+        var next = link && siteUrl(link.getAttribute('href'), url);
+        if (animeCatalog && animePageNumber(next) <= animePageNumber(url)) next = nextAnimePage(doc, url);
         return { rows: rows, next: next && next !== url ? next : '' };
     }
 
@@ -331,7 +403,8 @@
             if (personal && !readSession(doc)) throw new Error('Войдите в AniStar в настройках Anistar.');
             var page = catalogPage(doc, url, !personal && !state.query);
             if (state.anistarHome && url === CATALOG && !page.rows.length) {
-                throw new Error('AniStar не вернул карточки главного каталога.');
+                var title = nodeText(doc, 'title').slice(0, 90);
+                throw new Error('Каталог AniStar пуст. Заголовок ответа: ' + escapeHtml(title || 'отсутствует') + '.');
             }
             if (state.query) {
                 var next = doc.querySelector('#dle-content #nextlink[onclick]');
@@ -911,12 +984,14 @@
     }
 
     function readArticle(doc, card) {
-        var heading = doc.querySelector('#dle-content .news h1');
-        var root = heading ? heading.closest('.news') : doc.querySelector('#dle-content .news');
+        var content = doc.querySelector('#dle-content');
+        var heading = content && content.querySelector('.news h1, .fullstory h1, article h1, h1');
+        var root = heading ? heading.closest('.news, .fullstory, article') || content :
+            content && content.querySelector('.news, .fullstory');
         var movie = root && basicCard(root, card.url, card);
         if (!movie) throw new Error('AniStar не вернул карточку тайтла.');
         var head = root.querySelector('.head') || root;
-        var description = root.querySelector('.descripts[itemprop="description"], .news_text .descripts');
+        var description = root.querySelector('.descripts[itemprop="description"], .news_text .descripts, .full-text');
         movie.title = escapeHtml(movie.title);
         movie.tagline = escapeHtml(movie.tagline);
         movie.original_title = movie.tagline;
