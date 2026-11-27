@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.14
+ * Версия 0.5.15
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.14';
+    var VERSION = '0.5.15';
     var DEFAULT_SITE = 'https://anistar.org';
     var SITE = DEFAULT_SITE;
     var previousSite = DEFAULT_SITE;
@@ -68,6 +68,7 @@
     var watchPlaylists = new WeakMap();
     var sortPlans = new WeakMap();
     var articleMetadata = new Map();
+    var articleNotes = new Map();
     var CONNECT_ERROR = 'Не удалось подключиться к Anistar. Попробуйте указать актуальный адрес сайта в настройках AniStar';
 
     function clean(value) {
@@ -539,6 +540,9 @@
                 categories: cardCategories(node) });
         });
         if (!rows.length) rows = legacyCatalogRows(root, url);
+        rows.forEach(function (row) {
+            if (row.card.anistarReleased) articleNotes.set(siteUrl(row.card.url), row.card.anistarReleased);
+        });
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
         var next = link && siteUrl(link.getAttribute('href'), url);
         if (animeCatalog && animePageNumber(next) <= animePageNumber(url)) next = nextAnimePage(doc, url);
@@ -1556,6 +1560,7 @@
                 watchPlaylists = new WeakMap();
                 sortPlans = new WeakMap();
                 articleMetadata.clear();
+                articleNotes.clear();
                 genreRefresh = null;
                 genreIndex.clear();
                 Lampa.Storage.set(SITE_KEY, address === DEFAULT_SITE ? '' : address);
@@ -1675,10 +1680,13 @@
             var root = doc.querySelector('#dle-content') || doc;
             return { year: articleYear(root), note: releaseNote(root) };
         }
-        var pending = pageDocument(desktopUrl(address), { plainGet: true }).then(function (doc) {
+        var pending = pageDocument(address, { plainGet: true }).then(function (doc) {
             var metadata = extract(doc);
-            if (metadata.year) return metadata;
-            return pageDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract).catch(function () { return metadata; });
+            if (metadata.year && metadata.note) return metadata;
+            return pageDocument(explicitDesktopUrl(address), { plainGet: true }).then(function (alternate) {
+                var next = extract(alternate);
+                return { year: metadata.year || next.year, note: metadata.note || next.note };
+            }).catch(function () { return metadata; });
         });
         articleMetadata.set(address, pending);
         pending.then(function () {}, function () {
@@ -1719,10 +1727,11 @@
             authors: readLinks(head, '/filter/author/'),
             translation: labeledValue(root, /^Озвучка:/i),
             series: labeledValue(root, /^Серии:/i),
-            released: releaseNote(root) || (content && releaseNote(content)) || movie.anistarReleased || releaseNote(doc),
+            released: releaseNote(root) || (content && releaseNote(content)) || movie.anistarReleased || articleNotes.get(siteUrl(movie.url)) || '',
             player: player,
             comments: readComments(doc)
         };
+        saveReleaseNote(movie, movie.anistar.released);
         var runtime = movie.anistar.series.match(/(\d+)\s*мин/i);
         movie.anistar.duration = runtime ? runtime[1] + ' мин' : '';
         return movie;
@@ -1739,13 +1748,12 @@
         pageDocument(desktopUrl(card.url), options).then(function (doc) {
             var movie = readArticle(doc, card);
             if ((movie.release_year && movie.anistar.released) || (component && component.destroyed)) return movie;
-            return pageDocument(explicitDesktopUrl(card.url), options).then(function (alternate) {
-                var updated = readArticle(alternate, card);
-                if (!movie.release_year && updated.release_year) {
-                    movie.release_year = updated.release_year;
-                    movie.release_date = updated.release_date;
+            return readArticleMetadata(card.url).then(function (metadata) {
+                if (!movie.release_year && metadata.year) {
+                    movie.release_year = metadata.year;
+                    movie.release_date = metadata.year + '-01-01';
                 }
-                movie.anistar.released = movie.anistar.released || updated.anistar.released;
+                saveReleaseNote(movie, movie.anistar.released || metadata.note);
                 return movie;
             }).catch(function () { return movie; });
         }).then(function (movie) {
@@ -1816,6 +1824,29 @@
         view.body.find('.full-descr__tags').append(item);
     }
 
+    function saveReleaseNote(movie, note) {
+        if (!note) return;
+        movie.anistar.released = note;
+        movie.anistarReleased = note;
+        articleNotes.set(siteUrl(movie.url), note);
+    }
+
+    function renderReleaseNote(card, movie) {
+        var note = movie.anistar.released || movie.anistarReleased || articleNotes.get(siteUrl(movie.url));
+        if (!note || !card.length) return;
+        var root = card[0];
+        var subtitle = root.querySelector('.full-start-new__tagline, .full-start__tagline, .full--tagline');
+        var details = root.querySelector('.full-start-new__details, .full-start__details');
+        var title = root.querySelector('.full-start-new__title, .full-start__title');
+        var anchor = subtitle || details || title;
+        if (!anchor || !anchor.parentNode) return;
+        var row = root.querySelector('.anistar-released') || document.createElement('div');
+        row.className = 'anistar-released';
+        row.textContent = note;
+        var next = anchor === details ? anchor : anchor.nextSibling;
+        if (next !== row) anchor.parentNode.insertBefore(row, next);
+    }
+
     function onFull(event) {
         var movie = event.data && event.data.movie || event.props && event.props.get('movie');
         if (!movie || movie.source !== SOURCE || !movie.anistar) return;
@@ -1852,10 +1883,9 @@
         }
         if (event.name !== 'start') return;
 
-        var card = $(owner.html);
+        var card = $(typeof owner.render === 'function' ? owner.render(true) : owner.html);
         var main = card.find('.full-start-new__details, .full-start__details').first();
         var title = card.find('.full-start-new__title, .full-start__title').first();
-        var subtitle = card.find('.full-start-new__tagline, .full-start__tagline, .full--tagline').first();
         var year = movie.release_year || (movie.release_date || '').slice(0, 4);
         if (year) {
             var head = card.find('.full-start-new__head, .full-start__head').first();
@@ -1880,14 +1910,13 @@
         card.find('.full-start-new__reactions').hide();
         var ratingBox = card.find('.full-start__rate.rate--tmdb');
         ratingBox.toggleClass('hide', !movie.vote_average).find('.source--name').text(NAME);
-        var note = details.released || movie.anistarReleased;
-        if (note) {
-            var released = card.find('.anistar-released').first();
-            if (!released.length) released = $('<div class="anistar-released"></div>');
-            released.text(note);
-            if (main.length) main.before(released);
-            else if (subtitle.length) subtitle.after(released);
-            else if (title.length) title.after(released);
+        function syncReleaseNote() { renderReleaseNote(card, movie); }
+        syncReleaseNote();
+        if (!details.released && !movie.anistarReleased) {
+            readArticleMetadata(movie.url).then(function (metadata) {
+                saveReleaseNote(movie, metadata.note);
+                syncReleaseNote();
+            }).catch(function () {});
         }
         var buttons = card.find('.full-start-new__buttons, .full-start__buttons').first();
         if (!buttons.length) return;
@@ -1906,6 +1935,7 @@
         var initial = true;
 
         function buttonsOnly() {
+            syncReleaseNote();
             buttons.children('.full-start__button').not('.anistar-action').hide().removeClass('selector');
             if (!watch.parent().length) buttons.append(watch);
             if (!favorite.parent().length) buttons.append(favorite);
@@ -1916,7 +1946,7 @@
         }
 
         buttonsOnly();
-        owner.use({ onlyGroupButtons: buttonsOnly });
+        owner.use({ onlyGroupButtons: buttonsOnly, onToggle: syncReleaseNote });
     }
 
     function episodeIdentity(title, type) {
@@ -2070,6 +2100,7 @@
         }
         var preferred = String(Lampa.Storage.get('video_quality_default', '1080')).replace(/p$/i, '') + 'p';
         var activity = Lampa.Activity.active();
+        var external = android() && typeof Lampa.Storage.field === 'function' && Lampa.Storage.field('player') === 'android';
         function media(entry) {
             var choices = builtInSources(entry.files);
             var qualities = {};
@@ -2080,20 +2111,20 @@
             if (!reserve && !available.publicManifest) reserve = entry.files.find(function (file) { return file.url !== url; });
             var data = {
                 title: decodeHtml(movie.title) + ' / ' + entry.title,
-                url: url, quality: qualities, launch_player: 'lampa',
+                url: url, quality: qualities,
                 movie: movie, card: movie, season: entry.season,
                 episode: entry.number === null ? 1 : entry.number, timeline: timeline(movie, entry)
             };
             if (reserve) data.url_reserve = reserve.url;
+            if (external) data.headers = { Referer: movie.anistar.player, Origin: SITE };
             return data;
         }
         var item = media(episode);
         var playlist = episodes.filter(function (entry) { return entry.files.length; }).map(media);
         item.playlist = playlist;
         playerOrigin = { data: item, activity: activity };
-        if (typeof Lampa.Player.runas === 'function') Lampa.Player.runas('lampa');
         Lampa.Player.play(item);
-        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(playlist);
+        if (!external && typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(playlist);
     }
 
     function rowComponent() {
