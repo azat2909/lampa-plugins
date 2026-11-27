@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.12
+ * Версия 0.5.13
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.12';
+    var VERSION = '0.5.13';
     var DEFAULT_SITE = 'https://anistar.org';
     var SITE = DEFAULT_SITE;
     var previousSite = DEFAULT_SITE;
@@ -150,6 +150,14 @@
         return Boolean(window.AndroidJS && typeof window.AndroidJS.httpReq === 'function' && Lampa.Platform.is('android'));
     }
 
+    function tizen() {
+        return Boolean(Lampa.Platform.is('tizen') || (window.navigator && /tizen/i.test(window.navigator.userAgent || '')));
+    }
+
+    function settle(work, finish) {
+        return work.then(function (value) { finish(); return value; }, function (error) { finish(); throw error; });
+    }
+
     function form(fields) {
         return Object.keys(fields).map(function (key) {
             return encodeURIComponent(key) + '=' + encodeURIComponent(fields[key]);
@@ -246,9 +254,10 @@
                 settings.headers = headers;
                 settings.returnHeaders = native && Boolean(jar || options.returnHeaders);
                 settings.withCredentials = options.auth === true;
+                if (tizen() && options.auth) settings.xhrFields = { withCredentials: true };
             }
             try {
-                network[plainGet || native ? 'native' : 'silent'](url, function (response) {
+                network[plainGet || native || tizen() ? 'native' : 'silent'](url, function (response) {
                     if (returned) return;
                     if (requestSite !== SITE) {
                         finish(reject, new Error('Адрес AniStar изменился.'));
@@ -387,6 +396,18 @@
         return '';
     }
 
+    function articleYear(node) {
+        var anchors = node.querySelectorAll('a[href*="/filter/year/"], a[href*="type=year"][href*="xf="]');
+        for (var index = 0; index < anchors.length; index++) {
+            var year = clean(anchors[index].textContent);
+            if (/^\d{4}$/.test(year)) return year;
+            var match = anchors[index].getAttribute('href').match(/(?:\/filter\/year\/|[?&]xf=)(\d{4})(?=[/#?&]|$)/i);
+            if (match) return match[1];
+        }
+        var info = clean(node.textContent).match(/Год(?:\s+(?:выпуска|выхода))?\s*:?\s*(\d{4})/i);
+        return info ? info[1] : '';
+    }
+
     function basicCard(node, article, fallback) {
         var id = newsId(article);
         var joinedTitle = usableTitle(nodeText(node, '.title_left h1, .title_left > a, h1, h2')) || (fallback && fallback.title);
@@ -394,9 +415,7 @@
         var titles = joinedTitle.split(/\s*\/\s*/).map(clean).filter(Boolean);
         var mainTitle = titles.find(function (title) { return /[А-Яа-яЁё]/.test(title); }) || titles[0];
         var alternate = titles.filter(function (title) { return title !== mainTitle; }).join(' / ');
-        var yearLink = node.querySelector('a[href*="/filter/year/"], a[href*="type=year"][href*="xf="]');
-        var year = yearLink && clean(yearLink.textContent);
-        if (!/^\d{4}$/.test(year)) year = (nodeText(node, '.head, .news_text, .news_info').match(/Год\s+(?:выпуска|выхода)\s*:\s*(\d{4})/i) || [])[1];
+        var year = articleYear(node) || (fallback && (fallback.release_year || (fallback.release_date || '').slice(0, 4))) || '';
         var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
         var poster = posterUrl(image, article);
         var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
@@ -407,7 +426,8 @@
             media_type: 'movie',
             title: mainTitle,
             tagline: alternate || (fallback && fallback.tagline) || '',
-            release_date: /^\d{4}$/.test(year) ? year + '-01-01' : (fallback && fallback.release_date) || '',
+            release_year: year,
+            release_date: /^\d{4}$/.test(year) ? year + '-01-01' : '',
             poster: poster || (fallback && fallback.poster) || '',
             adult: isAdult,
             anistarReleased: releaseNote(node) || (fallback && fallback.anistarReleased) || '',
@@ -428,11 +448,19 @@
             var today = new Date();
             stamp = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate() - (/^вчера/i.test(relative[1]) ? 1 : 0), +relative[2], +relative[3]);
         }
-        var views = nodeText(node, '.news_read, .news-read, .views, [data-count-views]');
-        var comments = nodeText(node, '.comm_num, .news-comments, a[href*="#comment"]');
-        function number(value) { return Number((value || '').replace(/[^\d]/g, '')) || 0; }
+        function counter(selector, attributes) {
+            var item = node.querySelector(selector);
+            if (!item) return null;
+            var value = attributes.map(function (name) { return item.getAttribute(name); }).find(function (entry) { return entry !== null; });
+            var digits = String(value === undefined ? item.textContent : value).replace(/[^\d]/g, '');
+            return digits ? Number(digits) : null;
+        }
+        var views = counter('.news_read, .news-read, .views, [data-count-views], [data-views], [itemprop="userInteractionCount"]',
+            ['data-count-views', 'data-views', 'content']);
+        var comments = counter('.comm_num, .news-comments, a[href*="#comment"], [data-comments], [itemprop="commentCount"]',
+            ['data-comments', 'content']);
         return { rating: Number(nodeText(node, '[itemprop="ratingValue"]').replace(',', '.')) || (score ? Number(score[1].replace(',', '.')) : 0), date: Number.isFinite(stamp) ? stamp : 0,
-            news_read: number(views), comm_num: number(comments) };
+            news_read: views, comm_num: comments };
     }
 
     function legacyCatalogRows(scope, url) {
@@ -453,7 +481,7 @@
             card.anistarSort = catalogMetrics(node);
             card.posterFallback = card.poster;
             card.poster = SITE + '/uploads/posters/' + id + '/original.jpg';
-            rows.set(id, { card: card, genres: titleGenres(node.querySelector('.head') || node) });
+            rows.set(id, { card: card, genres: titleGenres(node.querySelector('.head') || node), categories: cardCategories(node) });
         });
         return Array.from(rows.values());
     }
@@ -478,6 +506,12 @@
         return next;
     }
 
+    function cardCategories(node) {
+        return Array.from(node.querySelectorAll('.tags a[href], .category a[href]'), function (link) {
+            return siteUrl(link.getAttribute('href'));
+        });
+    }
+
     function catalogPage(doc, url, personal) {
         var animeCatalog = CATALOG_PATH.test(sitePath(url));
         var root = doc.querySelector('#dle-content') || ((animeCatalog || personal || doc.querySelector('.news, .shortstory')) && doc);
@@ -491,9 +525,7 @@
             seen.add(card.id);
             card.anistarSort = catalogMetrics(node);
             rows.push({ card: card, genres: titleGenres(node.querySelector('.head') || node),
-                categories: Array.from(node.querySelectorAll('.tags a[href], .category a[href]'), function (link) {
-                    return siteUrl(link.getAttribute('href'));
-                }) });
+                categories: cardCategories(node) });
         });
         if (!rows.length) rows = legacyCatalogRows(root, url);
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
@@ -517,9 +549,19 @@
         }).join('');
     }
 
+    function routeIsGenre(url) {
+        var path = sitePath(url);
+        return /^\/filter\/janrs\//i.test(path) || GENRES.some(function (entry) { return path === '/' + entry[1] + '/'; });
+    }
+
+    function yearCatalog(state) {
+        return state.year && !state.query && (!state.anistarRoute || routeIsGenre(state.anistarRoute));
+    }
+
     function catalogStart(state) {
         if (state.anistarList) return SITE + state.anistarList.path;
         if (state.query) return 1;
+        if (yearCatalog(state)) return yearUrl(state.year);
         if (state.anistarRoute) return siteUrl(state.anistarRoute);
         return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + '/anime/';
     }
@@ -582,6 +624,10 @@
         var sort = SORT[state.sort] || SORT[0];
         var a = left.anistarSort || {};
         var b = right.anistarSort || {};
+        if (sort.key === 'news_read' || sort.key === 'comm_num') {
+            if (a[sort.key] == null && b[sort.key] != null) return 1;
+            if (b[sort.key] == null && a[sort.key] != null) return -1;
+        }
         var compared = sort.key === 'title' ? left.title.localeCompare(right.title, 'ru') : (a[sort.key] || 0) - (b[sort.key] || 0);
         if (!compared && sort.key === 'date') compared = Number(left.id.split(':').pop()) - Number(right.id.split(':').pop());
         return sort.direction === 'asc' ? compared : -compared;
@@ -597,7 +643,7 @@
             plan = sortPlans.get(state) || { jar: new Map(nativeCookies), mode: '' };
             sortPlans.set(state, plan);
         }
-        var backup = !state.query && state.year && !state.anistarRoute && cursor === yearUrl(state.year) ?
+        var backup = yearCatalog(state) && cursor === yearUrl(state.year) ?
             desktopUrl(SITE + '/index.php?' + form({ do: 'xfsearch', xf: state.year, type: 'year', r: 'anime' })) : '';
 
         function read(doc, address) {
@@ -612,6 +658,12 @@
             if (/^\/hentai(?:\/|$)/i.test(sitePath(address))) page.rows.forEach(function (row) {
                 row.card.adult = true;
                 row.card.restrict = 18;
+            });
+            if (yearCatalog(state)) page.rows.forEach(function (row) {
+                if (!row.card.release_year) {
+                    row.card.release_year = String(state.year);
+                    row.card.release_date = row.card.release_year + '-01-01';
+                }
             });
             rememberGenres(page.rows);
             return page;
@@ -723,17 +775,28 @@
             Lampa.Utils.canWatchChildren('18+', permit.profile && permit.profile.age)));
     }
 
-    function filtered(row, state) {
-        if (state.year && (state.query || state.anistarRoute) && row.card.release_date.slice(0, 4) !== String(state.year)) return false;
-        if (!state.genre || (!state.query && !state.year && !state.anistarRoute)) return true;
-        var genre = genreIndex.get(state.genre);
-        var path = sitePath(state.genre);
-        return (path === '/hentai/' && row.card.adult) || row.genres.some(function (entry) {
-            return sitePath(entry.url) === path || (genre && entry.title.toLowerCase() === genre.title.toLowerCase());
+    function normalizeGenre(value) {
+        return clean(value).toLowerCase().replace(/ё/g, 'е').replace(/[\s‐–—-]+/g, ' ');
+    }
+
+    function matchesGenre(row, url) {
+        var genre = genreIndex.get(siteUrl(url));
+        var path = sitePath(url).toLowerCase().replace(/\/$/, '');
+        return (path === '/hentai' && row.card.adult) || row.genres.some(function (entry) {
+            return sitePath(entry.url).toLowerCase().replace(/\/$/, '') === path ||
+                (genre && normalizeGenre(entry.title) === normalizeGenre(genre.title));
         }) || (row.categories || []).some(function (category) {
-            var categoryPath = sitePath(category);
+            var categoryPath = sitePath(category).toLowerCase().replace(/\/$/, '');
             return categoryPath === path || categoryPath === '/anime' + path;
         });
+    }
+
+    function filtered(row, state) {
+        if (state.year && row.card.release_year && row.card.release_year !== String(state.year)) return false;
+        if (state.year && !yearCatalog(state) && !row.card.release_year) return false;
+        if (yearCatalog(state) && routeIsGenre(state.anistarRoute) && !matchesGenre(row, state.anistarRoute)) return false;
+        if (!state.genre || (!state.query && !state.year && !state.anistarRoute)) return true;
+        return matchesGenre(row, state.genre);
     }
 
     function getList(state) {
@@ -775,7 +838,8 @@
         var list = getList(state);
         var page = Number(state.page) || 1;
         var start = (list.shown || 0);
-        var work = page === 1 && list.cards.length ? Promise.resolve() : fillList(state, list, page === 1 ? 2 : 1);
+        var pages = state.year && (state.genre || state.anistarRoute) ? 5 : (page === 1 ? 2 : 1);
+        var work = page === 1 && list.cards.length ? Promise.resolve() : fillList(state, list, pages);
         work.then(function () {
             if (state.activity && state.activity.component.destroyed) return;
             list.shown = list.cards.length;
@@ -805,7 +869,7 @@
         origin.activity.loader(true);
         var combined = (state.query && (state.year || state.genre)) || (state.year && state.genre) ||
             (state.anistarRoute && (state.year || state.genre));
-        fillList(state, list, combined ? 2 : 1).then(function () {
+        settle(fillList(state, list, combined ? 8 : 1).then(function () {
             if (list.localSort && list.cards.length && list.next && Lampa.Activity.active() === origin) {
                 return fillList(state, list, 1).catch(function () {});
             }
@@ -815,15 +879,15 @@
             else {
                 if (list.localSort && !list.cards.some(function (card) {
                     var field = (SORT[state.sort] || SORT[0]).key;
-                    return field === 'title' || field === 'date' || (card.anistarSort && card.anistarSort[field]);
-                })) Lampa.Noty.show('AniStar не предоставил данные для этой сортировки.');
+                    return field === 'title' || field === 'date' || (card.anistarSort && card.anistarSort[field] != null);
+                })) Lampa.Noty.show('Сайт не меняет порядок и не публикует счётчики для этой сортировки.');
                 origin.activity.loader(false);
                 if (origin.anistarResults && state.anistarResults) Lampa.Activity.replace(state, true);
                 else Lampa.Activity.push(state);
             }
         }).catch(function (error) {
             if (Lampa.Activity.active() === origin) Lampa.Noty.show(error.message);
-        }).finally(function () {
+        }), function () {
             delete origin.anistarLoading;
             if (origin.activity && !origin.activity.component.destroyed) origin.activity.loader(false);
         });
@@ -887,9 +951,10 @@
             item.find('.card__title').text(data.title);
             var age = item.find('.card__age');
             if (!age.length) age = $('<div class="card__age"></div>').appendTo(item);
-            age.text((data.release_date || '').slice(0, 4));
+            age.text(data.release_year || (data.release_date || '').slice(0, 4));
             item.appendTo(grid);
             itemsById.set(data.id, item);
+            item.on('hover:long', function () { chooseStatus(data); });
             item.on('hover:enter', function () {
                 Lampa.Activity.push({ component: 'full', method: 'movie', source: SOURCE,
                     card: data, id: data.id, url: '' });
@@ -1110,7 +1175,7 @@
         }
 
         function reset() {
-            if (Lampa.Activity.active() === activity) Lampa.Activity.replace(homeState(false), true);
+            if (Lampa.Activity.active() === activity) Lampa.Activity.replace(homeState(true), true);
         }
 
         render();
@@ -1296,7 +1361,7 @@
                             });
                         });
                     }
-                    update.then(verify).then(function (actual) {
+                    settle(update.then(verify).then(function (actual) {
                         if (!entry.id && actual !== desired) return favoriteLink(movie, desired).then(verify);
                         return actual;
                     }).then(function (actual) {
@@ -1310,7 +1375,7 @@
                         }
                     }).catch(function (error) {
                         Lampa.Noty.show(error.message);
-                    }).finally(function () {
+                    }), function () {
                         pending = false;
                     });
                 }
@@ -1327,7 +1392,7 @@
         var busy = false;
 
         function render() {
-            var values = { login: loginName(), profile: session ? session.name : '', home: (homeGenre() || {}).title || 'Все', address: SITE };
+            var values = { login: loginName(), password: loginPassword() ? '********' : '', profile: session ? session.name : '', home: (homeGenre() || {}).title || 'Все', address: SITE };
             Object.keys(rows).forEach(function (key) {
                 var personal = key === 'profile' || key === 'signout';
                 rows[key].toggleClass('hide', key !== 'address' && key !== 'home' && personal !== Boolean(session));
@@ -1349,19 +1414,19 @@
                 return;
             }
             busy = true;
-            loginAccount().then(function () {
+            settle(loginAccount().then(function () {
                 render();
                 focus('signout');
                 Lampa.Noty.show('Вы вошли в AniStar.');
             }).catch(function (error) {
                 Lampa.Noty.show(error.message);
-            }).finally(function () { busy = false; render(); });
+            }), function () { busy = false; render(); });
         }
 
         function signOut() {
             if (busy || !session) return;
             busy = true;
-            pageDocument(session.logout, { auth: true }).then(function (doc) {
+            settle(pageDocument(session.logout, { auth: true }).then(function (doc) {
                 if (readSession(doc)) throw new Error('AniStar не завершил сеанс.');
                 nativeCookies.clear();
                 setSession(null);
@@ -1370,7 +1435,7 @@
                 focus('login');
             }).catch(function (error) {
                 Lampa.Noty.show(error.message);
-            }).finally(function () { busy = false; });
+            }), function () { busy = false; });
         }
 
         function row(key, label, action) {
@@ -1381,7 +1446,7 @@
                 onChange: action,
                 onRender: function (item) {
                     rows[key] = item;
-                    if (key === 'address') item.addClass('anistar-address');
+                    item.addClass('anistar-settings-row');
                     if (!action) item.removeClass('selector');
                     if (!item.find('.settings-param__value').length) {
                         item.append('<div class="settings-param__value"></div>');
@@ -1559,6 +1624,10 @@
         if (!movie) throw new Error('AniStar не вернул карточку тайтла.');
         var head = root.querySelector('.head') || root;
         var description = root.querySelector('.descripts[itemprop="description"], .news_text .descripts, .full-text');
+        if (!movie.release_year) {
+            movie.release_year = articleYear(scope);
+            if (movie.release_year) movie.release_date = movie.release_year + '-01-01';
+        }
         movie.title = escapeHtml(movie.title);
         movie.tagline = escapeHtml(movie.tagline);
         movie.original_title = movie.tagline;
@@ -1618,7 +1687,7 @@
         }
         origin.anistarWatchLoading = true;
         origin.activity.loader(true);
-        loadEpisodes(movie).then(function () {
+        settle(loadEpisodes(movie).then(function () {
             if (Lampa.Activity.active() !== origin) return;
             Lampa.Activity.push({
                 component: VIEW, source: SOURCE, url: '', title: 'Онлайн · ' + decodeHtml(movie.title),
@@ -1626,7 +1695,7 @@
             });
         }).catch(function (error) {
             if (Lampa.Activity.active() === origin) Lampa.Noty.show(error.message);
-        }).finally(function () {
+        }), function () {
             delete origin.anistarWatchLoading;
             if (origin.activity && !origin.activity.component.destroyed) origin.activity.loader(false);
         });
@@ -1699,6 +1768,18 @@
 
         var card = $(owner.html);
         var main = card.find('.full-start-new__details, .full-start__details').first();
+        var title = card.find('.full-start-new__title, .full-start__title').first();
+        var subtitle = card.find('.full-start-new__tagline, .full-start__tagline, .full--tagline').first();
+        var year = movie.release_year || (movie.release_date || '').slice(0, 4);
+        if (year) {
+            var head = card.find('.full-start-new__head, .full-start__head').first();
+            if (!head.length && title.length) {
+                head = $('<div class="full-start-new__head"></div>');
+                title.before(head);
+            }
+            if (head.length && head.text().indexOf(year) === -1) head.prepend($('<span></span>').text(year));
+            head.removeClass('hide').show();
+        }
         var genreText = details.genres.map(function (genre) { return genre.title; }).join(' | ');
         if (main.length) {
             main.empty();
@@ -1715,8 +1796,9 @@
         ratingBox.toggleClass('hide', !movie.vote_average).find('.source--name').text(NAME);
         if (details.released) {
             var released = $('<div class="anistar-released"></div>').text(details.released);
-            if (main.length) main.before(released);
-            else card.find('.full-start-new__title, .full-start__title').first().after(released);
+            if (subtitle.length) subtitle.before(released);
+            else if (main.length) main.before(released);
+            else if (title.length) title.after(released);
         }
         var buttons = card.find('.full-start-new__buttons, .full-start__buttons').first();
         if (!buttons.length) return;
@@ -1731,6 +1813,7 @@
         var favorite = fullAction('Избранное', bookIcon ? bookIcon.outerHTML :
             '<svg viewBox="0 0 24 24"><path d="M5 3h14v18l-7-4-7 4z" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
             function () { chooseStatus(movie); }, owner);
+        watch.on('hover:long', function () { chooseStatus(movie); });
         var initial = true;
 
         function buttonsOnly() {
@@ -1764,6 +1847,14 @@
         return { season: season ? Number(season[1]) : 1, kind: kind, number: number ? Number(number[1].replace(',', '.')) : null };
     }
 
+    function streamFile(url, size) {
+        // AniStar's public sfv stream uses an MP4 filename for an HLS manifest.
+        var publicManifest = /^sfv\d*\.an-media\.org$/i.test(url.hostname) && /\.mp4$/i.test(url.pathname);
+        var hls = publicManifest || /\.m3u8$/i.test(url.pathname);
+        if (publicManifest && !/\.m3u8/i.test(url.href)) url.hash = 'anistar.m3u8';
+        return { url: url.href, hls: hls, size: size, publicManifest: publicManifest };
+    }
+
     function parsePlaylist(html, base) {
         var doc = parser.parseFromString(html, 'text/html');
         var translation = nodeText(doc, '#ListDub > span');
@@ -1788,7 +1879,7 @@
             if (statedNumber) identity.number = Number(statedNumber[1].replace(',', '.'));
             var statedSeason = block.match(/\b(?:season_number|season_num)['"]?\s*:\s*['"]?(\d+)/i);
             if (statedSeason) identity.season = Number(statedSeason[1]);
-            var quality = new Map();
+            var sources = new Map();
             var sections = /\b(?:files|files_as|files_mp4)['"]?\s*:\s*\[((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\]'"\x5c])*)\]/g;
             var section;
             while ((section = sections.exec(block))) {
@@ -1798,16 +1889,15 @@
                     var stream = file.match(/\b(?:file|url)['"]?\s*:\s*(['"])(.*?)\1/i);
                     var url = stream && urlOf(playerText(stream[2]), base, true);
                     if (!url || !size) return;
-                    var hls = /\.m3u8$/i.test(url.pathname);
-                    var previous = quality.get(size);
-                    if (!previous || (!previous.hls && hls)) quality.set(size, { url: url.href, hls: hls, size: size });
+                    var source = streamFile(url, size);
+                    sources.set(source.url, source);
                 });
             }
             var dub = (block.match(/\btype_dub['"]?\s*:\s*['"]?(\d+)/) || [])[1] || '';
             var imagePath = (block.match(/\b(?:image|poster|thumbnail)['"]?\s*:\s*['"]([^'"]+)['"]/) || [])[1];
             var image = imagePath && urlOf(playerText(imagePath), base);
             return Object.assign(identity, { mediaId: mediaId, dub: dub, image: image && image.href,
-                files: Array.from(quality.values()).sort(function (left, right) { return right.size - left.size; }),
+                files: Array.from(sources.values()).sort(function (left, right) { return right.size - left.size; }),
                 translation: dubNames.get(dub) || (dubNames.size <= 1 ? translation : '') });
         });
 
@@ -1873,6 +1963,17 @@
         return Lampa.Timeline.view(Lampa.Utils.hash(id));
     }
 
+    function builtInSources(files) {
+        var direct = files.filter(function (file) { return file.publicManifest; });
+        var choices = direct.length ? direct : files;
+        var unique = new Map();
+        choices.forEach(function (file) {
+            var prior = unique.get(file.size);
+            if (!prior || (file.hls && !prior.hls)) unique.set(file.size, file);
+        });
+        return Array.from(unique.values()).sort(function (left, right) { return right.size - left.size; });
+    }
+
     function play(movie, episode, episodes) {
         if (!episode.files.length) {
             Lampa.Noty.show('AniStar пока не вернул видео для этой серии.');
@@ -1880,22 +1981,30 @@
         }
         var preferred = String(Lampa.Storage.get('video_quality_default', '1080')).replace(/p$/i, '') + 'p';
         var activity = Lampa.Activity.active();
-        var headers = { Referer: movie.anistar.player, Origin: SITE };
-        if (window.navigator && window.navigator.userAgent) headers['User-Agent'] = window.navigator.userAgent;
         function media(entry) {
+            var choices = builtInSources(entry.files);
             var qualities = {};
-            entry.files.forEach(function (file) { qualities[file.size + 'p'] = file.url; });
-            return {
+            choices.forEach(function (file) { qualities[file.size + 'p'] = file.url; });
+            var url = qualities[preferred] || choices[0].url;
+            var available = choices.find(function (file) { return file.url === url; });
+            var reserve = choices.find(function (file) { return file.url !== url; });
+            if (!reserve && !available.publicManifest) reserve = entry.files.find(function (file) { return file.url !== url; });
+            var data = {
                 title: decodeHtml(movie.title) + ' / ' + entry.title,
-                url: qualities[preferred] || entry.files[0].url,
-                quality: qualities, headers: headers,
-                movie: movie, season: entry.season, episode: entry.number === null ? 1 : entry.number, timeline: timeline(movie, entry)
+                url: url, quality: qualities, launch_player: 'lampa',
+                movie: movie, card: movie, season: entry.season,
+                episode: entry.number === null ? 1 : entry.number, timeline: timeline(movie, entry)
             };
+            if (reserve) data.url_reserve = reserve.url;
+            return data;
         }
         var item = media(episode);
+        var playlist = episodes.filter(function (entry) { return entry.files.length; }).map(media);
+        item.playlist = playlist;
         playerOrigin = { data: item, activity: activity };
+        if (typeof Lampa.Player.runas === 'function') Lampa.Player.runas('lampa');
         Lampa.Player.play(item);
-        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(episodes.filter(function (entry) { return entry.files.length; }).map(media));
+        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(playlist);
     }
 
     function rowComponent() {
@@ -2049,7 +2158,8 @@
                 var episodeInfo = entry.translation || movie.anistar.translation || NAME;
                 if (multipleSeasons) episodeInfo = 'Сезон ' + entry.season + ' · ' + episodeInfo;
                 row.find('.season-episode__info').text(episodeInfo);
-                row.find('.season-episode__quality').text(entry.files.length ? entry.files[0].size + 'p' : 'Видео недоступно');
+                var playable = builtInSources(entry.files);
+                row.find('.season-episode__quality').text(playable.length ? playable[0].size + 'p' : 'Видео недоступно');
                 row.find('.season-episode__loader').hide();
                 var thumb = row.find('.season-episode__img').addClass('season-episode__img--loaded');
                 thumb.find('img').on('error', function () { $(this).hide(); })
@@ -2099,7 +2209,7 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.anistar-released{font-weight:700;margin:.7em 0}',
-            '.anistar-address .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
+            '.anistar-settings-row .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
             '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
             '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
             '.anistar-online{display:flex;gap:1.5em;padding:0 1.5em;align-items:flex-start}',
