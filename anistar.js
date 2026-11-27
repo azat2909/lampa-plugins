@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.20
+ * Версия 0.5.21
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.20';
+    var VERSION = '0.5.21';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -21,6 +21,7 @@
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
     var PAGE_SIZE = 20;
+    var MAX_PAGE_SIZE = 25;
     var SEARCH_PAGE_SIZE = 10;
     var SEARCH_PATH = '/?do=search&mode=advanced&subaction=search&titleonly=3&story=';
     var TIMEOUT = 18000;
@@ -903,9 +904,10 @@
     }
 
     function fillList(state, list, remaining) {
-        if (!list.next || !remaining || (state.activity && state.activity.component.destroyed)) return Promise.resolve();
+        var shown = list.shown || 0;
+        if (!list.next || !remaining || list.cards.length - shown >= PAGE_SIZE ||
+            (state.activity && state.activity.component.destroyed)) return Promise.resolve();
         var cursor = list.next;
-        var before = list.cards.length;
         var onGenrePage = Boolean(list.genreSource);
         var source = list.genreSource || state;
         return readCatalogPage(cursor, source).then(function (page) {
@@ -923,13 +925,15 @@
                 list.ids.add(row.card.id);
                 list.cards.push(row.card);
             });
-            if (before === list.cards.length) return fillList(state, list, remaining - 1);
+            return fillList(state, list, remaining - 1);
+        }, function (error) {
+            if (list.cards.length === shown) throw error;
         });
     }
 
     function fillCombined(state, list) {
         var genre = state.genre || (routeIsGenre(state.anistarRoute) && state.anistarRoute);
-        if (!genre || !yearCatalog(state)) return fillList(state, list, state.query && genre ? 8 : 3);
+        if (!genre || !yearCatalog(state)) return fillList(state, list, state.query && genre ? 8 : 5);
         function scanGenre() {
             var yearNext = list.next;
             var yearSort = list.localSort;
@@ -961,16 +965,15 @@
     function loadList(state, success, failure) {
         var list = getList(state);
         var page = Number(state.page) || 1;
-        var start = (list.shown || 0);
-        var pages = state.year && (state.genre || state.anistarRoute) ? 5 : (page === 1 ? 2 : 1);
-        var work = page === 1 ? (list.cards.length ? Promise.resolve() : fillCombined(state, list)) : fillList(state, list, pages);
+        var start = list.shown || 0;
+        var work = page === 1 ? (list.cards.length ? Promise.resolve() : fillCombined(state, list)) : fillList(state, list, 5);
         work.then(function () {
             if (state.activity && state.activity.component.destroyed) return;
-            list.shown = list.cards.length;
-            var results = list.cards.slice(start);
+            list.shown = Math.min(start + MAX_PAGE_SIZE, list.cards.length);
+            var results = list.cards.slice(start, list.shown);
             if (list.localSort) results.sort(compareCards.bind(null, state));
-            success({ page: page, results: results, sortOrder: list.localSort ? list.cards.slice().sort(compareCards.bind(null, state)) : null,
-                total_pages: page + (list.next ? 1 : 0),
+            success({ page: page, results: results, sortOrder: list.localSort ? list.cards.slice(0, list.shown).sort(compareCards.bind(null, state)) : null,
+                total_pages: page + (list.next || list.shown < list.cards.length ? 1 : 0),
                 message: emptyMessage(list) });
         }).catch(function (error) {
             if (state.activity && state.activity.component.destroyed) return;
@@ -998,10 +1001,6 @@
         Lampa.Controller.toggle('content');
         origin.activity.loader(true);
         settle(fillCombined(state, list).then(function () {
-            if (list.localSort && list.cards.length && list.next && Lampa.Activity.active() === origin) {
-                return fillList(state, list, 1).catch(function () {});
-            }
-        }).then(function () {
             if (Lampa.Activity.active() !== origin) return;
             if (!list.cards.length) Lampa.Noty.show(emptyMessage(list));
             else {
@@ -1135,7 +1134,6 @@
                 if (initial) component.activity.loader(false);
                 refreshFocus();
                 loading = false;
-                if (initial && page.results.length && page.results.length < PAGE_SIZE) next();
             }, function (error) {
                 loading = false;
                 if (destroyed) return;
@@ -1210,6 +1208,7 @@
         this.pause = this.stop = function () { running = false; };
         this.destroy = function () {
             destroyed = true;
+            component.destroyed = true;
             scroll.destroy();
             grid.remove();
         };
@@ -2492,7 +2491,7 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
-            '.anistar-released{display:block;margin:0 0 .65em;color:inherit;text-align:center;font-size:1.3em;font-weight:800;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
+            '.anistar-released{display:block;padding:.55em 0;color:inherit;text-align:left;font-size:1.3em;font-weight:800;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
             '.anistar-settings-row .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
             '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
             '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
