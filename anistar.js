@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.16
+ * Версия 0.5.17
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.16';
+    var VERSION = '0.5.17';
     var DEFAULT_SITE = 'https://anistar.org';
     var SITE = DEFAULT_SITE;
     var previousSite = DEFAULT_SITE;
@@ -69,7 +69,8 @@
     var bookmarkPages = new Map();
     var watchPlaylists = new WeakMap();
     var sortPlans = new WeakMap();
-    var articleMetadata = new Map();
+    var publicNotes = new Map();
+    var catalogYears = new Map();
     var articleNotes = new Map();
     var CONNECT_ERROR = 'Не удалось подключиться к Anistar. Попробуйте указать актуальный адрес сайта в настройках AniStar';
 
@@ -250,14 +251,14 @@
                 headers.Cookie = Array.from(jar, function (entry) { return entry.join('='); }).join('; ');
             }
             if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
-            var settings = { dataType: 'text', timeout: timeout };
+            var settings = { dataType: options.binary && native ? 'base64' : 'text', timeout: timeout };
             if (plainGet) {
                 // Keep the request shape used by 0.4.55 on Android TV and Tizen.
                 body = false;
             } else {
                 settings.type = method;
                 settings.headers = headers;
-                settings.returnHeaders = native && Boolean(jar || options.returnHeaders);
+                settings.returnHeaders = native && Boolean(jar || options.returnHeaders || options.binary);
                 settings.withCredentials = options.auth === true;
                 if (tizen() && options.auth) settings.xhrFields = { withCredentials: true };
             }
@@ -275,6 +276,17 @@
                     if (native && response && typeof response.body === 'string') {
                         html = response.body;
                         if (jar && (!response.currentUrl || response.currentUrl.indexOf(SITE + '/') === 0)) saveCookies(response.headers, jar);
+                        if (options.binary && response.encoding === 'base64') {
+                            try {
+                                var bytes = Uint8Array.from(atob(html), function (character) { return character.charCodeAt(0); });
+                                var prefix = new TextDecoder().decode(bytes.subarray(0, 4096));
+                                var charset = (prefix.match(/charset\s*=\s*['"]?([\w-]+)/i) || [])[1] || 'windows-1251';
+                                html = new TextDecoder(charset).decode(bytes);
+                            } catch (error) {
+                                finish(reject, new Error('Не удалось прочитать кодировку страницы AniStar.'));
+                                return;
+                            }
+                        }
                     }
                     if (typeof html !== 'string') {
                         finish(reject, new Error('AniStar вернул неизвестный ответ.'));
@@ -358,8 +370,16 @@
     }
 
     function pageDocument(url, options) {
-        return request(url, options).then(function (html) {
+        function parse(html) {
             return parser.parseFromString(html, 'text/html');
+        }
+        return request(url, options).then(function (html) {
+            if (android() && typeof TextDecoder === 'function' && !(options && options.body) &&
+                /charset\s*=\s*['"]?windows-1251/i.test(html.slice(0, 4096)) && /\ufffd[^<]{0,30}\ufffd/.test(html)) {
+                var retry = Object.assign({}, options, { plainGet: false, binary: true });
+                return request(url, retry).then(parse, function () { return parse(html); });
+            }
+            return parse(html);
         });
     }
 
@@ -411,14 +431,19 @@
     }
 
     function articleYear(node) {
-        var anchors = node.querySelectorAll('a[href*="/filter/year/"], a[href*="type=year"][href*="xf="]');
+        var scope = node.querySelector('.head, .news_head') || node;
+        var field = scope.querySelector('[data-year], [itemprop="datePublished"][content]');
+        var value = (node.getAttribute && node.getAttribute('data-year')) ||
+            (field && (field.getAttribute('data-year') || field.getAttribute('content')));
+        if (/^\d{4}$/.test(value || '')) return value;
+        var anchors = scope.querySelectorAll('a[href*="/filter/year/"], a[href*="type=year"][href*="xf="]');
         for (var index = 0; index < anchors.length; index++) {
             var year = clean(anchors[index].textContent);
             if (/^\d{4}$/.test(year)) return year;
             var match = anchors[index].getAttribute('href').match(/(?:\/filter\/year\/|[?&]xf=)(\d{4})(?=[/#?&]|$)/i);
             if (match) return match[1];
         }
-        var info = clean(node.textContent).match(/Год(?:\s+(?:выпуска|выхода))?\s*:?\s*(\d{4})/i);
+        var info = clean(scope.textContent).match(/Год(?:\s+(?:выпуска|выхода))?\s*:?\s*(\d{4})/i);
         return info ? info[1] : '';
     }
 
@@ -434,7 +459,7 @@
         var titles = joinedTitle.split(/\s*\/\s*/).map(clean).filter(Boolean);
         var mainTitle = titles.find(function (title) { return /[А-Яа-яЁё]/.test(title); }) || titles[0];
         var alternate = titles.filter(function (title) { return title !== mainTitle; }).join(' / ');
-        var year = articleYear(node) || (fallback && cardYear(fallback)) || '';
+        var year = (fallback && cardYear(fallback)) || articleYear(node) || catalogYears.get(id) || '';
         var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
         var poster = posterUrl(image, article);
         var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
@@ -552,6 +577,7 @@
         });
         if (!rows.length) rows = legacyCatalogRows(root, url);
         rows.forEach(function (row) {
+            if (row.card.release_year) catalogYears.set(newsId(row.card.url), row.card.release_year);
             if (row.card.anistarReleased) articleNotes.set(siteUrl(row.card.url), row.card.anistarReleased);
         });
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
@@ -576,7 +602,7 @@
     }
 
     function routeIsGenre(url) {
-        var path = sitePath(url);
+        var path = sitePath(url).replace(/^\/anime\//i, '/');
         return /^\/filter\/janrs\//i.test(path) || GENRES.some(function (entry) { return path === '/' + entry[1] + '/'; });
     }
 
@@ -633,17 +659,14 @@
     }
 
     function sortApplied(doc, sort) {
-        var key = doc.querySelector('#news_set_sort input[name="dlenewssortby"]');
-        var direction = doc.querySelector('#news_set_sort input[name="dledirection"]');
-        if (key && key.value && direction && direction.value) {
-            return key.value.toLowerCase() === sort.key && direction.value.toLowerCase() === sort.direction;
-        }
         var active = doc.querySelector('#news_set_sort .sort-actv[onclick]');
         var choice = active && active.getAttribute('onclick').match(/dle_change_sort\(\s*['"](\w+)['"]\s*,\s*['"](asc|desc)['"]/i);
-        if (!choice || choice[1].toLowerCase() !== sort.key) return false;
-        var image = doc.querySelector('#news_set_sort img[src*="asc.gif"], #news_set_sort img[src*="desc.gif"]');
-        var iconDirection = image && image.getAttribute('src').match(/\b(asc|desc)\.gif/i);
-        return iconDirection ? iconDirection[1].toLowerCase() === sort.direction : choice[2].toLowerCase() !== sort.direction;
+        // DLE displays the active order on the link; hidden inputs can retain defaults.
+        if (choice) return choice[1].toLowerCase() === sort.key && choice[2].toLowerCase() !== sort.direction;
+        var key = doc.querySelector('#news_set_sort input[name="dlenewssortby"]');
+        var direction = doc.querySelector('#news_set_sort input[name="dledirection"]');
+        return Boolean(key && key.value && direction && direction.value &&
+            key.value.toLowerCase() === sort.key && direction.value.toLowerCase() === sort.direction);
     }
 
     function compareCards(state, left, right) {
@@ -666,7 +689,7 @@
         var sort = SORT[state.sort] || SORT[0];
         var plan;
         if (sorting) {
-            plan = sortPlans.get(state) || { jar: new Map(nativeCookies), mode: '' };
+            plan = sortPlans.get(state) || { jar: new Map(), mode: '' };
             sortPlans.set(state, plan);
         }
         var backup = yearCatalog(state) && cursor === yearUrl(state.year) ?
@@ -714,6 +737,9 @@
                     if (sortApplied(doc, sort)) return page;
                     plan.mode = 'local';
                     return local(page);
+                }).catch(function () {
+                    plan.mode = 'local';
+                    return ordinary().then(function (doc) { return local(read(doc, address)); });
                 });
             }
             return ordinary().then(function (doc) {
@@ -805,21 +831,35 @@
         return clean(value).toLowerCase().replace(/ё/g, 'е').replace(/[\s‐–—-]+/g, ' ');
     }
 
+    function genrePath(url) {
+        var path = sitePath(url).replace(/^\/anime\//i, '/').replace(/\/$/, '');
+        try {
+            return decodeURIComponent(path.replace(/\+/g, ' ')).toLowerCase();
+        } catch (error) {
+            return path.replace(/\+/g, ' ').replace(/%([0-9a-f]{2})/ig, function (code, hex) {
+                var byte = parseInt(hex, 16);
+                if (byte >= 0xc0) return String.fromCharCode(byte + 0x350);
+                if (byte === 0xa8 || byte === 0xb8) return 'ё';
+                return byte < 128 ? String.fromCharCode(byte) : code;
+            }).toLowerCase();
+        }
+    }
+
     function matchesGenre(row, url) {
         var genre = genreIndex.get(siteUrl(url));
-        var path = sitePath(url).toLowerCase().replace(/\/$/, '');
+        var path = genrePath(url);
+        var label = genre ? genre.title : path.indexOf('/filter/janrs/') === 0 ? path.slice(14) : '';
         return (path === '/hentai' && row.card.adult) || row.genres.some(function (entry) {
-            return sitePath(entry.url).toLowerCase().replace(/\/$/, '') === path ||
-                (genre && normalizeGenre(entry.title) === normalizeGenre(genre.title));
+            return genrePath(entry.url) === path || (label && normalizeGenre(entry.title) === normalizeGenre(label));
         }) || (row.categories || []).some(function (category) {
-            var categoryPath = sitePath(category).toLowerCase().replace(/\/$/, '');
-            return categoryPath === path || categoryPath === '/anime' + path;
+            return genrePath(category) === path;
         });
     }
 
-    function filtered(row, state) {
+    function filtered(row, state, onGenrePage) {
         if (state.year && row.card.release_year && row.card.release_year !== String(state.year)) return false;
-        if (state.year && !yearCatalog(state) && !row.card.release_year) return false;
+        if (state.year && (onGenrePage || !yearCatalog(state)) && !row.card.release_year) return false;
+        if (onGenrePage && (!routeIsGenre(state.anistarRoute) || !state.genre || genrePath(state.genre) === genrePath(state.anistarRoute))) return true;
         if (yearCatalog(state) && routeIsGenre(state.anistarRoute) && !matchesGenre(row, state.anistarRoute)) return false;
         if (!state.genre || (!state.query && !state.year && !state.anistarRoute)) return true;
         return matchesGenre(row, state.genre);
@@ -839,12 +879,14 @@
         if (!list.next || !remaining || (state.activity && state.activity.component.destroyed)) return Promise.resolve();
         var cursor = list.next;
         var before = list.cards.length;
-        return readCatalogPage(cursor, state).then(function (page) {
+        var onGenrePage = Boolean(list.genreSource);
+        var source = list.genreSource || state;
+        return readCatalogPage(cursor, source).then(function (page) {
             list.localSort = list.localSort || page.localSort;
             list.visited.add(cursor);
             list.next = list.visited.has(page.next) ? '' : page.next;
             page.rows.forEach(function (row) {
-                if (list.ids.has(row.card.id) || !filtered(row, state)) return;
+                if (list.ids.has(row.card.id) || !filtered(row, state, onGenrePage)) return;
                 var poster = row.card.posterFallback === undefined ? row.card.poster : row.card.posterFallback;
                 if (list.hideUncovered && !hasCover(poster)) return;
                 if (row.card.adult && !canWatch()) {
@@ -858,6 +900,32 @@
         });
     }
 
+    function fillCombined(state, list) {
+        var genre = state.genre || (routeIsGenre(state.anistarRoute) && state.anistarRoute);
+        if (!genre || !yearCatalog(state)) return fillList(state, list, state.query && genre ? 8 : 3);
+        function scanGenre() {
+            var yearNext = list.next;
+            var yearSort = list.localSort;
+            list.genreSource = Object.assign({}, state, { genre: '', year: '', anistarRoute: genre });
+            list.next = siteUrl(genre);
+            list.localSort = false;
+            function resumeYear() {
+                list.genreSource = null;
+                list.next = yearNext;
+                list.localSort = yearSort;
+            }
+            return fillList(state, list, 8).then(function () {
+                if (!list.cards.length && yearNext && !list.visited.has(yearNext)) resumeYear();
+            }, function (error) {
+                resumeYear();
+                if (!list.visited.size) throw error;
+            });
+        }
+        return fillList(state, list, 6).then(function () {
+            if (!list.cards.length) return scanGenre();
+        }, scanGenre);
+    }
+
     function emptyMessage(list) {
         if (list.restricted) return 'Тайтлы 18+ скрыты настройками профиля Lampa.';
         return list.next ? 'На первых страницах AniStar совпадений нет. Уточните фильтр.' : 'Тайтлы не найдены.';
@@ -868,7 +936,7 @@
         var page = Number(state.page) || 1;
         var start = (list.shown || 0);
         var pages = state.year && (state.genre || state.anistarRoute) ? 5 : (page === 1 ? 2 : 1);
-        var work = page === 1 && list.cards.length ? Promise.resolve() : fillList(state, list, pages);
+        var work = page === 1 ? (list.cards.length ? Promise.resolve() : fillCombined(state, list)) : fillList(state, list, pages);
         work.then(function () {
             if (state.activity && state.activity.component.destroyed) return;
             list.shown = list.cards.length;
@@ -902,9 +970,7 @@
         origin.anistarLoading = true;
         Lampa.Controller.toggle('content');
         origin.activity.loader(true);
-        var combined = (state.query && (state.year || state.genre)) || (state.year && state.genre) ||
-            (state.anistarRoute && (state.year || state.genre));
-        settle(fillList(state, list, combined ? 8 : 1).then(function () {
+        settle(fillCombined(state, list).then(function () {
             if (list.localSort && list.cards.length && list.next && Lampa.Activity.active() === origin) {
                 return fillList(state, list, 1).catch(function () {});
             }
@@ -949,8 +1015,7 @@
         var component = this;
         object.page = 1;
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250, end_ratio: 2 });
-        var root = $('<div class="anistar-screen"></div>');
-        var grid = $('<div class="mapping--grid cols--6"></div>').appendTo(root);
+        var grid = $('<div class="mapping--grid cols--6"></div>');
         var ids = new Set();
         var itemsById = new Map();
         var focused = null;
@@ -958,38 +1023,15 @@
         var total = 1;
         var running = false;
         var destroyed = false;
-        var metadataQueue = [];
-        var metadataRunning = 0;
         var hideMissing = hideUncovered();
         var failedCoverPages = 2;
-        scroll.append(root);
+        scroll.append(grid);
 
         function refreshFocus() {
             if (!running || destroyed || Lampa.Controller.enabled().name !== 'content') return;
-            Lampa.Controller.collectionSet(root, false, true);
-            var target = focused && root[0].contains(focused) ? focused : root.find('.selector')[0];
-            if (target) Lampa.Controller.collectionFocus(target, root, true);
-        }
-
-        function loadMetadata() {
-            while (!destroyed && running && ownsScreen(object, component) && metadataRunning < 3 && metadataQueue.length) {
-                var queued = metadataQueue.shift();
-                metadataRunning += 1;
-                updateYear(queued);
-            }
-        }
-
-        function updateYear(queued) {
-            settle(readArticleMetadata(queued.card.url).then(function (metadata) {
-                if (destroyed || !metadata.year) return;
-                queued.card.release_year = metadata.year;
-                queued.card.release_date = metadata.year + '-01-01';
-                queued.card.anistarReleased = queued.card.anistarReleased || metadata.note;
-                queued.element.text(metadata.year);
-            }).catch(function () {}), function () {
-                metadataRunning -= 1;
-                loadMetadata();
-            });
+            Lampa.Controller.collectionSet(grid, false, true);
+            var target = focused && grid[0].contains(focused) ? focused : grid.find('.selector')[0];
+            if (target) Lampa.Controller.collectionFocus(target, grid, true);
         }
 
         function append(data) {
@@ -997,7 +1039,7 @@
             ids.add(data.id);
             var item = catalogTemplate('card', '.card__img',
                 '<div class="card selector"><div class="card__view"><img class="card__img"></div><div class="card__title"></div><div class="card__age"></div></div>');
-            item.addClass('card--loaded selector anistar-catalog-card');
+            item.addClass('card--loaded selector');
             var image = item.find('.card__img').attr('alt', '').attr('loading', 'lazy');
             var fallback = data.posterFallback;
             image.on('error', function () {
@@ -1015,12 +1057,11 @@
                     image.off('error').attr('src', './img/img_broken.svg');
                 }
             }).attr('src', data.poster || './img/img_broken.svg');
-            var label = item.find('.card__title').first().text(data.title);
-            item.find('.card__age').remove();
-            var age = $('<div class="anistar-card-year"></div>').text(cardYear(data));
-            if (label.length) label.after(age);
-            else item.append(age);
-            if (!cardYear(data)) metadataQueue.push({ card: data, element: age });
+            item.find('.card__title').first().text(data.title);
+            var year = cardYear(data);
+            var age = item.find('.card__age');
+            if (year) age.text(year);
+            else age.remove();
             item.appendTo(grid);
             itemsById.set(data.id, item);
             item.on('hover:long', function () { chooseStatus(data); });
@@ -1052,7 +1093,6 @@
                 if (initial && !page.results.length && ownsScreen(object, component)) Lampa.Noty.show(page.message);
                 if (initial) component.activity.loader(false);
                 refreshFocus();
-                loadMetadata();
                 loading = false;
                 if (initial && page.results.length && page.results.length < PAGE_SIZE) next();
             }, function (error) {
@@ -1096,7 +1136,6 @@
         this.start = function () {
             running = true;
             if (this.updateCoverSetting()) return;
-            loadMetadata();
             Lampa.Controller.add('content', {
                 link: component,
                 toggle: refreshFocus,
@@ -1114,7 +1153,7 @@
         this.destroy = function () {
             destroyed = true;
             scroll.destroy();
-            root.remove();
+            grid.remove();
         };
     }
 
@@ -1611,7 +1650,8 @@
                 lists = new WeakMap();
                 watchPlaylists = new WeakMap();
                 sortPlans = new WeakMap();
-                articleMetadata.clear();
+                publicNotes.clear();
+                catalogYears.clear();
                 articleNotes.clear();
                 genreRefresh = null;
                 genreIndex.clear();
@@ -1637,7 +1677,7 @@
     function titleGenres(head) {
         var entries = Array.from(head.querySelectorAll('li'));
         var row = entries.find(function (entry) { return /^Жанр(?:ы)?\s*:/i.test(clean(entry.textContent)); });
-        return row || !entries.length ? readLinks(row || head, '/filter/janrs/') : [];
+        return readLinks(row || head, '/filter/janrs/');
     }
 
     function labeledValue(scope, label) {
@@ -1710,9 +1750,9 @@
         var explicit = scope.querySelectorAll('.reason, .release-note, .series-added, .news_reason');
         for (var index = 0; index < explicit.length; index++) {
             var text = clean(explicit[index].textContent);
-            if (text) return text;
+            if (text && text.indexOf('\ufffd') === -1) return text;
         }
-        var paragraphs = scope.querySelectorAll('.news_text p, .full-text p, .descripts p, p, h3, h4');
+        var paragraphs = scope.querySelectorAll('p, h3, h4, center, .news_text strong, .full-text b, .descripts span');
         for (var row = 0; row < paragraphs.length; row++) {
             var note = clean(paragraphs[row].textContent);
             if (note.length < 260 && /^Добавлен[аоы]?\s/i.test(note) && /сер(?:ия|ии|ий)|эпизод|фильм|спешл/i.test(note)) return note;
@@ -1724,25 +1764,21 @@
         return desktopUrl(value) + '&action_skin_change=1';
     }
 
-    function readArticleMetadata(url) {
+    function readPublicReleaseNote(url) {
         var address = siteUrl(url);
-        var cached = articleMetadata.get(address);
+        var cached = publicNotes.get(address);
         if (cached) return cached;
         function extract(doc) {
-            var root = doc.querySelector('#dle-content') || doc;
-            return { year: articleYear(root), note: releaseNote(root) };
+            return releaseNote(doc.querySelector('#dle-content') || doc);
         }
         var pending = pageDocument(address, { plainGet: true }).then(function (doc) {
-            var metadata = extract(doc);
-            if (metadata.year && metadata.note) return metadata;
-            return pageDocument(explicitDesktopUrl(address), { plainGet: true }).then(function (alternate) {
-                var next = extract(alternate);
-                return { year: metadata.year || next.year, note: metadata.note || next.note };
-            }).catch(function () { return metadata; });
-        });
-        articleMetadata.set(address, pending);
+            var note = extract(doc);
+            if (note) return note;
+            return pageDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract);
+        }, function () { return pageDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract); });
+        publicNotes.set(address, pending);
         pending.then(function () {}, function () {
-            if (articleMetadata.get(address) === pending) articleMetadata.delete(address);
+            if (publicNotes.get(address) === pending) publicNotes.delete(address);
         });
         return pending;
     }
@@ -1758,10 +1794,6 @@
         if (!movie) throw new Error('AniStar не вернул карточку тайтла.');
         var head = root.querySelector('.head') || root;
         var description = root.querySelector('.descripts[itemprop="description"], .news_text .descripts, .full-text');
-        if (!movie.release_year) {
-            movie.release_year = articleYear(scope);
-            if (movie.release_year) movie.release_date = movie.release_year + '-01-01';
-        }
         movie.title = escapeHtml(movie.title);
         movie.tagline = escapeHtml(movie.tagline);
         movie.original_title = movie.tagline;
@@ -1798,16 +1830,7 @@
         var component = object.activity && object.activity.component;
         var options = session ? { auth: true } : { plainGet: true };
         pageDocument(desktopUrl(card.url), options).then(function (doc) {
-            var movie = readArticle(doc, card);
-            if ((movie.release_year && movie.anistar.released) || (component && component.destroyed)) return movie;
-            return readArticleMetadata(card.url).then(function (metadata) {
-                if (!movie.release_year && metadata.year) {
-                    movie.release_year = metadata.year;
-                    movie.release_date = metadata.year + '-01-01';
-                }
-                saveReleaseNote(movie, movie.anistar.released || metadata.note);
-                return movie;
-            }).catch(function () { return movie; });
+            return readArticle(doc, card);
         }).then(function (movie) {
             if (component && component.destroyed) return;
             if (movie.adult && !canWatch()) {
@@ -1887,16 +1910,12 @@
         var note = movie.anistar.released || movie.anistarReleased || articleNotes.get(siteUrl(movie.url));
         if (!note || !card.length) return;
         var root = card[0];
-        var subtitle = root.querySelector('.full-start-new__tagline, .full-start__tagline, .full--tagline');
         var details = root.querySelector('.full-start-new__details, .full-start__details');
-        var title = root.querySelector('.full-start-new__title, .full-start__title');
-        var anchor = subtitle || details || title;
-        if (!anchor || !anchor.parentNode) return;
+        if (!details) return;
         var row = root.querySelector('.anistar-released') || document.createElement('div');
         row.className = 'anistar-released';
         row.textContent = note;
-        var next = anchor === details ? anchor : anchor.nextSibling;
-        if (next !== row) anchor.parentNode.insertBefore(row, next);
+        if (details.firstChild !== row) details.insertBefore(row, details.firstChild);
     }
 
     function onFull(event) {
@@ -1935,9 +1954,15 @@
         }
         if (event.name !== 'start') return;
 
-        var card = $(typeof owner.render === 'function' ? owner.render(true) : owner.html);
+        function currentCard() { return $(typeof owner.render === 'function' && owner.render(true) || owner.html); }
+        var card = currentCard();
         var main = card.find('.full-start-new__details, .full-start__details').first();
         var title = card.find('.full-start-new__title, .full-start__title').first();
+        if (!main.length && title.length) {
+            var anchor = card.find('.full-start__tagline, .full-start__title-original, .full--tagline').first();
+            main = $('<div class="full-start__details"></div>');
+            (anchor.length ? anchor : title).after(main);
+        }
         var year = movie.release_year || (movie.release_date || '').slice(0, 4);
         if (year) {
             var head = card.find('.full-start-new__head, .full-start__head').first();
@@ -1956,17 +1981,14 @@
                 main.append($('<span></span>').text(value));
             });
         }
-        card.find('.full-start-new__title, .full-start-new__tagline').css({
-            whiteSpace: 'normal', overflowWrap: 'anywhere'
-        });
         card.find('.full-start-new__reactions').hide();
         var ratingBox = card.find('.full-start__rate.rate--tmdb');
         ratingBox.toggleClass('hide', !movie.vote_average).find('.source--name').text(NAME);
-        function syncReleaseNote() { renderReleaseNote(card, movie); }
+        function syncReleaseNote() { renderReleaseNote(currentCard(), movie); }
         syncReleaseNote();
         if (!details.released && !movie.anistarReleased) {
-            readArticleMetadata(movie.url).then(function (metadata) {
-                saveReleaseNote(movie, metadata.note);
+            readPublicReleaseNote(movie.url).then(function (note) {
+                saveReleaseNote(movie, note);
                 syncReleaseNote();
             }).catch(function () {});
         }
@@ -2161,22 +2183,28 @@
             var available = choices.find(function (file) { return file.url === url; });
             var reserve = choices.find(function (file) { return file.url !== url; });
             if (!reserve && !available.publicManifest) reserve = entry.files.find(function (file) { return file.url !== url; });
+            if (external && available.publicManifest) {
+                url = url.replace(/#anistar\.m3u8$/, '');
+                Object.keys(qualities).forEach(function (quality) {
+                    qualities[quality] = qualities[quality].replace(/#anistar\.m3u8$/, '');
+                });
+            }
             var data = {
                 title: decodeHtml(movie.title) + ' / ' + entry.title,
                 url: url, quality: qualities,
                 movie: movie, card: movie, season: entry.season,
                 episode: entry.number === null ? 1 : entry.number, timeline: timeline(movie, entry)
             };
-            if (reserve) data.url_reserve = reserve.url;
+            if (reserve && !external) data.url_reserve = reserve.url;
             if (external) data.headers = { Referer: movie.anistar.player, Origin: SITE };
             return data;
         }
         var item = media(episode);
-        var playlist = episodes.filter(function (entry) { return entry.files.length; }).map(media);
-        item.playlist = playlist;
+        // Android Lampa uses ViMu's file-list mode when given several videos.
+        if (!external) item.playlist = episodes.filter(function (entry) { return entry.files.length; }).map(media);
         playerOrigin = { data: item, activity: activity };
         Lampa.Player.play(item);
-        if (!external && typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(playlist);
+        if (!external && typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(item.playlist);
     }
 
     function rowComponent() {
@@ -2380,9 +2408,7 @@
         $('<style></style>').text([
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
-            '.anistar-released{display:block;font-weight:700;font-size:1.14em;line-height:1.35;margin:0 0 1em}',
-            '.anistar-catalog-card>.anistar-card-year{display:block;font-size:.9em;line-height:1.3;margin-top:.5em;opacity:.85}',
-            '.anistar-catalog-card>.anistar-card-year:empty{display:none}',
+            '.anistar-released{display:block;flex:0 0 calc(100% - .9em);min-width:0;font-weight:700;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
             '.anistar-settings-row .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
             '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
             '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
