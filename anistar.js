@@ -1,25 +1,28 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.9
+ * Версия 0.5.10
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.9';
-    var SITE = 'https://anistar.org';
-    var CATALOG = SITE + '/anime/';
+    var VERSION = '0.5.10';
+    var DEFAULT_SITE = 'https://anistar.org';
+    var SITE = DEFAULT_SITE;
+    var previousSite = DEFAULT_SITE;
+    var SITE_KEY = 'anistar_site_url';
     var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
     var LEGACY_CARD = '.shortstory, .base, .news, .item, .anime-item, .movie-item, article, li';
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
     var PAGE_SIZE = 20;
     var SEARCH_PAGE_SIZE = 10;
-    var SEARCH_URL = SITE + '/?do=search&mode=advanced&subaction=search&titleonly=3&story=';
+    var SEARCH_PATH = '/?do=search&mode=advanced&subaction=search&titleonly=3&story=';
     var TIMEOUT = 18000;
     var ACCOUNT_KEY = 'anistar_account_v1';
     var GENRE_CACHE = 'anistar_anime_genres_v1';
+    var LOGIN_PROMPT = 'Войдите в аккаунт в настройках Anistar';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2l2.9 6.1 6.7.9-4.8 4.8 1.1 6.7-5.9-3.2-5.9 3.2 1.1-6.7L2.4 9l6.7-.9z"/></svg>';
     var STATUS = [
         { title: 'Избранное', path: '/favorites/' },
@@ -40,6 +43,15 @@
             { title: field[0] + ' ↓', key: field[1], direction: 'desc' }
         ]);
     }, []);
+    var GENRES = [
+        ['Боевики','thriller'], ['Вампиры','vampires'], ['Гарем','ani-garem'], ['Детектив','detective'],
+        ['Драма','drama'], ['История','history'], ['Киберпанк','cyberpunk'], ['Комедия','comedy'],
+        ['Махо-седзе','maho-shoujo'], ['Меха','fur'], ['Мистика','mysticism'], ['Музыкальное','music'],
+        ['Пародии','parodies'], ['Повседневность','everyday-life'], ['Приключения','adventures'],
+        ['Романтика','romance'], ['Сёдзе','shoujo'], ['Сёнен','senen'], ['Сёнен-ай','senen-ay'],
+        ['Спорт','sports'], ['Триллер','horror'], ['Ужасы','horor'], ['Фантастика','fantasy'],
+        ['Фэнтези','fentezi'], ['Хентай','hentai'], ['Школа','school'], ['Эччи','echchi-erotic']
+    ];
     var parser = new DOMParser();
     var genreIndex = new Map();
     var lists = new WeakMap();
@@ -70,7 +82,7 @@
     function urlOf(value, base, allowHttp) {
         if (!value || !String(value).trim()) return null;
         try {
-            var url = new URL(value, base || SITE);
+            var url = new URL(siteUrl(value, base) || value, base || SITE);
             var supported = url.protocol === 'https:' || (allowHttp && url.protocol === 'http:');
             return supported && !url.username && !url.password ? url : null;
         } catch (error) {
@@ -78,23 +90,38 @@
         }
     }
 
+    function configuredOrigin(value) {
+        var address = clean(value);
+        if (!address) return DEFAULT_SITE;
+        try {
+            var url = new URL(address.indexOf('://') === -1 ? 'https://' + address : address);
+            if (url.protocol === 'https:' && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash) return url.origin;
+        } catch (error) {}
+        return '';
+    }
+
     function siteUrl(value, base) {
         if (!value || !String(value).trim()) return '';
         try {
             var url = new URL(value, base || SITE);
-            if (url.protocol === 'http:' && url.hostname === 'anistar.org' && !url.port) url.protocol = 'https:';
-            if (url.protocol !== 'https:' || url.hostname !== 'anistar.org' || url.port || url.username || url.password) return '';
-            url.hash = '';
-            return url.href;
-        } catch (error) {
-            return '';
-        }
+            if (url.protocol === 'http:') url.protocol = 'https:';
+            if (url.username || url.password) return '';
+            if (url.origin === SITE) return url.href.split('#')[0];
+            if (url.origin === DEFAULT_SITE || url.origin === 'https://www.anistar.org' || url.origin === previousSite) {
+                return SITE + url.pathname + url.search;
+            }
+        } catch (error) {}
+        return '';
+    }
+
+    function hostStorageKey(key) {
+        return SITE === DEFAULT_SITE ? key : key + ':' + SITE;
     }
 
     function desktopUrl(value) {
-        var url = new URL(value);
-        url.searchParams.set('skin_name', 'new36');
-        return url.href;
+        var url = new URL(siteUrl(value));
+        // Keep pre-encoded Windows-1251 query values intact.
+        return url.searchParams.has('skin_name') ? url.href : url.href + (url.search ? '&' : '?') + 'skin_name=new36';
     }
 
     function sitePath(value) {
@@ -131,13 +158,13 @@
     }
 
     function persistAccount() {
-        Lampa.Storage.set(ACCOUNT_KEY, session ? {
+        Lampa.Storage.set(hostStorageKey(ACCOUNT_KEY), session ? {
             name: session.name, logout: session.logout, cookies: Array.from(nativeCookies.entries())
         } : null);
     }
 
     function restoreAccount() {
-        var saved = Lampa.Storage.get(ACCOUNT_KEY, null);
+        var saved = Lampa.Storage.get(hostStorageKey(ACCOUNT_KEY), null);
         if (!saved || typeof saved.name !== 'string' || !siteUrl(saved.logout)) return;
         session = { name: saved.name, logout: siteUrl(saved.logout) };
         if (Array.isArray(saved.cookies)) saved.cookies.forEach(function (pair) {
@@ -169,6 +196,9 @@
 
     function request(url, options) {
         options = options || {};
+        url = siteUrl(url);
+        if (!url) return Promise.reject(new Error('Некорректный адрес AniStar.'));
+        var requestSite = SITE;
         var plainGet = options.plainGet === true;
         var native = !plainGet && android();
         return new Promise(function (resolve, reject) {
@@ -176,7 +206,6 @@
             var body = options.body;
             var headers = Object.assign({}, options.headers);
             var method = body === undefined ? 'GET' : 'POST';
-            var local = Boolean(siteUrl(url));
             var timeout = plainGet ? 20000 : TIMEOUT;
             var returned = false;
             var timer = setTimeout(function () {
@@ -197,7 +226,7 @@
                 finish(reject, new Error(message));
             }
 
-            if (native && local && options.auth && nativeCookies.size) {
+            if (native && options.auth && nativeCookies.size) {
                 headers.Cookie = Array.from(nativeCookies, function (entry) { return entry.join('='); }).join('; ');
             }
             if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -208,19 +237,23 @@
             } else {
                 settings.type = method;
                 settings.headers = headers;
-                settings.returnHeaders = native && options.auth === true;
+                settings.returnHeaders = native && (options.auth === true || options.returnHeaders === true);
                 settings.withCredentials = options.auth === true;
             }
             try {
                 network[plainGet || native ? 'native' : 'silent'](url, function (response) {
                     if (returned) return;
+                    if (requestSite !== SITE) {
+                        finish(reject, new Error('Адрес AniStar изменился.'));
+                        return;
+                    }
                     var html = response;
                     if (native && typeof response === 'string' && /^\s*\{/.test(response)) {
                         try { response = JSON.parse(response); } catch (error) {}
                     }
                     if (native && response && typeof response.body === 'string') {
                         html = response.body;
-                        if (local && options.auth && (!response.currentUrl || siteUrl(response.currentUrl))) saveCookies(response.headers);
+                        if (options.auth && (!response.currentUrl || response.currentUrl.indexOf(SITE + '/') === 0)) saveCookies(response.headers);
                     }
                     if (typeof html !== 'string') {
                         finish(reject, new Error('AniStar вернул неизвестный ответ.'));
@@ -306,6 +339,21 @@
         };
     }
 
+    function catalogMetrics(node) {
+        var score = nodeText(node, '.rating').match(/(\d+(?:[.,]\d+)?)\s*\/\s*10/);
+        var time = node.querySelector('time[datetime]');
+        var dateIcon = node.querySelector('.date-icon');
+        var date = (time && time.getAttribute('datetime')) || nodeText(node, '.date, .news_date') ||
+            (dateIcon && clean(dateIcon.parentElement.textContent)) || '';
+        var parts = date.match(/(\d{1,2})[.-](\d{1,2})[.-](\d{4})(?:\D+(\d{1,2}):(\d{2}))?/);
+        var stamp = parts ? Date.UTC(+parts[3], +parts[2] - 1, +parts[1], +(parts[4] || 0), +(parts[5] || 0)) : Date.parse(date);
+        var views = nodeText(node, '.news_read, .news-read, .views, [data-count-views]');
+        var comments = nodeText(node, '.comm_num, .news-comments, a[href*="#comment"]');
+        function number(value) { return Number((value || '').replace(/[^\d]/g, '')) || 0; }
+        return { rating: score ? Number(score[1].replace(',', '.')) : 0, date: Number.isFinite(stamp) ? stamp : 0,
+            news_read: number(views), comm_num: number(comments) };
+    }
+
     function legacyCatalogRows(scope, url) {
         var rows = new Map();
         Array.prototype.forEach.call(scope.querySelectorAll('a[href]'), function (link) {
@@ -321,9 +369,10 @@
             if (!title) return;
             var card = basicCard(node, article, { title: title, poster: posterUrl(image, article) });
             if (!card) return;
+            card.anistarSort = catalogMetrics(node);
             card.posterFallback = card.poster;
             card.poster = SITE + '/uploads/posters/' + id + '/original.jpg';
-            rows.set(id, { card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
+            rows.set(id, { card: card, genres: titleGenres(node.querySelector('.head') || node) });
         });
         return Array.from(rows.values());
     }
@@ -350,7 +399,7 @@
 
     function catalogPage(doc, url, personal) {
         var animeCatalog = CATALOG_PATH.test(sitePath(url));
-        var root = doc.querySelector('#dle-content') || ((animeCatalog || personal) && doc);
+        var root = doc.querySelector('#dle-content') || ((animeCatalog || personal || doc.querySelector('.news, .shortstory')) && doc);
         if (!root) throw new Error('AniStar не вернул каталог.');
         var rows = animeCatalog ? legacyCatalogRows(root, url) : [];
         var seen = new Set();
@@ -359,7 +408,8 @@
             var card = link && basicCard(node, siteUrl(link.getAttribute('href'), url));
             if (!card || seen.has(card.id)) return;
             seen.add(card.id);
-            rows.push({ card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/'),
+            card.anistarSort = catalogMetrics(node);
+            rows.push({ card: card, genres: titleGenres(node.querySelector('.head') || node),
                 categories: Array.from(node.querySelectorAll('.tags a[href], .category a[href]'), function (link) {
                     return siteUrl(link.getAttribute('href'));
                 }) });
@@ -372,7 +422,7 @@
     }
 
     function yearUrl(year) {
-        return SITE + '/index.php?' + form({ do: 'xfsearch', xf: year, type: 'year', r: 'anime' });
+        return SITE + '/filter/year/' + year + '/';
     }
 
     // AniStar's search expects Windows-1251 in the query string.
@@ -389,19 +439,20 @@
     function catalogStart(state) {
         if (state.anistarList) return SITE + state.anistarList.path;
         if (state.query) return 1;
-        if (state.anistarRoute) return state.anistarRoute;
-        return (state.year && yearUrl(state.year)) || state.genre || CATALOG;
+        if (state.anistarRoute) return siteUrl(state.anistarRoute);
+        return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + '/anime/';
     }
 
-    function sortOptions(state) {
+    function sortOptions(state, url) {
         var sort = SORT[state.sort] || SORT[0];
         return {
-            body: form({ dlenewssortby: sort.key, dledirection: sort.direction, set_new_sort: '', set_direction_sort: '' })
+            body: form({ dlenewssortby: sort.key, dledirection: sort.direction, set_new_sort: '', set_direction_sort: '' }),
+            headers: { Referer: url }, auth: Boolean(session), returnHeaders: true
         };
     }
 
     function searchUrl(state, page) {
-        var url = SEARCH_URL + searchEncode(state.query) + '&skin_name=new36';
+        var url = SITE + SEARCH_PATH + searchEncode(state.query) + '&skin_name=new36';
         if (page === 1) return url;
         return url + '&' + form({ search_start: page, result_from: (page - 1) * SEARCH_PAGE_SIZE + 1 });
     }
@@ -422,7 +473,7 @@
                     nativeCookies.clear();
                     setSession(null);
                 }
-                throw new Error('Войдите в AniStar в настройках Anistar.');
+                throw new Error(LOGIN_PROMPT);
             }
             return catalogPage(doc, url, true);
         });
@@ -435,37 +486,71 @@
         return pending;
     }
 
+    function sortApplied(doc, sort) {
+        var active = doc.querySelector('#news_set_sort .sort-actv[onclick]');
+        var choice = active && active.getAttribute('onclick').match(/dle_change_sort\(\s*['"](\w+)['"]\s*,\s*['"](asc|desc)['"]/);
+        return Boolean(choice && choice[1] === sort.key && choice[2] !== sort.direction);
+    }
+
+    function compareCards(state, left, right) {
+        var sort = SORT[state.sort] || SORT[0];
+        var a = left.anistarSort || {};
+        var b = right.anistarSort || {};
+        var compared = sort.key === 'title' ? left.title.localeCompare(right.title, 'ru') : (a[sort.key] || 0) - (b[sort.key] || 0);
+        if (!compared && sort.key === 'date') compared = Number(left.id.split(':').pop()) - Number(right.id.split(':').pop());
+        return sort.direction === 'asc' ? compared : -compared;
+    }
+
     function readCatalogPage(cursor, state) {
-        if (state.anistarList) return readBookmarkPage(cursor);
+        if (state.anistarList) return readBookmarkPage(siteUrl(cursor));
         var url = state.query ? searchUrl(state, cursor) : desktopUrl(cursor);
-        var options = !state.query && state.sortApplied ? sortOptions(state) : { plainGet: true };
-        return pageDocument(url, options).then(function (doc) {
-            var page = catalogPage(doc, url, Boolean(state.query));
-            if (state.anistarHome && !state.query && cursor === CATALOG && !state.sortApplied && !page.rows.length) {
-                var title = nodeText(doc, 'title').slice(0, 90);
-                throw new Error('Каталог AniStar пуст. Заголовок ответа: ' + escapeHtml(title || 'отсутствует') + '.');
-            }
+        var sorting = Boolean(!state.query && state.sortApplied);
+        var sort = SORT[state.sort] || SORT[0];
+        var options = sorting ? sortOptions(state, url) : { plainGet: true };
+        var backup = !state.query && state.year && !state.anistarRoute && cursor === yearUrl(state.year) ?
+            desktopUrl(SITE + '/index.php?' + form({ do: 'xfsearch', xf: state.year, type: 'year', r: 'anime' })) : '';
+
+        function read(doc, address) {
+            var page = catalogPage(doc, address, Boolean(state.query));
             if (state.query) {
                 var next = doc.querySelector('#nextlink[onclick], #nextlink [onclick], .pagenav .r [onclick]');
                 var match = next && next.getAttribute('onclick').match(/list_submit\(\s*['"]?(\d+)/);
                 var linked = page.next && Number(new URL(page.next).searchParams.get('search_start'));
                 var nextPage = match ? Number(match[1]) : linked;
                 page.next = nextPage > cursor ? nextPage : 0;
-            } else if (state.sortApplied) {
-                var activeSort = doc.querySelector('#news_set_sort .sort-actv[onclick]');
-                var selected = activeSort && activeSort.getAttribute('onclick').match(/dle_change_sort\(\s*['"](\w+)['"]\s*,\s*['"](asc|desc)['"]/);
-                var sort = SORT[state.sort] || SORT[0];
-                if (selected && (selected[1] !== sort.key || selected[2] === sort.direction)) {
-                    throw new Error('AniStar не применил выбранную сортировку.');
-                }
+            } else if (sorting && !sortApplied(doc, sort)) {
+                page.localSort = true;
             }
+            if (/^\/hentai(?:\/|$)/i.test(sitePath(address))) page.rows.forEach(function (row) {
+                row.card.adult = true;
+                row.card.restrict = 18;
+            });
             rememberGenres(page.rows);
             return page;
+        }
+
+        function fetchPage(address) {
+            return pageDocument(address, options).then(function (doc) { return read(doc, address); }).catch(function (error) {
+                if (!sorting) throw error;
+                return pageDocument(address, { plainGet: true }).then(function (doc) { return read(doc, address); });
+            });
+        }
+
+        return fetchPage(url).then(function (page) {
+            return backup && !page.rows.length ? fetchPage(backup) : page;
+        }, function (error) {
+            if (backup) return fetchPage(backup);
+            throw error;
         });
     }
 
     function readGenreDirectory(doc) {
-        var links = readLinks(doc, '/filter/janrs/');
+        var links = [];
+        Array.prototype.forEach.call(doc.querySelectorAll('.news .head, .shortstory .head'), function (head) {
+            titleGenres(head).forEach(function (entry) {
+                if (!links.some(function (genre) { return genre.url === entry.url; })) links.push(entry);
+            });
+        });
         Array.prototype.forEach.call(doc.querySelectorAll('.cat_anime.hid_ul'), function (section) {
             if (nodeText(section, '.tit_sp').toLowerCase() !== 'аниме по жанрам') return;
             Array.prototype.forEach.call(section.querySelectorAll('a[href]'), function (link) {
@@ -479,13 +564,27 @@
         return links;
     }
 
+    function initGenres() {
+        GENRES.forEach(function (entry) {
+            var url = SITE + '/' + entry[1] + '/';
+            genreIndex.set(url, { url: url, title: entry[0] });
+        });
+        var cached = Lampa.Storage.get(hostStorageKey(GENRE_CACHE), {});
+        if (cached && Array.isArray(cached.items)) cached.items.forEach(function (entry) {
+            var url = siteUrl(entry.url);
+            if (url && !genreIndex.has(url)) genreIndex.set(url, { url: url, title: entry.title });
+        });
+    }
+
     function refreshGenres() {
         if (!genreRefresh) {
+            var origin = SITE;
             genreRefresh = pageDocument(desktopUrl(SITE + '/filter/janrs/'), { plainGet: true }).then(function (doc) {
+                if (origin !== SITE) return;
                 var genres = readGenreDirectory(doc);
                 if (!genres.length) throw new Error('AniStar не вернул справочник жанров.');
                 genres.forEach(function (genre) { genreIndex.set(genre.url, genre); });
-                Lampa.Storage.set(GENRE_CACHE, { items: Array.from(genreIndex.values()) });
+                Lampa.Storage.set(hostStorageKey(GENRE_CACHE), { items: Array.from(genreIndex.values()) });
             }).catch(function () {
                 // Results already loaded and the previous session are still available as a fallback.
             });
@@ -503,9 +602,13 @@
         if (state.year && (state.query || state.anistarRoute) && row.card.release_date.slice(0, 4) !== String(state.year)) return false;
         if (!state.genre || (!state.query && !state.year && !state.anistarRoute)) return true;
         var genre = genreIndex.get(state.genre);
-        return row.genres.some(function (entry) {
-            return entry.url === state.genre || (genre && entry.title.toLowerCase() === genre.title.toLowerCase());
-        }) || (row.categories || []).indexOf(state.genre) !== -1;
+        var path = sitePath(state.genre);
+        return (path === '/hentai/' && row.card.adult) || row.genres.some(function (entry) {
+            return sitePath(entry.url) === path || (genre && entry.title.toLowerCase() === genre.title.toLowerCase());
+        }) || (row.categories || []).some(function (category) {
+            var categoryPath = sitePath(category);
+            return categoryPath === path || categoryPath === '/anime' + path;
+        });
     }
 
     function getList(state) {
@@ -522,6 +625,7 @@
         var cursor = list.next;
         var before = list.cards.length;
         return readCatalogPage(cursor, state).then(function (page) {
+            list.localSort = list.localSort || page.localSort;
             list.visited.add(cursor);
             list.next = list.visited.has(page.next) ? '' : page.next;
             page.rows.forEach(function (row) {
@@ -550,7 +654,10 @@
         work.then(function () {
             if (state.activity && state.activity.component.destroyed) return;
             list.shown = list.cards.length;
-            success({ page: page, results: list.cards.slice(start), total_pages: page + (list.next ? 1 : 0),
+            var results = list.cards.slice(start);
+            if (list.localSort) results.sort(compareCards.bind(null, state));
+            success({ page: page, results: results, sortOrder: list.localSort ? list.cards.slice().sort(compareCards.bind(null, state)) : null,
+                total_pages: page + (list.next ? 1 : 0),
                 message: emptyMessage(list) });
         }).catch(function (error) {
             if (state.activity && state.activity.component.destroyed) return;
@@ -577,6 +684,7 @@
             if (Lampa.Activity.active() !== origin) return;
             if (!list.cards.length) Lampa.Noty.show(emptyMessage(list));
             else {
+                if (list.localSort) Lampa.Noty.show('AniStar не подтвердил сортировку. Упорядочены загруженные карточки.');
                 origin.activity.loader(false);
                 if (origin.anistarResults && state.anistarResults) Lampa.Activity.replace(state, true);
                 else Lampa.Activity.push(state);
@@ -613,6 +721,7 @@
         var root = $('<div class="anistar-screen"></div>');
         var grid = $('<div class="mapping--grid cols--6"></div>').appendTo(root);
         var ids = new Set();
+        var itemsById = new Map();
         var focused = null;
         var loading = false;
         var total = 1;
@@ -646,6 +755,7 @@
             item.find('.card__title').text(data.title);
             item.find('.card__age').text(data.release_date.slice(0, 4));
             item.appendTo(grid);
+            itemsById.set(data.id, item);
             item.on('hover:enter', function () {
                 Lampa.Activity.push({ component: 'full', method: 'movie', source: SOURCE,
                     card: data, id: data.id, url: '' });
@@ -666,6 +776,7 @@
                 if (destroyed) return;
                 total = page.total_pages;
                 page.results.forEach(append);
+                if (page.sortOrder) page.sortOrder.forEach(function (card) { grid.append(itemsById.get(card.id)); });
                 if (initial && !page.results.length) Lampa.Noty.show(page.message);
                 if (initial) component.activity.loader(false);
                 refreshFocus();
@@ -812,22 +923,18 @@
         }
 
         function genres() {
-            Lampa.Controller.toggle('content');
-            refreshGenres().then(function () {
-                if (Lampa.Activity.active() !== activity) return;
-                var items = Array.from(genreIndex.values()).sort(function (left, right) {
-                    return left.title.localeCompare(right.title, 'ru', { sensitivity: 'base' });
-                }).map(function (entry) {
-                    return { title: escapeHtml(entry.title), value: entry.url };
-                });
-                if (!items.length) {
-                    Lampa.Noty.show('Не удалось загрузить жанры AniStar.');
-                    render();
-                    return;
-                }
-                items.unshift({ title: 'Все', value: '' });
-                choose('Жанры', 'genre', items);
+            var known = new Map();
+            genreIndex.forEach(function (entry) {
+                var key = entry.title.toLowerCase().replace(/ё/g, 'е');
+                if (!known.has(key)) known.set(key, entry);
             });
+            var items = Array.from(known.values()).sort(function (left, right) {
+                return left.title.localeCompare(right.title, 'ru', { sensitivity: 'base' });
+            }).map(function (entry) {
+                return { title: escapeHtml(entry.title), value: entry.url };
+            });
+            items.unshift({ title: 'Все', value: '' });
+            choose('Жанры', 'genre', items);
         }
 
         function years() {
@@ -900,6 +1007,16 @@
             favoriteUrl: action === 'add' || action === 'del' ? favoriteUrl : '' };
     }
 
+    function openAccountSettings() {
+        function open() {
+            Lampa.Controller.toggle('settings');
+            Lampa.Settings.create(SOURCE);
+        }
+        if (Lampa.ParentalControl && typeof Lampa.ParentalControl.personal === 'function') {
+            Lampa.ParentalControl.personal('settings', open, false, true);
+        } else open();
+    }
+
     function chooseStatus(movie) {
         var activity = Lampa.Activity.active();
         var controller = Lampa.Controller.enabled().name;
@@ -908,16 +1025,15 @@
             if (Lampa.Activity.active() === activity) Lampa.Controller.toggle(controller);
         }
 
+        function prompt() {
+            Lampa.Select.show({ title: 'Статусы', items: [{ title: LOGIN_PROMPT }],
+                onSelect: openAccountSettings, onBack: restore });
+        }
+
+        if (!session) { prompt(); return; }
         pageDocument(movie.url, { auth: true }).then(function (doc) {
             if (Lampa.Activity.active() !== activity) return;
-            if (!readSession(doc)) {
-                Lampa.Select.show({
-                    title: 'Статусы',
-                    items: [{ title: 'Войдите в AniStar в настройках Anistar.', noenter: true }],
-                    onBack: restore
-                });
-                return;
-            }
+            if (!readSession(doc)) { prompt(); return; }
             var current = articleSettings(doc, movie);
             var pending = false;
             var items = STATUS.map(function (entry) {
@@ -952,7 +1068,7 @@
                     update.then(function () {
                         return pageDocument(movie.url, { auth: true });
                     }).then(function (updated) {
-                        if (!readSession(updated)) throw new Error('Войдите в AniStar в настройках Anistar.');
+                        if (!readSession(updated)) throw new Error(LOGIN_PROMPT);
                         bookmarkPages.clear();
                         current = articleSettings(updated, movie);
                         items.forEach(function (row) {
@@ -981,10 +1097,10 @@
         var busy = false;
 
         function render() {
-            var values = { login: username, password: password ? '••••••••' : '', profile: session ? session.name : '' };
+            var values = { login: username, password: password ? '••••••••' : '', profile: session ? session.name : '', address: SITE };
             Object.keys(rows).forEach(function (key) {
                 var personal = key === 'profile' || key === 'signout';
-                rows[key].toggleClass('hide', personal !== Boolean(session));
+                rows[key].toggleClass('hide', key !== 'address' && personal !== Boolean(session));
                 rows[key].find('.settings-param__value').text(values[key] || '');
             });
         }
@@ -1003,7 +1119,7 @@
                 return;
             }
             busy = true;
-            pageDocument(CATALOG, { auth: true }).then(function (doc) {
+            pageDocument(SITE + '/anime/', { auth: true }).then(function (doc) {
                 var known = readSession(doc);
                 if (known) return known;
                 var login = doc.querySelector('input[name="login_name"]');
@@ -1018,13 +1134,13 @@
                 fields.login_name = username;
                 fields.login_password = password;
                 password = '';
-                var target = siteUrl(loginForm.getAttribute('action') || CATALOG, CATALOG);
+                var target = siteUrl(loginForm.getAttribute('action') || SITE + '/anime/', SITE + '/anime/');
                 if (!target || !/^post$/i.test(loginForm.getAttribute('method') || '')) {
                     throw new Error('Форма входа AniStar изменилась.');
                 }
                 // Android APK 1.13.7 sends post_data as-is, so pass the form string.
                 return pageDocument(target, { body: form(fields), auth: true }).then(function (signed) {
-                    return pageDocument(CATALOG, { auth: true }).then(function (check) {
+                    return pageDocument(SITE + '/anime/', { auth: true }).then(function (check) {
                         var verified = readSession(check);
                         if (verified) return verified;
                         if (readSession(signed)) throw new Error('Lampa не сохранила сессию AniStar.');
@@ -1100,11 +1216,50 @@
         row('signin', 'Выполнить вход', signIn);
         row('profile', 'Профиль');
         row('signout', 'Выйти из аккаунта', signOut);
+        row('address', 'Актуальный адрес сайта', function () {
+            if (busy) return;
+            editText({ title: 'Актуальный адрес сайта', value: SITE === DEFAULT_SITE ? '' : SITE, free: true, nomic: true }, function (value) {
+                if (value === null) return;
+                var address = configuredOrigin(value);
+                if (!address) {
+                    Lampa.Noty.show('Введите адрес сайта, например https://anistar.org.');
+                    return;
+                }
+                if (address === SITE) return;
+                previousSite = SITE;
+                SITE = address;
+                username = '';
+                password = '';
+                session = null;
+                nativeCookies.clear();
+                bookmarkPages.clear();
+                lists = new WeakMap();
+                watchPlaylists = new WeakMap();
+                genreRefresh = null;
+                genreIndex.clear();
+                Lampa.Storage.set(SITE_KEY, address === DEFAULT_SITE ? '' : address);
+                restoreAccount();
+                initGenres();
+                var activity = Lampa.Activity.active();
+                if (activity && activity.component === 'anistar_catalog' && activity.activity) {
+                    activity.page = 1;
+                    if (typeof activity.activity.refresh === 'function') activity.activity.refresh();
+                }
+                render();
+                Lampa.Noty.show('Адрес AniStar сохранён.');
+            });
+        });
         Lampa.SettingsApi.addParam({
             component: SOURCE,
             param: { name: SOURCE + '_about', type: 'static' },
             field: { name: 'О плагине', description: 'Версия ' + VERSION }
         });
+    }
+
+    function titleGenres(head) {
+        var entries = Array.from(head.querySelectorAll('li'));
+        var row = entries.find(function (entry) { return /^Жанр(?:ы)?\s*:/i.test(clean(entry.textContent)); });
+        return row || !entries.length ? readLinks(row || head, '/filter/janrs/') : [];
     }
 
     function labeledValue(scope, label) {
@@ -1117,15 +1272,22 @@
     }
 
     function readComments(doc) {
-        return Array.from(doc.querySelectorAll('#dle-comments-list .comment')).map(function (comment) {
-            return {
-                author: nodeText(comment, '.autor_nav a[href*="/user/"]'),
-                date: nodeText(comment, '.scomment'),
-                text: nodeText(comment, '[id^="comm-id-"], .coment_text')
-            };
-        }).filter(function (comment) {
-            return comment.text;
+        var root = doc.querySelector('#dle-comments-list');
+        if (!root) return [];
+        var entries = new Set();
+        Array.prototype.forEach.call(root.querySelectorAll('[id^="comm-id-"], .coment_text, .comment__text, .comment-body, .comment-content'), function (body) {
+            var comment = body.closest('.comment, [id^="comment-id-"]') || body.parentElement;
+            if (!comment || !root.contains(comment)) return;
+            entries.add(comment);
         });
+        return Array.from(entries, function (comment) {
+            return {
+                author: nodeText(comment, '.autor_nav a[href*="/user/"], .comment__author, .autor_nav, [itemprop="author"]') || 'Гость',
+                date: nodeText(comment, '.scomment, .comment__date, .comment-date, time'),
+                text: nodeText(comment, '[id^="comm-id-"], .coment_text, .comment__text, .comment-body, .comment-content'),
+                anistarComment: true
+            };
+        }).filter(function (comment) { return comment.text; });
     }
 
     function playerText(value) {
@@ -1189,7 +1351,7 @@
         var score = rating.match(/(\d+(?:[.,]\d+)?)\s*\/\s*10/);
         movie.vote_average = score ? Number(score[1].replace(',', '.')) : 0;
         movie.anistar = {
-            genres: readLinks(head, '/filter/janrs/'),
+            genres: titleGenres(head),
             directors: readLinks(head, '/filter/director/'),
             authors: readLinks(head, '/filter/author/'),
             translation: labeledValue(root, /^Озвучка:/i),
@@ -1217,7 +1379,9 @@
                 failure();
                 return;
             }
-            success({ movie: movie });
+            var result = { movie: movie };
+            if (movie.anistar.comments.length && Lampa.Maker && typeof Lampa.Maker.make === 'function') result.discuss = { result: movie.anistar.comments, anistarComments: true };
+            success(result);
         }).catch(function (error) {
             if (component && component.destroyed) return;
             Lampa.Noty.show(error.message);
@@ -1278,20 +1442,36 @@
     }
 
     function onFull(event) {
-        if (event.type !== 'build') return;
         var movie = event.data && event.data.movie || event.props && event.props.get('movie');
         if (!movie || movie.source !== SOURCE || !movie.anistar) return;
         var details = movie.anistar;
+        if (event.type === 'start' && event.link && typeof event.link.use === 'function') {
+            event.link.use({ onInstance: function (line) {
+                if (!line.data || !line.data.anistarComments) return;
+                line.data.results = line.data.results.filter(function (entry) { return entry.anistarComment; });
+                line.use({
+                    onlyCreateAndAppend: function (entry) {
+                        var review = Lampa.Maker.make('Discuss', { text: escapeHtml(entry.text), like_count: '',
+                            params: { line: { full_text: false } } }, function (modules) { return modules.only('Line'); });
+                        review.create();
+                        var html = $(review.render(true));
+                        styleComment(html, entry, false);
+                        html.on('hover:enter', function () { openComments(movie); });
+                        this.emit('append', review, entry);
+                    },
+                    onlyMore: function () { openComments(movie); }
+                });
+            } });
+            return;
+        }
+        if (event.type !== 'build') return;
         var owner = event.item;
         if (event.name === 'description') {
             detailLinks(owner, 'Жанр', details.genres);
             detailLinks(owner, 'Производство', details.directors);
             detailLinks(owner, 'Автор', details.authors);
-            if (details.comments.length) {
-                detailAction(owner, 'Комментарии', details.comments.length, function () {
-                    Lampa.Activity.push({ component: COMMENTS, source: SOURCE, title: 'Комментарии',
-                        page: 1, movie: movie, url: '' });
-                });
+            if (details.comments.length && (!Lampa.Maker || typeof Lampa.Maker.make !== 'function')) {
+                detailAction(owner, 'Комментарии', details.comments.length, function () { openComments(movie); });
             }
             return;
         }
@@ -1299,11 +1479,11 @@
 
         var card = $(owner.html);
         var main = card.find('.full-start-new__details, .full-start__details').first();
-        var year = movie.release_date.slice(0, 4);
+        var genreText = details.genres.map(function (genre) { return genre.title; }).join(' | ');
         if (main.length) {
             main.empty();
-            [year, details.translation, details.series && 'Серии: ' + details.series].filter(Boolean).forEach(function (value, index) {
-                if (index) main.append('<span class="full-start-new__split">●</span>');
+            [details.series && 'Серии: ' + details.series, details.translation, genreText].filter(Boolean).forEach(function (value, index) {
+                if (index) main.append($('<span class="full-start-new__split">●</span>'));
                 main.append($('<span></span>').text(value));
             });
         }
@@ -1315,7 +1495,7 @@
         ratingBox.toggleClass('hide', !movie.vote_average).find('.source--name').text(NAME);
         if (details.released) {
             var released = $('<div class="anistar-released"></div>').text(details.released);
-            if (main.length) main.after(released);
+            if (main.length) main.before(released);
             else card.find('.full-start-new__title, .full-start__title').first().after(released);
         }
         var buttons = card.find('.full-start-new__buttons, .full-start__buttons').first();
@@ -1327,7 +1507,10 @@
             '<svg viewBox="0 0 24 24"><path fill="currentColor" d="m8 4 12 8-12 8z"/></svg>', function () {
             openWatch(movie);
         }, owner);
-        var favorite = fullAction('Избранное', ICON, function () { chooseStatus(movie); }, owner);
+        var bookIcon = buttons.find('.button--book svg')[0];
+        var favorite = fullAction('Избранное', bookIcon ? bookIcon.outerHTML :
+            '<svg viewBox="0 0 24 24"><path d="M5 3h14v18l-7-4-7 4z" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+            function () { chooseStatus(movie); }, owner);
         var initial = true;
 
         function buttonsOnly() {
@@ -1562,10 +1745,6 @@
         return component;
     }
 
-    function appendRow(owner, html) {
-        owner.append(html);
-    }
-
     function watchComponent(object) {
         var component = rowComponent();
         var movie = object.movie;
@@ -1670,18 +1849,26 @@
         return component;
     }
 
+    function openComments(movie) {
+        Lampa.Activity.push({ component: COMMENTS, source: SOURCE, title: 'Комментарии', page: 1, movie: movie, url: '' });
+    }
+
+    function styleComment(html, entry, full) {
+        var text = !full && entry.text.length > 120 ? entry.text.slice(0, 120) + '…' : entry.text;
+        html.find('.full-review__text').text(text);
+        html.find('.full-review__footer').text([entry.author, entry.date].filter(Boolean).join(' · '));
+        if (full) html.addClass('full-review--full-text');
+    }
+
     function commentsComponent(object) {
         var component = rowComponent();
         component.use({
-            onCreate: function () {
-                this.build({ results: object.movie.anistar.comments });
-            },
+            onCreate: function () { this.build({ results: object.movie.anistar.comments }); },
             onlyCreateAndAppend: function (entry) {
-                var row = $('<div class="anistar-comment selector"><strong></strong><small></small><p></p></div>');
-                row.find('strong').text(entry.author);
-                row.find('small').text(entry.date);
-                row.find('p').text(entry.text);
-                appendRow(this, row);
+                var row = catalogTemplate('full_review', '.full-review__text',
+                    '<div class="full-review selector"><div class="full-review__text"></div><div class="full-review__footer"></div></div>');
+                styleComment(row, entry, true);
+                this.append(row);
             }
         });
         return component;
@@ -1700,21 +1887,15 @@
             '.anistar-online__source{background:rgba(255,255,255,.08);padding:.75em 1em;margin:0 0 .75em;border-radius:.3em}',
             '.anistar-online__source.focus{outline:.18em solid currentColor}',
             '.anistar-online .season-episode__img img{object-fit:cover}',
-            '@media(max-width:700px){.anistar-online__info{display:none}.anistar-online{padding:0 .7em}}',
-            '.anistar-comment{border-radius:.35em;background:rgba(255,255,255,.08);padding:1em 1.2em;margin:.45em 0}',
-            '.anistar-comment small{display:block;opacity:.65;margin:.4em 0}',
-            '.anistar-comment p{line-height:1.4}',
-            '.anistar-comment.focus{background:#fff;color:#222}'
+            '@media(max-width:700px){.anistar-online__info{display:none}.anistar-online{padding:0 .7em}}'
         ].join('\n')).appendTo('head');
     }
 
     function init() {
         if (Lampa.Api.sources[SOURCE]) return;
+        SITE = configuredOrigin(Lampa.Storage.get(SITE_KEY, '')) || DEFAULT_SITE;
         restoreAccount();
-        var cached = Lampa.Storage.get(GENRE_CACHE, {});
-        if (cached && Array.isArray(cached.items)) {
-            cached.items.forEach(function (entry) { if (siteUrl(entry.url)) genreIndex.set(entry.url, entry); });
-        }
+        initGenres();
         Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add('anistar_catalog', catalogComponent);
         Lampa.Component.add(VIEW, watchComponent);
