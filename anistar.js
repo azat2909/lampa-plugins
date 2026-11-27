@@ -1,15 +1,16 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.0
+ * Версия 0.5.1
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.0';
+    var VERSION = '0.5.1';
     var SITE = 'https://anistar.org';
     var CATALOG = SITE + '/hentai/';
+    var CATALOG_PATH = /^\/hentai\/(?:page\/\d+\/)?$/i;
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
     var PAGE_SIZE = 20;
@@ -82,6 +83,17 @@
         return url.href;
     }
 
+    function desktopUrl(value) {
+        var url = new URL(value);
+        url.searchParams.set('skin_name', 'new36');
+        return url.href;
+    }
+
+    function catalogSection(value) {
+        var url = urlOf(value);
+        return Boolean(url && url.origin === SITE && CATALOG_PATH.test(url.pathname));
+    }
+
     function nodeText(scope, selector) {
         var node = scope.querySelector(selector);
         return node ? clean(node.textContent) : '';
@@ -114,17 +126,19 @@
 
     function request(url, options) {
         options = options || {};
-        var native = android();
+        var publicCatalog = options.publicCatalog === true;
+        var native = !publicCatalog && android();
         return new Promise(function (resolve, reject) {
             var network = new Lampa.Reguest();
             var body = options.body;
             var headers = Object.assign({}, options.headers);
             var method = body === undefined ? 'GET' : 'POST';
             var local = Boolean(siteUrl(url));
+            var timeout = publicCatalog ? 20000 : TIMEOUT;
             var returned = false;
             var timer = setTimeout(function () {
                 finish(reject, new Error('AniStar не ответил вовремя.'));
-            }, TIMEOUT + 1500);
+            }, timeout + 1500);
 
             function finish(callback, value) {
                 if (returned) return;
@@ -144,10 +158,16 @@
                 headers.Cookie = Array.from(nativeCookies, function (entry) { return entry.join('='); }).join('; ');
             }
             if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
-            var settings = {
-                type: method, dataType: 'text', timeout: TIMEOUT, headers: headers,
-                returnHeaders: native, withCredentials: options.auth === true
-            };
+            var settings = { dataType: 'text', timeout: timeout };
+            if (publicCatalog) {
+                // Keep the request shape used by 0.4.55 on Android TV and Tizen.
+                body = false;
+            } else {
+                settings.type = method;
+                settings.headers = headers;
+                settings.returnHeaders = native;
+                settings.withCredentials = options.auth === true;
+            }
             // The Android bridge keeps request bodies out of its debug logs in binary mode.
             if (native && options.secret) {
                 settings.bodyEncoding = 'base64';
@@ -155,7 +175,7 @@
             }
 
             try {
-                network[native ? 'native' : 'silent'](url, function (response) {
+                network[publicCatalog || native ? 'native' : 'silent'](url, function (response) {
                     if (returned) return;
                     var html = response;
                     if (native && typeof response === 'string' && /^\s*\{/.test(response)) {
@@ -187,7 +207,7 @@
 
     function readLinks(scope, prefix) {
         var links = new Map();
-        scope.querySelectorAll('a[href]').forEach(function (link) {
+        Array.prototype.forEach.call(scope.querySelectorAll('a[href]'), function (link) {
             var url = urlOf(link.getAttribute('href'));
             var title = clean(link.textContent);
             if (!url || url.origin !== SITE || !title || url.pathname.indexOf(prefix) !== 0) return;
@@ -212,9 +232,11 @@
         var year = yearLink && clean(yearLink.textContent);
         var image = node.querySelector('.news_avatar img.main-img, .news_avatar img[itemprop="image"], .news_avatar img');
         var poster = image && urlOf(image.getAttribute('data-src') || image.getAttribute('src'), article);
-        var isAdult = Array.from(node.querySelectorAll('.title_left .tags a')).some(function (link) {
-            return siteUrl(link.getAttribute('href')) === CATALOG;
+        var categories = node.querySelectorAll('.title_left .tags a');
+        var isAdult = Array.prototype.some.call(categories, function (link) {
+            return catalogSection(link.getAttribute('href'));
         });
+        if (fallback && fallback.adult) isAdult = true;
         return {
             id: SOURCE + ':' + id,
             source: SOURCE,
@@ -224,19 +246,21 @@
             tagline: titles[1] || (fallback && fallback.tagline) || '',
             release_date: /^\d{4}$/.test(year) ? year + '-01-01' : (fallback && fallback.release_date) || '',
             poster: poster ? poster.href : (fallback && fallback.poster) || '',
-            adult: isAdult || Boolean(fallback && fallback.adult),
-            restrict: isAdult || (fallback && fallback.adult) ? 18 : 0
+            adult: isAdult,
+            restrict: isAdult ? 18 : 0
         };
     }
 
     function catalogPage(doc, url, adultOnly) {
-        var root = doc.querySelector('#dle-content');
+        var hentai = catalogSection(url);
+        var root = doc.querySelector('#dle-content') || (hentai && doc.querySelector('.news .title_left') && doc);
         if (!root) throw new Error('AniStar не вернул список тайтлов.');
         var rows = [];
         var seen = new Set();
-        root.querySelectorAll('.news').forEach(function (node) {
+        Array.prototype.forEach.call(root.querySelectorAll('.news'), function (node) {
             var link = node.querySelector('.title_left > a[href], .title_left h2 a[href]');
-            var card = link && basicCard(node, siteUrl(link.getAttribute('href')));
+            var inheritedCategory = hentai && !node.querySelector('.title_left .tags a') ? { adult: true } : null;
+            var card = link && basicCard(node, siteUrl(link.getAttribute('href')), inheritedCategory);
             if (!card || (adultOnly && !card.adult) || seen.has(card.id)) return;
             seen.add(card.id);
             rows.push({ card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
@@ -298,10 +322,14 @@
     function readCatalogPage(cursor, state) {
         var personal = Boolean(state.anistarList);
         var url = state.query ? SEARCH_URL : cursor;
-        var options = personal ? { auth: true } : state.query ? searchOptions(state, cursor) : sortOptions(state);
-        return pageDocument(url, options).then(function (doc) {
+        var options = state.anistarHome ? { publicCatalog: true } :
+            personal ? { auth: true } : state.query ? searchOptions(state, cursor) : sortOptions(state);
+        return pageDocument(state.anistarHome ? desktopUrl(url) : url, options).then(function (doc) {
             if (personal && !readSession(doc)) throw new Error('Войдите в AniStar в настройках Anistar.');
             var page = catalogPage(doc, url, !personal);
+            if (state.anistarHome && url === CATALOG && !page.rows.length) {
+                throw new Error('AniStar не вернул карточки главного каталога.');
+            }
             if (state.query) {
                 var next = doc.querySelector('#dle-content #nextlink[onclick]');
                 var match = next && next.getAttribute('onclick').match(/list_submit\((\d+)\)/);
@@ -327,7 +355,7 @@
             visited.add(url);
             // This listing only contains AniStar's Hentai category. Its cards
             // link to the site's /filter/janrs/ pages with the original encoding.
-            return pageDocument(url, sortOptions({ sort: 0 })).then(function (doc) {
+            return pageDocument(desktopUrl(url), { publicCatalog: true }).then(function (doc) {
                 var page = catalogPage(doc, url, true);
                 rememberGenres(page.rows, current);
                 rememberGenres(page.rows);
@@ -346,7 +374,8 @@
     }
 
     function canWatch() {
-        return Lampa.Utils.canWatchChildren('18+', Lampa.Account.Permit.profile.age);
+        var permit = Lampa.Account && Lampa.Account.Permit;
+        return Boolean(permit && Lampa.Utils.canWatchChildren('18+', permit.profile && permit.profile.age));
     }
 
     function filtered(row, state) {
@@ -384,13 +413,24 @@
         }
         var page = Number(state.page) || 1;
         var component = state.activity && state.activity.component;
+        var offset = 0;
         list.work = list.work.catch(function () {}).then(function () {
-            return fillList(state, list, page * PAGE_SIZE, component);
+            if (state.anistarHome && list.firstPageSize === undefined) {
+                return fillList(state, list, 1, component).then(function () {
+                    list.firstPageSize = Math.min(PAGE_SIZE, list.cards.length);
+                });
+            }
+        }).then(function () {
+            if (state.anistarHome && page === 1) return;
+            offset = state.anistarHome ? list.firstPageSize + (page - 2) * PAGE_SIZE : (page - 1) * PAGE_SIZE;
+            return fillList(state, list, offset + PAGE_SIZE, component);
         }).then(function () {
             if (component && component.destroyed) return;
-            var results = list.cards.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+            var size = state.anistarHome && page === 1 ? list.firstPageSize : PAGE_SIZE;
+            var results = list.cards.slice(offset, offset + size);
             if (state.anistarHome && page === 1) results = statusTiles().concat(results);
             var total = Math.ceil(list.cards.length / PAGE_SIZE);
+            if (state.anistarHome) total = 1 + Math.ceil((list.cards.length - list.firstPageSize) / PAGE_SIZE);
             if (list.next) total = Math.max(page + 1, total);
             success({ page: page, results: results, total_pages: Math.max(total, 1) });
         }).catch(function (error) {
@@ -398,7 +438,8 @@
             if (page > 1 && Number(state.page) === page) state.page = page - 1;
             Lampa.Noty.show(error.message);
             if (state.anistarHome && page === 1 && !list.cards.length) {
-                success({ page: 1, total_pages: 1, results: statusTiles() });
+                var retry = { id: SOURCE + ':retry', title: 'Повторить загрузку', anistarRetry: true };
+                success({ page: 1, total_pages: 1, results: statusTiles().concat(retry) });
             } else {
                 failure(error);
             }
@@ -436,12 +477,16 @@
             onlyCreateAndAppend: function (data) {
                 var entry = data.anistarTile;
                 var item;
-                if (entry) {
-                    item = Lampa.Maker.make('Register', { title: entry.title, count: '—' }, function (modules) {
+                if (entry || data.anistarRetry) {
+                    item = Lampa.Maker.make('Register', { title: data.title, count: '—' }, function (modules) {
                         return modules.only('Line', 'Callback');
                     });
                     item.use({
-                        onlyEnter: function () { openPersonal(entry); },
+                        onlyEnter: function () {
+                            if (entry) openPersonal(entry);
+                            else Lampa.Activity.replace({ title: NAME, component: 'anistar_catalog',
+                                source: SOURCE, page: 1, url: '', anistarHome: true });
+                        },
                         onCreate: function () {
                             $(this.render(true)).addClass('anistar-status-tile').find('.register__counter').hide();
                         }
