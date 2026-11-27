@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.8
+ * Версия 0.5.9
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.8';
+    var VERSION = '0.5.9';
     var SITE = 'https://anistar.org';
     var CATALOG = SITE + '/anime/';
     var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
@@ -1344,48 +1344,102 @@
         owner.use({ onlyGroupButtons: buttonsOnly });
     }
 
+    function episodeIdentity(title, type) {
+        var season = title.match(/(?:\bseason\s*|сезон\s*|\bs(?=\d+e))\s*(\d+)/i) ||
+            title.match(/(\d+)\s*[-–]?\s*(?:й\s*)?сезон/i);
+        var number = title.match(/(?:серия|эпизод|episode|\bs\d+e)\s*№?\s*(\d+(?:[.,]\d+)?)/i) ||
+            title.match(/(\d+(?:[.,]\d+)?)\s*(?:[-–]\s?(?:я|й)\s*)?(?:серия|эпизод|episode)/i) ||
+            title.match(/^\s*№?\s*(\d+(?:[.,]\d+)?)(?=\s*(?:$|[:.\-–—]))/);
+        var special = (type + ' ' + title).match(/спешл|спец(?:выпуск|эпизод)|special|\bOVA\b|\bONA\b|\bOAD\b|\bNCOP\b|\bNCED\b|трейлер|trailer|фильм|\bmovie\b/i);
+        var kind = '';
+        if (special && !/(?:фильм|movie)/i.test(special[0])) {
+            var label = special[0];
+            kind = /^(?:спешл|спец|special)/i.test(label) ? 'Спецвыпуск' :
+                /^(?:трейлер|trailer)$/i.test(label) ? 'Трейлер' : label.toUpperCase();
+            if (!number) number = title.match(/(?:спешл|спецвыпуск|спецэпизод|special|ova|ona|oad|ncop|nced|трейлер|trailer)\s*№?\s*(\d+(?:[.,]\d+)?)/i);
+        } else if (special && !number) kind = 'Фильм';
+        return { season: season ? Number(season[1]) : 1, kind: kind, number: number ? Number(number[1].replace(',', '.')) : null };
+    }
+
     function parsePlaylist(html, base) {
         var doc = parser.parseFromString(html, 'text/html');
         var translation = nodeText(doc, '#ListDub > span');
         var dubNames = new Map();
-        Array.prototype.forEach.call(doc.querySelectorAll('#ListDub li[id]'), function (entry) {
-            var id = entry.id.match(/\d+/);
+        Array.prototype.forEach.call(doc.querySelectorAll('#ListDub li'), function (entry) {
+            var id = (entry.getAttribute('data-id') || entry.getAttribute('value') || entry.id).match(/\d+/);
             if (id) dubNames.set(id[0], clean(entry.textContent));
         });
-        // The old player can embed the list without a named playlst variable.
-        var text = String(html || '').replace(/[\r\n]/g, ' ');
-        var entryPattern = /\btitle['"]?\s*:\s*(['"])(.*?)\1\s*,\s*['"]?media_id['"]?\s*:/g;
+
+        var text = String(html || '');
+        var entryPattern = /\btitle['"]?\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*,\s*['"]?media_id['"]?\s*:\s*("[^"]*"|'[^']*'|\d+)/g;
         var matches = [];
-        var entry;
-        while ((entry = entryPattern.exec(text))) matches.push(entry);
-        return matches.map(function (match, index) {
-            var block = text.slice(match.index, matches[index + 1] && matches[index + 1].index);
-            var title = playerText(match[2]);
-            var number = Number((title.match(/\d+/) || [])[0]) || index + 1;
+        var match;
+        while ((match = entryPattern.exec(text))) matches.push(match);
+        var episodes = matches.map(function (entry, index) {
+            var block = text.slice(entry.index, matches[index + 1] && matches[index + 1].index);
+            var rawTitle = clean(playerText(entry[1].slice(1, -1)).replace(/\\(['"])/g, '$1'));
+            var mediaId = entry[2].replace(/^['"]|['"]$/g, '');
+            var kind = (block.match(/\b(?:episode_type|type_episode)['"]?\s*:\s*['"]([^'"]+)/i) || [])[1] || '';
+            var identity = episodeIdentity(rawTitle, kind);
+            var statedNumber = block.match(/\b(?:episode_number|episode_num|num_episode)['"]?\s*:\s*['"]?(\d+(?:[.,]\d+)?)/i);
+            if (statedNumber) identity.number = Number(statedNumber[1].replace(',', '.'));
+            var statedSeason = block.match(/\b(?:season_number|season_num)['"]?\s*:\s*['"]?(\d+)/i);
+            if (statedSeason) identity.season = Number(statedSeason[1]);
             var quality = new Map();
-            var sections = /\b(?:files|files_as|files_mp4)['"]?\s*:\s*\[([^\]]*)\]/g;
+            var sections = /\b(?:files|files_as|files_mp4)['"]?\s*:\s*\[((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\]'"\x5c])*)\]/g;
             var section;
             while ((section = sections.exec(block))) {
-                var filesPattern = /\btitle['"]?\s*:\s*['"](\d+)['"]\s*,\s*['"]?file['"]?\s*:\s*(['"])(.*?)\2/g;
-                var file;
-                while ((file = filesPattern.exec(section[1]))) {
-                    var url = urlOf(playerText(file[3]), base, true);
-                    var size = Number(file[1]);
-                    if (!url || !size) continue;
+                var files = section[1].match(/\{(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^{}'"])*\}/g) || [];
+                files.forEach(function (file) {
+                    var size = Number((file.match(/\btitle['"]?\s*:\s*['"]?(\d+)/i) || [])[1]);
+                    var stream = file.match(/\b(?:file|url)['"]?\s*:\s*(['"])(.*?)\1/i);
+                    var url = stream && urlOf(playerText(stream[2]), base, true);
+                    if (!url || !size) return;
                     var hls = /\.m3u8$/i.test(url.pathname);
                     var previous = quality.get(size);
                     if (!previous || (!previous.hls && hls)) quality.set(size, { url: url.href, hls: hls, size: size });
-                }
+                });
             }
-            var files = Array.from(quality.values()).sort(function (left, right) { return right.size - left.size; });
-            var dub = (block.match(/\btype_dub\s*:\s*['"](\d+)['"]/) || [])[1] || '';
-            var thumbnail = (block.match(/\b(?:image|poster|thumbnail)\s*:\s*['"]([^'"]+)['"]/) || [])[1];
-            var image = thumbnail && urlOf(playerText(thumbnail), base);
-            return { number: number, title: title || 'Серия ' + number, files: files, dub: dub, image: image && image.href,
-                translation: dubNames.get(dub) || translation };
-        }).filter(function (entry) { return entry.files.length; }).sort(function (left, right) {
-            return left.number - right.number;
+            var dub = (block.match(/\btype_dub['"]?\s*:\s*['"]?(\d+)/) || [])[1] || '';
+            var imagePath = (block.match(/\b(?:image|poster|thumbnail)['"]?\s*:\s*['"]([^'"]+)['"]/) || [])[1];
+            var image = imagePath && urlOf(playerText(imagePath), base);
+            return Object.assign(identity, { mediaId: mediaId, dub: dub, image: image && image.href,
+                files: Array.from(quality.values()).sort(function (left, right) { return right.size - left.size; }),
+                translation: dubNames.get(dub) || (dubNames.size <= 1 ? translation : '') });
         });
+
+        var numbers = new Map();
+        function usedNumbers(episode) {
+            var group = [episode.season, episode.kind].join('/');
+            if (!numbers.has(group)) numbers.set(group, new Set());
+            return numbers.get(group);
+        }
+        episodes.forEach(function (episode) {
+            if (episode.number !== null) usedNumbers(episode).add(episode.number);
+        });
+        episodes.forEach(function (episode) {
+            if (episode.number === null && !episode.kind) {
+                var used = usedNumbers(episode);
+                episode.number = 1;
+                while (used.has(episode.number)) episode.number += 1;
+                used.add(episode.number);
+            }
+            episode.title = (episode.kind || 'Серия') + (episode.number === null ? '' : ' ' + episode.number);
+        });
+        return episodes.sort(function (left, right) {
+            return left.season - right.season || Number(Boolean(left.kind)) - Number(Boolean(right.kind)) ||
+                (left.number || 0) - (right.number || 0);
+        });
+    }
+
+    function mergeEpisodes(episodes) {
+        var byEpisode = new Map();
+        episodes.forEach(function (entry) {
+            var key = [entry.season, entry.kind, entry.number === null ? entry.mediaId : entry.number].join('/');
+            var previous = byEpisode.get(key);
+            if (!previous || (!previous.files.length && entry.files.length)) byEpisode.set(key, entry);
+        });
+        return Array.from(byEpisode.values());
     }
 
     function playerItems(movie) {
@@ -1412,10 +1466,15 @@
     function timeline(movie, episode) {
         if (!Lampa.Timeline || typeof Lampa.Timeline.view !== 'function') return undefined;
         var id = [movie.id, episode.dub, episode.number].join('/');
+        if (episode.kind || episode.season !== 1) id += '/' + [episode.season, episode.kind, episode.mediaId].join('/');
         return Lampa.Timeline.view(Lampa.Utils.hash(id));
     }
 
     function play(movie, episode, episodes) {
+        if (!episode.files.length) {
+            Lampa.Noty.show('AniStar пока не вернул видео для этой серии.');
+            return;
+        }
         var preferred = String(Lampa.Storage.get('video_quality_default', '1080')).replace(/p$/i, '') + 'p';
         var activity = Lampa.Activity.active();
         var headers = { Referer: movie.anistar.player, Origin: SITE };
@@ -1427,13 +1486,13 @@
                 title: decodeHtml(movie.title) + ' / ' + entry.title,
                 url: qualities[preferred] || entry.files[0].url,
                 quality: qualities, headers: headers,
-                movie: movie, season: 1, episode: entry.number, timeline: timeline(movie, entry)
+                movie: movie, season: entry.season, episode: entry.number === null ? 1 : entry.number, timeline: timeline(movie, entry)
             };
         }
         var item = media(episode);
         playerOrigin = { data: item, activity: activity };
         Lampa.Player.play(item);
-        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(episodes.map(media));
+        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(episodes.filter(function (entry) { return entry.files.length; }).map(media));
     }
 
     function rowComponent() {
@@ -1510,8 +1569,10 @@
     function watchComponent(object) {
         var component = rowComponent();
         var movie = object.movie;
-        var currentDub = '';
+        var currentDub = null;
         var groups = new Map();
+        var items;
+        var multipleSeasons = false;
         var layout = $('<div class="anistar-online"></div>');
         var sidebar = $('<aside class="anistar-online__info"></aside>').appendTo(layout);
         var column = $('<div class="anistar-online__episodes"></div>').appendTo(layout);
@@ -1536,10 +1597,12 @@
         function translations() {
             Lampa.Select.show({
                 title: 'Озвучка',
-                items: Array.from(groups.entries(), function (group) {
-                    return { title: escapeHtml(group[1][0].translation || 'Озвучка ' + group[0]),
-                        value: group[0], selected: group[0] === currentDub };
-                }),
+                items: [{ title: 'Все серии', value: null, selected: currentDub === null }].concat(
+                    Array.from(groups.entries(), function (group) {
+                        var label = group[1][0].translation || (group[0] ? 'Озвучка ' + group[0] : NAME);
+                        return { title: escapeHtml(label), value: group[0], selected: group[0] === currentDub };
+                    })
+                ),
                 onBack: function () { Lampa.Controller.toggle('content'); },
                 onSelect: function (entry) {
                     if (entry.value === currentDub) Lampa.Controller.toggle('content');
@@ -1562,17 +1625,19 @@
                         if (!groups.has(entry.dub)) groups.set(entry.dub, []);
                         groups.get(entry.dub).push(entry);
                     });
-                    currentDub = groups.has(object.anistarDub) ? object.anistarDub : groups.keys().next().value;
-                    owner.build({ results: [{ source: true }].concat(groups.get(currentDub)) });
+                    currentDub = groups.has(object.anistarDub) ? object.anistarDub : null;
+                    items = mergeEpisodes(currentDub === null ? episodes : groups.get(currentDub));
+                    multipleSeasons = new Set(items.map(function (entry) { return entry.season; })).size > 1;
+                    owner.build({ results: [{ source: true }].concat(items) });
                 }).catch(function (error) {
                     if (!owner.destroyed) owner.empty(error.message);
                 });
             },
             onlyCreateAndAppend: function (entry) {
-                var items = groups.get(currentDub);
-                var translation = items[0].translation || movie.anistar.translation || NAME;
                 if (entry.source) {
-                    var source = $('<div class="anistar-online__source"></div>').text('Источник · ' + translation);
+                    var sourceLabel = currentDub === null && groups.size > 1 ? 'Все серии' :
+                        items[0].translation || movie.anistar.translation || NAME;
+                    var source = $('<div class="anistar-online__source"></div>').text('Источник · ' + sourceLabel);
                     if (groups.size > 1) source.addClass('selector').on('hover:enter', translations);
                     this.append(source);
                     return;
@@ -1581,21 +1646,25 @@
                     '<div class="season-episode selector"><div class="season-episode__img"><img alt=""></div><div class="season-episode__body"><div class="season-episode__head"><div class="season-episode__title"></div><div class="season-episode__time"></div></div><div class="season-episode__timeline"></div><div class="season-episode__footer"><div class="season-episode__info"></div><div class="season-episode__quality"></div></div></div></div>');
                 row.addClass('selector');
                 row.find('.season-episode__title').text(entry.title);
-                row.find('.season-episode__time').text(movie.anistar.duration || '');
-                row.find('.season-episode__info').text(translation);
-                row.find('.season-episode__quality').text(entry.files[0].size + 'p');
+                row.find('.season-episode__time').text(entry.kind ? '' : movie.anistar.duration || '');
+                var episodeInfo = entry.translation || movie.anistar.translation || NAME;
+                if (multipleSeasons) episodeInfo = 'Сезон ' + entry.season + ' · ' + episodeInfo;
+                row.find('.season-episode__info').text(episodeInfo);
+                row.find('.season-episode__quality').text(entry.files.length ? entry.files[0].size + 'p' : 'Видео недоступно');
                 row.find('.season-episode__loader').hide();
                 var thumb = row.find('.season-episode__img').addClass('season-episode__img--loaded');
                 thumb.find('img').on('error', function () { $(this).hide(); })
                     .attr('src', entry.image || movie.poster || './img/img_broken.svg');
-                thumb.append($('<div class="season-episode__episode-number"></div>').text(('0' + entry.number).slice(-2)));
+                if (entry.number !== null) {
+                    thumb.append($('<div class="season-episode__episode-number"></div>').text(entry.number));
+                }
                 var progress = timeline(movie, entry);
                 if (progress && typeof Lampa.Timeline.render === 'function') {
                     row.find('.season-episode__timeline').append(Lampa.Timeline.render(progress));
                 }
                 row.on('hover:enter', function () { play(movie, entry, items); });
                 this.append(row);
-                if (Number(object.episode) === entry.number || !this.last) this.last = row[0];
+                if (!this.last || (!entry.kind && Number(object.episode) === entry.number)) this.last = row[0];
             }
         });
         return component;
