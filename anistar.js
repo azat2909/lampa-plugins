@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.18
+ * Версия 0.5.19
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.18';
+    var VERSION = '0.5.19';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -15,6 +15,7 @@
     var SITE_KEY = 'anistar_site_url';
     var HOME_GENRE = 'anistar_home_genre';
     var HIDE_UNCOVERED = 'anistar_hide_uncovered';
+    var ANIME_PATH = '/anime/';
     var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
     var LEGACY_CARD = '.shortstory, .base, .news, .item, .anime-item, .movie-item, article, li';
     var VIEW = 'anistar_watch';
@@ -317,7 +318,7 @@
         var password = loginPassword();
         if (!name || !password) return Promise.reject(new Error(LOGIN_PROMPT));
         var origin = SITE;
-        var url = SITE + '/anime/';
+        var url = SITE + ANIME_PATH;
         var home = pageDocument(freshUrl(url), { auth: true });
         loginWork = home.then(function (page) {
             var known = readSession(page);
@@ -548,23 +549,25 @@
     }
 
     function animePageNumber(url) {
-        var match = sitePath(url).match(CATALOG_PATH);
-        return match ? Number(match[1] || 1) : 0;
+        var address = siteUrl(url);
+        if (!address) return 0;
+        var page = new URL(address);
+        var match = page.pathname.match(CATALOG_PATH);
+        if (match) return Number(match[1] || 1);
+        if (page.pathname !== '/index.php' || page.searchParams.get('do') !== 'cat' || page.searchParams.get('category') !== 'anime') return 0;
+        var number = page.searchParams.get('cstart') || '1';
+        return /^\d+$/.test(number) ? Number(number) : 0;
     }
 
     function nextAnimePage(doc, url) {
         var current = animePageNumber(url);
-        var next = '';
         var best = Infinity;
         Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
             var href = siteUrl(link.getAttribute('href'), url);
             var page = animePageNumber(href);
-            if (page > current && page < best) {
-                next = href;
-                best = page;
-            }
+            if (page > current && page < best) best = page;
         });
-        return next;
+        return best < Infinity ? SITE + ANIME_PATH + 'page/' + best + '/' : '';
     }
 
     function cardCategories(node) {
@@ -574,7 +577,7 @@
     }
 
     function catalogPage(doc, url, personal) {
-        var animeCatalog = CATALOG_PATH.test(sitePath(url));
+        var animeCatalog = Boolean(animePageNumber(url));
         var root = doc.querySelector('#dle-content') || ((animeCatalog || personal || doc.querySelector('.news, .shortstory')) && doc);
         if (!root) throw new Error('AniStar не вернул каталог.');
         var rows = [];
@@ -599,7 +602,10 @@
         });
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
         var next = link && siteUrl(link.getAttribute('href'), url);
-        if (animeCatalog && animePageNumber(next) <= animePageNumber(url)) next = nextAnimePage(doc, url);
+        if (animeCatalog) {
+            var nextPage = animePageNumber(next);
+            next = nextPage > animePageNumber(url) ? SITE + ANIME_PATH + 'page/' + nextPage + '/' : nextAnimePage(doc, url);
+        }
         return { rows: rows, next: next && next !== url ? next : '' };
     }
 
@@ -632,7 +638,7 @@
         if (state.query) return 1;
         if (yearCatalog(state)) return yearUrl(state.year);
         if (state.anistarRoute) return siteUrl(state.anistarRoute);
-        return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + '/anime/';
+        return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + ANIME_PATH;
     }
 
     function sortForm(doc, address) {
