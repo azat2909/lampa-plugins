@@ -1,24 +1,24 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.1
+ * Версия 0.5.2
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.1';
+    var VERSION = '0.5.2';
     var SITE = 'https://anistar.org';
-    var CATALOG = SITE + '/hentai/';
-    var CATALOG_PATH = /^\/hentai\/(?:page\/\d+\/)?$/i;
+    var CATALOG = SITE + '/anime/';
+    var CATALOG_PATH = /^\/anime\/(?:page\/\d+\/)?$/i;
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
     var PAGE_SIZE = 20;
     var SEARCH_PAGE_SIZE = 10;
-    var HENTAI_CATEGORY_ID = 175;
+    var ANIME_CATEGORY_ID = 39;
     var SEARCH_URL = SITE + '/index.php?do=search';
     var TIMEOUT = 18000;
-    var GENRE_CACHE = 'anistar_genres_v1';
+    var GENRE_CACHE = 'anistar_anime_genres_v1';
     var GENRE_TTL = 7 * 24 * 60 * 60 * 1000;
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2l2.9 6.1 6.7.9-4.8 4.8 1.1 6.7-5.9-3.2-5.9 3.2 1.1-6.7L2.4 9l6.7-.9z"/></svg>';
     var STATUS = [
@@ -89,9 +89,16 @@
         return url.href;
     }
 
-    function catalogSection(value) {
+    function sitePath(value) {
         var url = urlOf(value);
-        return Boolean(url && url.origin === SITE && CATALOG_PATH.test(url.pathname));
+        return url && url.origin === SITE ? url.pathname : '';
+    }
+
+    function hasCategory(node, pattern) {
+        var categories = node.querySelectorAll('.title_left .tags a');
+        return Array.prototype.some.call(categories, function (link) {
+            return pattern.test(sitePath(link.getAttribute('href')));
+        });
     }
 
     function nodeText(scope, selector) {
@@ -232,11 +239,7 @@
         var year = yearLink && clean(yearLink.textContent);
         var image = node.querySelector('.news_avatar img.main-img, .news_avatar img[itemprop="image"], .news_avatar img');
         var poster = image && urlOf(image.getAttribute('data-src') || image.getAttribute('src'), article);
-        var categories = node.querySelectorAll('.title_left .tags a');
-        var isAdult = Array.prototype.some.call(categories, function (link) {
-            return catalogSection(link.getAttribute('href'));
-        });
-        if (fallback && fallback.adult) isAdult = true;
+        var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
         return {
             id: SOURCE + ':' + id,
             source: SOURCE,
@@ -251,17 +254,17 @@
         };
     }
 
-    function catalogPage(doc, url, adultOnly) {
-        var hentai = catalogSection(url);
-        var root = doc.querySelector('#dle-content') || (hentai && doc.querySelector('.news .title_left') && doc);
+    function catalogPage(doc, url, animeOnly) {
+        var animeCatalog = CATALOG_PATH.test(sitePath(url));
+        var root = doc.querySelector('#dle-content') || (animeCatalog && doc.querySelector('.news .title_left') && doc);
         if (!root) throw new Error('AniStar не вернул список тайтлов.');
         var rows = [];
         var seen = new Set();
         Array.prototype.forEach.call(root.querySelectorAll('.news'), function (node) {
+            if (animeOnly && !animeCatalog && !hasCategory(node, /^\/anime(?:\/|$)/i)) return;
             var link = node.querySelector('.title_left > a[href], .title_left h2 a[href]');
-            var inheritedCategory = hentai && !node.querySelector('.title_left .tags a') ? { adult: true } : null;
-            var card = link && basicCard(node, siteUrl(link.getAttribute('href')), inheritedCategory);
-            if (!card || (adultOnly && !card.adult) || seen.has(card.id)) return;
+            var card = link && basicCard(node, siteUrl(link.getAttribute('href')));
+            if (!card || seen.has(card.id)) return;
             seen.add(card.id);
             rows.push({ card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
         });
@@ -306,7 +309,7 @@
             body: form({
                 do: 'search', subaction: 'search', full_search: 1, search_start: page,
                 result_from: (page - 1) * SEARCH_PAGE_SIZE + 1, titleonly: 3, showposts: 0,
-                sortby: sort.key, resorder: sort.direction, 'catlist[]': HENTAI_CATEGORY_ID
+                sortby: sort.key, resorder: sort.direction, 'catlist[]': ANIME_CATEGORY_ID
             }) + '&story=' + searchEncode(state.query),
             auth: true
         };
@@ -326,7 +329,7 @@
             personal ? { auth: true } : state.query ? searchOptions(state, cursor) : sortOptions(state);
         return pageDocument(state.anistarHome ? desktopUrl(url) : url, options).then(function (doc) {
             if (personal && !readSession(doc)) throw new Error('Войдите в AniStar в настройках Anistar.');
-            var page = catalogPage(doc, url, !personal);
+            var page = catalogPage(doc, url, !personal && !state.query);
             if (state.anistarHome && url === CATALOG && !page.rows.length) {
                 throw new Error('AniStar не вернул карточки главного каталога.');
             }
@@ -353,8 +356,7 @@
         function scan(url) {
             if (!url || visited.has(url)) return Promise.resolve();
             visited.add(url);
-            // This listing only contains AniStar's Hentai category. Its cards
-            // link to the site's /filter/janrs/ pages with the original encoding.
+            // Keep the site's original encoding in its /filter/janrs/ links.
             return pageDocument(desktopUrl(url), { publicCatalog: true }).then(function (doc) {
                 var page = catalogPage(doc, url, true);
                 rememberGenres(page.rows, current);
@@ -402,10 +404,6 @@
     }
 
     function loadList(state, success, failure) {
-        if (!state.anistarList && !canWatch()) {
-            success({ results: state.anistarHome ? statusTiles() : [], total_pages: 1 });
-            return;
-        }
         var list = lists.get(state);
         if (!list) {
             list = { next: catalogStart(state), cards: [], ids: new Set(), visited: new Set(), work: Promise.resolve() };
