@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.4
+ * Версия 0.5.5
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.4';
+    var VERSION = '0.5.5';
     var SITE = 'https://anistar.org';
     var CATALOG = SITE + '/anime/';
     var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
@@ -183,12 +183,6 @@
                 settings.returnHeaders = native;
                 settings.withCredentials = options.auth === true;
             }
-            // The Android bridge keeps request bodies out of its debug logs in binary mode.
-            if (native && options.secret) {
-                settings.bodyEncoding = 'base64';
-                body = btoa(body);
-            }
-
             try {
                 network[plainGet || native ? 'native' : 'silent'](url, function (response) {
                     if (returned) return;
@@ -533,12 +527,24 @@
         pushList(entry.title, { anistarList: entry });
     }
 
+    function catalogTemplate(name, required, fallback) {
+        if (Lampa.Template && typeof Lampa.Template.get === 'function') {
+            try {
+                var nativeTemplate = Lampa.Template.get(name);
+                if (nativeTemplate && nativeTemplate.length && nativeTemplate.find(required).length) return nativeTemplate;
+            } catch (error) {
+                // Older Lampa builds can omit an individual template.
+            }
+        }
+        return $(fallback);
+    }
+
     function catalogComponent(object) {
         var component = this;
         var scroll = new Lampa.Scroll({ mask: true, over: true });
         var root = $('<div class="anistar-screen"></div>');
-        var tiles = $('<div class="anistar-status-grid"></div>').appendTo(root);
-        var grid = $('<div class="anistar-card-grid"></div>').appendTo(root);
+        var tiles = $('<div class="anistar-status-grid mapping--line"></div>').appendTo(root);
+        var grid = $('<div class="mapping--grid cols--6"></div>').appendTo(root);
         var ids = new Set();
         var focused = null;
         var loading = false;
@@ -559,15 +565,21 @@
             ids.add(data.id);
             var item;
             if (data.anistarTile || data.anistarRetry) {
-                item = $('<div class="anistar-status-tile selector"></div>').text(data.title).appendTo(tiles);
+                item = catalogTemplate('register', '.register__name',
+                    '<div class="register"><div class="register__name"></div></div>');
+                item.addClass('register--line selector').appendTo(tiles);
+                item.find('.register__name').text(data.title);
+                item.find('.register__counter').hide();
                 item.on('hover:enter', function () {
                     if (data.anistarTile) openPersonal(data.anistarTile);
                     else Lampa.Activity.replace({ title: NAME, component: 'anistar_catalog',
                         source: SOURCE, page: 1, url: '', anistarHome: true });
                 });
             } else {
-                item = $('<div class="anistar-poster-card selector"><div class="anistar-cover"></div><div class="anistar-title"></div></div>');
-                var image = $('<img alt="" loading="lazy">').appendTo(item.find('.anistar-cover'));
+                item = catalogTemplate('card', '.card__img',
+                    '<div class="card selector"><div class="card__view"><img class="card__img"></div><div class="card__title"></div><div class="card__age"></div></div>');
+                item.addClass('card--loaded selector');
+                var image = item.find('.card__img').attr('alt', '').attr('loading', 'lazy');
                 var fallback = data.posterFallback;
                 image.on('error', function () {
                     if (fallback && fallback !== image.attr('src')) {
@@ -577,9 +589,8 @@
                     }
                     fallback = '';
                 }).attr('src', data.poster || './img/img_broken.svg');
-                item.find('.anistar-title').text(data.title);
-                var year = data.release_date.slice(0, 4);
-                if (year) item.append($('<div class="anistar-year"></div>').text(year));
+                item.find('.card__title').text(data.title);
+                item.find('.card__age').text(data.release_date.slice(0, 4));
                 item.appendTo(grid);
                 item.on('hover:enter', function () {
                     Lampa.Activity.push({ component: 'full', method: 'movie', source: SOURCE,
@@ -811,12 +822,12 @@
     }
 
     function readSession(doc) {
-        var logout = doc.querySelector('a[href*="action=logout"]');
+        var logout = doc.querySelector('a[href*="action=logout"], a[href*="do=logout"]');
         var menu = logout && logout.closest('ul');
         var profile = menu && menu.querySelector('a[href*="/user/"]');
         var profileUrl = profile && siteUrl(profile.getAttribute('href'));
         var logoutUrl = logout && siteUrl(logout.getAttribute('href'));
-        var match = profileUrl && new URL(profileUrl).pathname.match(/^\/user\/([^/]+)\/$/);
+        var match = profileUrl && new URL(profileUrl).pathname.match(/^\/user\/([^/]+)\/?$/);
         return match && logoutUrl ? { name: decodeURIComponent(match[1]), logout: logoutUrl } : null;
     }
 
@@ -943,17 +954,21 @@
                     throw new Error('AniStar не вернул форму входа.');
                 }
                 var fields = Object.create(null);
-                loginForm.querySelectorAll('input[type="hidden"][name]').forEach(function (input) {
+                Array.prototype.forEach.call(loginForm.querySelectorAll('input[type="hidden"][name]'), function (input) {
                     fields[input.name] = input.value;
                 });
                 fields.login_name = username;
                 fields.login_password = password;
                 password = '';
-                var target = siteUrl(loginForm.getAttribute('action') || CATALOG);
-                if (!target || !/^post$/i.test(loginForm.method)) throw new Error('Форма входа AniStar изменилась.');
-                return pageDocument(target, { body: form(fields), auth: true, secret: true }).then(function (signed) {
+                var target = siteUrl(loginForm.getAttribute('action') || CATALOG, CATALOG);
+                if (!target || !/^post$/i.test(loginForm.getAttribute('method') || '')) {
+                    throw new Error('Форма входа AniStar изменилась.');
+                }
+                // Android APK 1.13.7 sends post_data as-is, so pass the form string.
+                return pageDocument(target, { body: form(fields), auth: true }).then(function (signed) {
                     return pageDocument(CATALOG, { auth: true }).then(function (check) {
-                        if (readSession(check)) return readSession(check);
+                        var verified = readSession(check);
+                        if (verified) return verified;
                         if (readSession(signed)) throw new Error('Lampa не сохранила сессию AniStar.');
                         throw new Error('AniStar не подтвердил вход.');
                     });
@@ -1461,18 +1476,10 @@
 
     function installStyle() {
         $('<style></style>').text([
-            '.anistar-screen{padding:0 1.5em 2em}',
-            '.anistar-status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(8em,1fr));gap:.65em}',
-            '.anistar-status-grid:not(:empty){margin-bottom:1.2em}',
-            '.anistar-status-tile{display:flex;align-items:center;min-height:4em;padding:.7em;border-radius:.4em;background:rgba(255,255,255,.1)}',
-            '.anistar-status-tile.focus{background:#fff;color:#222}',
-            '.anistar-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(8em,1fr));gap:1.2em .9em}',
-            '.anistar-poster-card{min-width:0}',
-            '.anistar-cover{position:relative;padding-bottom:150%;overflow:hidden;border-radius:.4em;background:rgba(255,255,255,.08)}',
-            '.anistar-cover img{position:absolute;width:100%;height:100%;object-fit:cover}',
-            '.anistar-poster-card.focus .anistar-cover{box-shadow:0 0 0 .16em #fff}',
-            '.anistar-title{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;margin-top:.4em}',
-            '.anistar-year{opacity:.7;margin-top:.2em}',
+            '.anistar-status-grid{flex-wrap:wrap;gap:1em;padding:0 1.5em 1em}',
+            '.anistar-status-grid:empty{display:none}',
+            '.anistar-status-grid>.register+.register{margin-left:0}',
+            '.anistar-status-grid .register__name{max-width:none}',
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.anistar-released{font-weight:700;margin:.7em 0}',
