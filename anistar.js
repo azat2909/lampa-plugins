@@ -1,2741 +1,1275 @@
 /*!
- * ============================================================
- * AniStar для Lampa
- * Версия: 0.4.55
- * ============================================================
- *
- * Источник: https://anistar.org/anime/
- * Платформа: Lampa 3.x / Android TV
- *
- * Возможности:
- * - Каталог AniStar в левом меню.
- * - Получение HTML сайта.
- * - Парсинг названий и постеров.
- * - Сетка карточек.
- * - Навигация пультом Android TV.
- * - Пагинация.
- * - Экран информации о тайтле.
- *
- * Интерфейс строится на штатной Activity Lampa.
- *
- * ============================================================
+ * Anistar для Lampa
+ * Версия 0.5.0
  */
-
 (function () {
     'use strict';
 
-    /* =========================================================
-     * 1. НАСТРОЙКИ
-     * ========================================================= */
+    var SOURCE = 'anistar';
+    var NAME = 'Anistar';
+    var VERSION = '0.5.0';
+    var SITE = 'https://anistar.org';
+    var CATALOG = SITE + '/hentai/';
+    var VIEW = 'anistar_watch';
+    var COMMENTS = 'anistar_comments';
+    var PAGE_SIZE = 20;
+    var SEARCH_PAGE_SIZE = 10;
+    var HENTAI_CATEGORY_ID = 175;
+    var SEARCH_URL = SITE + '/index.php?do=search';
+    var TIMEOUT = 18000;
+    var GENRE_CACHE = 'anistar_genres_v1';
+    var GENRE_TTL = 7 * 24 * 60 * 60 * 1000;
+    var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2l2.9 6.1 6.7.9-4.8 4.8 1.1 6.7-5.9-3.2-5.9 3.2 1.1-6.7L2.4 9l6.7-.9z"/></svg>';
+    var STATUS = [
+        { title: 'Избранное', path: '/favorites/' },
+        { title: 'Смотрю', path: '/status-anime/2/', id: 2 },
+        { title: 'Просмотрено', path: '/status-anime/1/', id: 1 },
+        { title: 'В планах', path: '/status-anime/3/', id: 3 },
+        { title: 'Брошено', path: '/status-anime/4/', id: 4 }
+    ];
+    var SORT = [
+        ['По дате', 'date'],
+        ['По популярности', 'rating'],
+        ['По посещаемости', 'news_read'],
+        ['По комментариям', 'comm_num'],
+        ['По алфавиту', 'title']
+    ].reduce(function (options, field) {
+        return options.concat([
+            { title: field[0] + ' ↑', key: field[1], direction: 'asc' },
+            { title: field[0] + ' ↓', key: field[1], direction: 'desc' }
+        ]);
+    }, []);
+    var parser = new DOMParser();
+    var genreIndex = new Map();
+    var lists = new WeakMap();
+    var filters = { sort: 0, year: '', genre: '', query: '' };
+    var genreRefresh;
+    var genresUpdated = 0;
+    var playerOrigin;
+    var session;
+    var nativeCookies = new Map();
 
-    var PLUGIN_ID = 'anistar_catalog';
-    var READY_FLAG = 'anistar_0455_ready';
-
-    var BASE_URL = 'https://anistar.org/anime/';
-    var SITE_HOST = 'anistar.org';
-
-    var PLUGIN_VERSION = '0.4.55';
-
-    var PROXY_URL = '';
-
-    var PAGE_SIZE = 100;
-
-    if (window[READY_FLAG]) return;
-
-    window[READY_FLAG] = true;
-
-
-    /* =========================================================
-     * 2. CSS
-     * =========================================================
-     *
-     * Сетка создаётся средствами CSS.
-     * Это позволяет не зависеть от неизвестных внутренних
-     * методов Maker и сохранять управление selector в Lampa.
-     */
-
-    var css = [
-        '.anistar-screen {',
-        ' width:100%;',
-        ' box-sizing:border-box;',
-        ' padding:0 2.5em 3em;',
-        '}',
-
-        '.anistar-grid {',
-        ' display:grid;',
-        ' grid-template-columns:repeat(auto-fill,minmax(135px,1fr));',
-        ' gap:1.5em 1em;',
-        ' width:100%;',
-        ' align-items:start;',
-        '}',
-
-        '.anistar-card {',
-        ' position:relative;',
-        ' min-width:0;',
-        ' width:100%;',
-        ' cursor:pointer;',
-        ' box-sizing:border-box;',
-        '}',
-
-        '.anistar-card__poster {',
-        ' position:relative;',
-        ' width:100%;',
-        ' aspect-ratio:2/3;',
-        ' overflow:hidden;',
-        ' border-radius:0.35em;',
-        ' background:rgba(255,255,255,.08);',
-        '}',
-
-        '.anistar-card__poster img {',
-        ' width:100%;',
-        ' height:100%;',
-        ' object-fit:cover;',
-        ' display:block;',
-        '}',
-
-        '.anistar-card__placeholder {',
-        ' width:100%;',
-        ' height:100%;',
-        ' display:flex;',
-        ' align-items:center;',
-        ' justify-content:center;',
-        ' font-size:2em;',
-        ' opacity:.4;',
-        '}',
-
-        '.anistar-card__title {',
-        ' margin-top:.55em;',
-        ' font-size:1em;',
-        ' line-height:1.3;',
-        ' overflow:hidden;',
-        ' display:-webkit-box;',
-        ' -webkit-line-clamp:2;',
-        ' -webkit-box-orient:vertical;',
-        '}',
-
-        '.anistar-card.focus .anistar-card__poster {',
-        ' outline:3px solid #fff;',
-        ' outline-offset:3px;',
-        '}',
-
-        '.anistar-card.focus {',
-        ' transform:scale(1.035);',
-        ' z-index:2;',
-        '}',
-
-        '.anistar-more.focus { outline:3px solid #fff; outline-offset:3px; }',
-        '.anistar-search-title { display:flex; align-items:center; gap:1em; padding:.85em 1.1em; margin:.25em 0; border-radius:.35em; background:rgba(255,255,255,.07); min-height:3em; }',
-        '.anistar-search-title.focus { background:rgba(255,255,255,.22); outline:2px solid #fff; outline-offset:1px; }',
-        '.anistar-search-title__number { opacity:.55; min-width:2em; }',
-        '.anistar-search-title__poster { display:block; width:6em; height:9em; min-width:6em; min-height:9em; max-width:6em; max-height:9em; flex:0 0 6em; aspect-ratio:2/3; object-fit:cover; border-radius:.3em; background:rgba(255,255,255,.08); }',
-        '.anistar-search-title__name { font-size:1.08em; line-height:1.35; }',
-        '.anistar-more {',
-        ' margin:2em auto;',
-        ' padding:1em 2em;',
-        ' text-align:center;',
-        ' width:max-content;',
-        ' max-width:100%;',
-        ' border-radius:.4em;',
-        ' background:rgba(255,255,255,.12);',
-        '}',
-
-        '.anistar-detail {',
-        ' display:flex;',
-        ' gap:2em;',
-        ' padding:2em;',
-        ' align-items:flex-start;',
-        '}',
-
-        '.anistar-detail__poster {',
-        ' width:220px;',
-        ' max-width:35%;',
-        ' aspect-ratio:2/3;',
-        ' flex:0 0 auto;',
-        ' overflow:hidden;',
-        ' border-radius:.4em;',
-        ' background:rgba(255,255,255,.08);',
-        '}',
-
-        '.anistar-detail__poster img {',
-        ' display:block;',
-        ' width:100%;',
-        ' height:100%;',
-        ' aspect-ratio:2/3;',
-        ' object-fit:contain;',
-        ' border-radius:.4em;',
-        '}',
-
-        '.anistar-detail__info {',
-        ' flex:1;',
-        ' min-width:0;',
-        '}',
-
-        '.anistar-detail__title {',
-        ' font-size:1.5em;',
-        ' font-weight:bold;',
-        ' margin-bottom:1em;',
-        '}',
-
-        '.anistar-episodes {',
-        ' margin-top:1.5em;',
-        ' display:flex;',
-        ' flex-direction:column;',
-        ' gap:.55em;',
-        '}',
-        '.anistar-episode {',
-        ' padding:1em 1.2em;',
-        ' border-radius:.4em;',
-        ' background:rgba(255,255,255,.10);',
-        '}',
-        '.anistar-episode.focus {',
-        ' background:rgba(255,255,255,.24);',
-        ' outline:2px solid #fff;',
-        '}',
-        '.anistar-detail__status {',
-        ' margin-top:1em;',
-        ' opacity:.7;',
-        '}',
-        '.anistar-detail__link {',
-        ' margin-top:1.5em;',
-        ' padding:1em;',
-        ' background:rgba(255,255,255,.12);',
-        ' border-radius:.4em;',
-        ' width:max-content;',
-        '}',
-        '.anistar-detail__link.focus {',
-        ' background:rgba(255,255,255,.30);',
-        ' outline:3px solid rgba(255,255,255,.95);',
-        ' outline-offset:2px;',
-        ' color:#fff;',
-        '}',
-
-        '@media (max-width:700px) {',
-        ' .anistar-screen { padding:0 1em 2em; }',
-        ' .anistar-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:1em .6em; }',
-        ' .anistar-detail { flex-direction:column; }',
-        ' .anistar-detail__poster { max-width:70%; width:180px; }',
-        '}',
-
-        '@media (min-width:1200px) {',
-        ' .anistar-grid { grid-template-columns:repeat(7,minmax(0,1fr)); }',
-        '}'
-    ].join('\n');
-
-
-    function addStyles() {
-        if (document.getElementById('anistar_styles')) return;
-
-        var style = document.createElement('style');
-
-        style.id = 'anistar_styles';
-
-        style.type = 'text/css';
-
-        style.textContent = css;
-
-        document.head.appendChild(style);
+    function clean(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
-
-    /* =========================================================
-     * 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-     * ========================================================= */
-
-    function cleanText(value) {
-        return String(value || '')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-
-    /*
-     * Убираем только дату в конце названия, не затрагивая
-     * номера сезонов, годов в названии и прочие цифры.
-     */
-    function cleanAnimeTitle(value) {
-        // AniStar записывает русское и английское названия через «/».
-        // Оставляем первые два варианта, отбрасывая дополнительные подписи.
-        return cleanText(value)
-            .split(/\s*\/\s*/)
-            .slice(0, 2)
-            .map(function (part) {
-                return cleanText(part)
-                    .replace(/(^|[^A-Za-zА-Яа-яЁё0-9_])дата(?=$|[^A-Za-zА-Яа-яЁё0-9_])/ig, '$1')
-                    .replace(/\s*[\[(]?(?:\d{2}[.\-/]\d{2}[.\-/]\d{4}|\d{4}[.\-/]\d{2}[.\-/]\d{2})[\])]?(?=\s*$)/, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-            })
-            .filter(Boolean)
-            .join(' / ');
-    }
-
-
-    function absoluteUrl(url, base) {
-        if (!url) return '';
-
-        try {
-            return new URL(url, base || BASE_URL).href;
-        } catch (e) {
-            return '';
-        }
-    }
-
-
-    function normalizeUrl(url) {
-        try {
-            var parsed = new URL(url);
-
-            parsed.hash = '';
-
-            return parsed.href;
-        } catch (e) {
-            return url;
-        }
-    }
-
-
-    function isAniStarUrl(url) {
-        try {
-            return new URL(url).hostname.toLowerCase() === SITE_HOST;
-        } catch (e) {
-            return false;
-        }
-    }
-
-
-    /*
-     * AniStar использует адреса публикаций:
-     * /12345-nazvanie-anime.html
-     */
-    function isAnimeUrl(url) {
-        try {
-            var parsed = new URL(url);
-
-            return isAniStarUrl(url) &&
-                /^\/\d+-[^/]+\.html$/i.test(parsed.pathname);
-
-        } catch (e) {
-            return false;
-        }
-    }
-
-
-    /* =========================================================
-     * 4. ПОЛУЧЕНИЕ ПОСТЕРА
-     * ========================================================= */
-
-    function bestSrcset(value) {
-        var entries = String(value || '').split(',');
-        var best = '';
-        var bestScore = -1;
-
-        entries.forEach(function (entry) {
-            var parts = entry.trim().split(/\s+/);
-            if (!parts[0]) return;
-            var descriptor = parts[1] || '';
-            var score = 0;
-            var width = descriptor.match(/^(\d+)w$/i);
-            var density = descriptor.match(/^([\d.]+)x$/i);
-            if (width) score = parseInt(width[1], 10);
-            else if (density) score = Math.round(parseFloat(density[1]) * 10000);
-            else score = 1;
-            if (score > bestScore) {
-                bestScore = score;
-                best = parts[0];
-            }
+    function escapeHtml(value) {
+        return String(value || '').replace(/[&<>"']/g, function (char) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
         });
-
-        return best;
     }
 
-    function getPoster(image, base) {
-        if (!image || !image.getAttribute) return '';
-
-        // Сначала проверяем атрибуты, которые обычно содержат исходный файл,
-        // и только затем ленивую/экранную миниатюру.
-        var attrs = [
-            'data-original', 'data-original-src', 'data-poster',
-            'data-image', 'data-full', 'data-zoom-image',
-            'data-srcset', 'srcset', 'data-lazy-src', 'data-src', 'src'
-        ];
-        var src = '';
-
-        for (var i = 0; i < attrs.length && !src; i++) {
-            var value = image.getAttribute(attrs[i]) || '';
-            if (attrs[i].indexOf('srcset') !== -1) value = bestSrcset(value);
-            src = value;
-        }
-
-        if (!src) {
-            var style = image.getAttribute('style') || '';
-            var background = style.match(/background(?:-image)?\s*:[^;]*url\((['"]?)(.*?)\1\)/i);
-            if (background) src = background[2];
-        }
-
-        src = String(src || '').trim().replace(/^['"]|['"]$/g, '');
-        if (!src || /^data:image\//i.test(src)) return '';
-
-        return absoluteUrl(src.replace(/&amp;/g, '&'), base);
+    function decodeHtml(value) {
+        var field = document.createElement('span');
+        field.innerHTML = String(value || '').replace(/</g, '&lt;');
+        return field.textContent;
     }
 
-    function isImageUrl(value, base) {
-        var url = absoluteUrl(value, base);
-        if (!url || !isAniStarUrl(url)) return false;
+    function urlOf(value, base) {
+        if (!value || !String(value).trim()) return null;
         try {
-            return /\.(jpg|jpeg|png|webp|avif)(?:$|[?#])/i.test(url);
-        } catch (e) {
-            return false;
+            var url = new URL(value, base || SITE);
+            return url.protocol === 'https:' && !url.username && !url.password ? url : null;
+        } catch (error) {
+            return null;
         }
     }
 
-    // На AniStar ID публикации совпадает с ID каталога постера:
-    // /10938-title.html -> /uploads/posters/10938/original.jpg
-    // Этот путь подтверждён страницей тайтла 10938.
-    function getPosterByAnimeId(animeUrl) {
-        try {
-            var parsed = new URL(animeUrl, BASE_URL);
-            var match = parsed.pathname.match(/^\/(\d+)-[^/]+\.html$/i);
-            if (!match) return '';
-            return 'https://' + SITE_HOST + '/uploads/posters/' + match[1] + '/original.jpg';
-        } catch (e) {
-            return '';
-        }
+    function siteUrl(value) {
+        var url = urlOf(value);
+        if (!url || url.origin !== SITE) return '';
+        url.hash = '';
+        return url.href;
     }
 
-    function isOriginalPosterUrl(value, base) {
-        var url = absoluteUrl(value, base);
-        if (!url || !isAniStarUrl(url)) return false;
-        try {
-            var path = new URL(url).pathname;
-            return /\/uploads\/posters\/[^/]+\/original\.(jpg|jpeg|png|webp)$/i.test(path) ||
-                /\/uploads\/posters\/\d+\/[^/]+\.(jpg|jpeg|png|webp)$/i.test(path) &&
-                !/(thumb|small|medium|preview|resize|mini)/i.test(path);
-        } catch (e) {
-            return false;
-        }
+    function nodeText(scope, selector) {
+        var node = scope.querySelector(selector);
+        return node ? clean(node.textContent) : '';
     }
 
-    function getFullPoster(card, animeUrl, base) {
-        if (!card) return '';
-        var target = normalizeUrl(animeUrl);
-        var node = card;
-        var depth = 0;
-
-        while (node && depth < 8) {
-            var links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
-            var hasTarget = false;
-            Array.prototype.forEach.call(links, function (link) {
-                var href = absoluteUrl(link.getAttribute('href'), base);
-                if (isAnimeUrl(href) && normalizeUrl(href) === target) hasTarget = true;
-            });
-
-            if (hasTarget) {
-                var preferred = [];
-                var otherImages = [];
-
-                Array.prototype.forEach.call(links, function (link) {
-                    var href = absoluteUrl(link.getAttribute('href'), base);
-                    if (!isImageUrl(href, base)) return;
-                    if (isOriginalPosterUrl(href, base)) preferred.push(href);
-                    else otherImages.push(href);
-                });
-
-                if (preferred.length) return preferred[0];
-
-                // Иногда полноразмерная картинка находится в ссылке вокруг
-                // постера, но файл назван не original.jpg.
-                if (otherImages.length) {
-                    var posterFiles = otherImages.filter(function (href) {
-                        return /\/uploads\/posters\//i.test(href);
-                    });
-                    if (posterFiles.length) return posterFiles[0];
-                }
-
-                var images = node.querySelectorAll ? node.querySelectorAll('img, source[srcset]') : [];
-                var candidates = [];
-                for (var i = 0; i < images.length; i++) {
-                    var imageUrl = getPoster(images[i], base);
-                    if (imageUrl) candidates.push(imageUrl);
-                }
-                if (candidates.length) return candidates[0];
-            }
-
-            node = node.parentElement;
-            depth++;
-        }
-
-        return '';
+    function android() {
+        return Boolean(window.AndroidJS && typeof window.AndroidJS.httpReq === 'function' && Lampa.Platform.is('android'));
     }
 
-    /*
-     * Запрашиваем десктопную тему AniStar, исключая мобильную разметку.
-     */
-    function fullVersionUrl(value) {
-        try {
-            var parsed = new URL(value, BASE_URL);
-            parsed.searchParams.set('skin_name', 'new36');
-            return parsed.href;
-        } catch (e) {
-            return value;
-        }
+    function form(fields) {
+        return Object.keys(fields).map(function (key) {
+            return encodeURIComponent(key) + '=' + encodeURIComponent(fields[key]);
+        }).join('&');
     }
 
-    /*
-     * Получаем отдельный постер со страницы конкретного тайтла.
-     * Предпочитаем оригинал из основного содержимого, затем Open Graph.
-     */
-    function getArticlePoster(html, pageUrl) {
-        var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-        var scopes = [
-            doc.querySelector('#dle-content'),
-            doc.querySelector('.fullstory'),
-            doc.querySelector('.full-text'),
-            doc.querySelector('article'),
-            doc.querySelector('.news')
-        ];
-        var scope = null;
-        for (var i = 0; i < scopes.length; i++) {
-            if (scopes[i]) {
-                scope = scopes[i];
-                break;
-            }
-        }
-
-        if (scope) {
-            var originalLinks = scope.querySelectorAll('a[href]');
-            for (var j = 0; j < originalLinks.length; j++) {
-                if (isOriginalPosterUrl(originalLinks[j].getAttribute('href'), pageUrl)) {
-                    return absoluteUrl(originalLinks[j].getAttribute('href'), pageUrl);
-                }
-            }
-        }
-
-        var meta = doc.querySelector('meta[property="og:image"], meta[name="twitter:image"], meta[property="twitter:image"]');
-        if (meta) {
-            var metaUrl = absoluteUrl(meta.getAttribute('content'), pageUrl);
-            if (metaUrl && isAniStarUrl(metaUrl)) return metaUrl;
-        }
-
-        var images = (scope || doc).querySelectorAll('img');
-        for (var k = 0; k < images.length; k++) {
-            var src = getPoster(images[k], pageUrl);
-            if (src && isAniStarUrl(src)) return src;
-        }
-        return '';
-    }
-
-    /* =========================================================
-     * 5. ПАРСЕР КАТАЛОГА
-     * ========================================================= */
-
-    
-    // Строгий поиск обложки в глобальной выдаче:
-    // не поднимаемся выше контейнера одного тайтла, иначе можно
-    // случайно захватить изображение соседней карточки.
-    function getSearchResultPoster(link, animeUrl, base) {
-        var target = normalizeUrl(animeUrl);
-        var node = link;
-        var depth = 0;
-
-        while (node && depth < 6) {
-            var animeLinks = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
-            var found = {};
-
-            Array.prototype.forEach.call(animeLinks, function (candidate) {
-                var href = absoluteUrl(candidate.getAttribute('href'), base);
-                if (isAnimeUrl(href)) found[normalizeUrl(href)] = true;
-            });
-
-            var urls = Object.keys(found);
-            // Не поднимаемся в общий контейнер нескольких результатов:
-            // это защита от подстановки постера соседнего тайтла.
-            if (urls.length > 1) break;
-
-            if (urls.length === 1 && urls[0] === target) {
-                var links = node.querySelectorAll('a[href]');
-                for (var i = 0; i < links.length; i++) {
-                    var imageHref = absoluteUrl(links[i].getAttribute('href'), base);
-                    if (isImageUrl(imageHref, base) && isOriginalPosterUrl(imageHref, base)) return imageHref;
-                }
-
-                var images = node.querySelectorAll('img, source[srcset], [style*="background"]');
-                var hasOwnImage = false;
-                for (var j = 0; j < images.length; j++) {
-                    var imageUrl = getPoster(images[j], base);
-                    if (imageUrl && isImageUrl(imageUrl, base)) {
-                        hasOwnImage = true;
-                        break;
-                    }
-                }
-
-                // В выдаче AniStar часто лежит маленькая миниатюра.
-                // Если у этого результата есть собственная картинка,
-                // запрашиваем оригинал по ID публикации вместо миниатюры.
-                // Если картинки в карточке нет — не угадываем и оставляем пусто.
-                if (hasOwnImage) return getPosterByAnimeId(animeUrl);
-            }
-
-            node = node.parentElement;
-            depth++;
-        }
-
-        return '';
-    }
-function parseCatalog(html, pageUrl, strictSearchPosters) {
-
-        var doc = new DOMParser().parseFromString(
-            String(html || ''),
-            'text/html'
-        );
-
-        var items = [];
-        var seen = {};
-
-        var links = doc.querySelectorAll('a[href]');
-
-
-        Array.prototype.forEach.call(links, function (link) {
-
-            var url = absoluteUrl(
-                link.getAttribute('href'),
-                pageUrl
-            );
-
-            if (!isAnimeUrl(url)) return;
-
-            url = normalizeUrl(url);
-
-            if (seen[url]) return;
-
-
-            /*
-             * Ищем контейнер карточки.
-             */
-            var card = link.closest(
-                '.shortstory, .base, .news, .item, ' +
-                '.anime-item, .movie-item, article, li'
-            );
-
-            if (!card) {
-                card = link.parentElement;
-            }
-
-
-            /*
-             * Получаем заголовок.
-             */
-            var title = cleanText(
-                link.getAttribute('title') ||
-                link.textContent
-            );
-
-
-            /*
-             * Ищем заголовок в родительском контейнере.
-             */
-            if (!title || title.length < 2) {
-
-                var heading = card && card.querySelector(
-                    'h1,h2,h3,h4,.title,.name'
-                );
-
-                if (heading) {
-                    title = cleanText(heading.textContent);
-                }
-            }
-
-
-            /*
-             * Ищем изображение.
-             */
-            // Ищем обложку в ближайших родителях: в поисковой выдаче
-            // заголовок и изображение могут находиться в соседних блоках.
-            var image = null;
-            var imageNode = link;
-            var imageDepth = 0;
-
-            while (imageNode && imageDepth < 6 && !image) {
-                var imageCandidates = imageNode.querySelectorAll
-                    ? imageNode.querySelectorAll('img, [style*="background"]')
-                    : [];
-
-                for (var imageIndex = 0; imageIndex < imageCandidates.length; imageIndex++) {
-                    if (getPoster(imageCandidates[imageIndex], pageUrl)) {
-                        image = imageCandidates[imageIndex];
-                        break;
-                    }
-                }
-
-                imageNode = imageNode.parentElement;
-                imageDepth++;
-            }
-
-            if (!image && card) {
-                var pictureSource = card.querySelector('picture source[srcset], source[srcset]');
-                if (pictureSource) image = pictureSource;
-            }
-
-            if (
-                (!title || title.length < 2) &&
-                image
-            ) {
-                title = cleanText(
-                    image.getAttribute('alt')
-                );
-            }
-
-
-            if (!title || title.length < 2) return;
-
-            if (title.length > 220) return;
-
-
-            if (
-                /^(смотреть|подробнее|читать|перейти|следующая)$/i.test(title)
-            ) {
-                return;
-            }
-
-
-            seen[url] = true;
-
-
-            items.push({
-
-                id: url,
-
-                title: cleanAnimeTitle(title),
-
-                name: cleanAnimeTitle(title),
-
-                url: url,
-
-                poster: strictSearchPosters
-                    ? getSearchResultPoster(link, url, pageUrl)
-                    : (getPosterByAnimeId(url) || getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl)),
-                posterFallback: strictSearchPosters
-                    ? getSearchResultPoster(link, url, pageUrl)
-                    : (getFullPoster(card, url, pageUrl) || getPoster(image, pageUrl))
-
-            });
-
+    function saveCookies(headers) {
+        var cookies = headers && (headers['set-cookie'] || headers['Set-Cookie']);
+        if (!cookies) return;
+        if (!Array.isArray(cookies)) cookies = [cookies];
+        cookies.forEach(function (cookie) {
+            var pair = cookie.split(';', 1)[0];
+            var delimiter = pair.indexOf('=');
+            if (delimiter < 1) return;
+            var key = pair.slice(0, delimiter).trim();
+            var value = pair.slice(delimiter + 1);
+            if (!value || /(?:^|;)\s*max-age=0(?:;|$)/i.test(cookie)) nativeCookies.delete(key);
+            else nativeCookies.set(key, value);
         });
+    }
 
+    function request(url, options) {
+        options = options || {};
+        var native = android();
+        return new Promise(function (resolve, reject) {
+            var network = new Lampa.Reguest();
+            var body = options.body;
+            var headers = Object.assign({}, options.headers);
+            var method = body === undefined ? 'GET' : 'POST';
+            var local = Boolean(siteUrl(url));
+            var returned = false;
+            var timer = setTimeout(function () {
+                finish(reject, new Error('AniStar не ответил вовремя.'));
+            }, TIMEOUT + 1500);
 
-        /*
-         * Пагинация AniStar: страницы имеют числовые URL:
-         * /anime/ и /anime/page/2/, /anime/page/3/ и т.д.
-         * Старый поиск только по стрелке «Следующая» не находил
-         * такие ссылки, поэтому здесь сначала ищем номер страницы.
-         */
-        var next = '';
-        var currentPage = 1;
+            function finish(callback, value) {
+                if (returned) return;
+                returned = true;
+                clearTimeout(timer);
+                callback(value);
+            }
 
-        try {
-            var currentPath = new URL(pageUrl).pathname;
-            var currentMatch = currentPath.match(/\/anime\/page\/(\d+)\/?$/i);
-            if (currentMatch) currentPage = parseInt(currentMatch[1], 10) || 1;
-        } catch (e) {}
+            function fail(error) {
+                var message = error && Number(error.status) === 403
+                    ? 'AniStar отклонил запрос (403).'
+                    : 'Не удалось подключиться к AniStar.';
+                finish(reject, new Error(message));
+            }
 
-        var pagination = doc.querySelectorAll(
-            '.navigation a[href], .pagination a[href], .pages a[href], ' +
-            '.paginator a[href], .nav-links a[href], a[rel~="next"], a[href]'
-        );
-
-        var numbered = [];
-        var hasPageLinks = false;
-
-        Array.prototype.forEach.call(pagination, function (link) {
-            var href = absoluteUrl(link.getAttribute('href'), pageUrl);
-            if (!href || !isAniStarUrl(href)) return;
+            if (native && local && nativeCookies.size) {
+                headers.Cookie = Array.from(nativeCookies, function (entry) { return entry.join('='); }).join('; ');
+            }
+            if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            var settings = {
+                type: method, dataType: 'text', timeout: TIMEOUT, headers: headers,
+                returnHeaders: native, withCredentials: options.auth === true
+            };
+            // The Android bridge keeps request bodies out of its debug logs in binary mode.
+            if (native && options.secret) {
+                settings.bodyEncoding = 'base64';
+                body = btoa(body);
+            }
 
             try {
-                var parsedUrl = new URL(href);
-                var match = parsedUrl.pathname.match(/\/anime\/page\/(\d+)\/?$/i);
-                var pageNumber = match ? parseInt(match[1], 10) :
-                    (/\/anime\/?$/i.test(parsedUrl.pathname) ? 1 : 0);
-
-                if (pageNumber > 0) hasPageLinks = true;
-
-                if (pageNumber > currentPage) {
-                    numbered.push({ number: pageNumber, url: href });
-                }
-            } catch (e) {}
+                network[native ? 'native' : 'silent'](url, function (response) {
+                    if (returned) return;
+                    var html = response;
+                    if (native && typeof response === 'string' && /^\s*\{/.test(response)) {
+                        try { response = JSON.parse(response); } catch (error) {}
+                    }
+                    if (native && response && typeof response.body === 'string') {
+                        html = response.body;
+                        if (local && (!response.currentUrl || siteUrl(response.currentUrl))) saveCookies(response.headers);
+                    }
+                    if (typeof html !== 'string') {
+                        finish(reject, new Error('AniStar вернул неизвестный ответ.'));
+                    } else if (/cf-chl-|<title>\s*Just a moment/i.test(html)) {
+                        finish(reject, new Error('AniStar запросил проверку Cloudflare.'));
+                    } else {
+                        finish(resolve, html);
+                    }
+                }, fail, body, settings);
+            } catch (error) {
+                fail(error);
+            }
         });
+    }
 
-        numbered.sort(function (a, b) {
-            return a.number - b.number;
+    function pageDocument(url, options) {
+        return request(url, options).then(function (html) {
+            return parser.parseFromString(html, 'text/html');
         });
+    }
 
-        if (numbered.length) {
-            // Берём именно следующую страницу, если она есть.
-            var expected = numbered.filter(function (item) {
-                return item.number === currentPage + 1;
-            })[0];
-            next = (expected || numbered[0]).url;
-        }
+    function readLinks(scope, prefix) {
+        var links = new Map();
+        scope.querySelectorAll('a[href]').forEach(function (link) {
+            var url = urlOf(link.getAttribute('href'));
+            var title = clean(link.textContent);
+            if (!url || url.origin !== SITE || !title || url.pathname.indexOf(prefix) !== 0) return;
+            var slug = url.pathname.slice(prefix.length).replace(/\/$/, '');
+            if (slug && slug.indexOf('/') === -1) links.set(url.href, { url: url.href, title: title });
+        });
+        return Array.from(links.values());
+    }
 
-        // На AniStar используется стандартный путь /anime/page/N/.
-        // Если шаблон страницы не отдал ссылку в DOM, строим адрес
-        // следующей страницы самостоятельно, не останавливая каталог.
-        if (!next && !hasPageLinks) {
-            try {
-                var basePath = new URL(BASE_URL).origin + '/anime/';
-                next = basePath + 'page/' + (currentPage + 1) + '/';
-            } catch (e) {}
-        }
+    function newsId(url) {
+        var parsed = urlOf(url);
+        var match = parsed && parsed.origin === SITE && parsed.pathname.match(/^\/(\d+)-[^/]+\.html$/i);
+        return match ? Number(match[1]) : 0;
+    }
 
-        // Резервный вариант для пагинации со стрелкой/текстом.
-        if (!next) {
-            Array.prototype.some.call(pagination, function (link) {
-                var text = cleanText(link.textContent).toLowerCase();
-                var rel = (link.getAttribute('rel') || '').toLowerCase();
-                var cls = (link.className || '').toString().toLowerCase();
-                var isNext = rel.indexOf('next') !== -1 ||
-                    /next|следующ|далее/.test(cls) ||
-                    /следующ|далее/.test(text) || text === '»' || text === '›';
-                if (!isNext) return false;
-
-                var href = absoluteUrl(link.getAttribute('href'), pageUrl);
-                if (!href || !isAniStarUrl(href)) return false;
-                if (normalizeUrl(href) === normalizeUrl(pageUrl)) return false;
-                next = href;
-                return true;
-            });
-        }
-
+    function basicCard(node, article, fallback) {
+        var id = newsId(article);
+        var joinedTitle = nodeText(node, '.title_left h1, .title_left > a, h1, h2') || (fallback && fallback.title);
+        if (!id || !joinedTitle) return null;
+        var titles = joinedTitle.split(/\s+\/\s+/, 2);
+        var yearLink = node.querySelector('.head a[href*="/filter/year/"]');
+        var year = yearLink && clean(yearLink.textContent);
+        var image = node.querySelector('.news_avatar img.main-img, .news_avatar img[itemprop="image"], .news_avatar img');
+        var poster = image && urlOf(image.getAttribute('data-src') || image.getAttribute('src'), article);
+        var isAdult = Array.from(node.querySelectorAll('.title_left .tags a')).some(function (link) {
+            return siteUrl(link.getAttribute('href')) === CATALOG;
+        });
         return {
-            items: items,
-            next: next
+            id: SOURCE + ':' + id,
+            source: SOURCE,
+            url: article,
+            media_type: 'movie',
+            title: titles[0],
+            tagline: titles[1] || (fallback && fallback.tagline) || '',
+            release_date: /^\d{4}$/.test(year) ? year + '-01-01' : (fallback && fallback.release_date) || '',
+            poster: poster ? poster.href : (fallback && fallback.poster) || '',
+            adult: isAdult || Boolean(fallback && fallback.adult),
+            restrict: isAdult || (fallback && fallback.adult) ? 18 : 0
         };
-
     }
 
+    function catalogPage(doc, url, adultOnly) {
+        var root = doc.querySelector('#dle-content');
+        if (!root) throw new Error('AniStar не вернул список тайтлов.');
+        var rows = [];
+        var seen = new Set();
+        root.querySelectorAll('.news').forEach(function (node) {
+            var link = node.querySelector('.title_left > a[href], .title_left h2 a[href]');
+            var card = link && basicCard(node, siteUrl(link.getAttribute('href')));
+            if (!card || (adultOnly && !card.adult) || seen.has(card.id)) return;
+            seen.add(card.id);
+            rows.push({ card: card, genres: readLinks(node.querySelector('.head') || node, '/filter/janrs/') });
+        });
+        var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
+        var next = link && siteUrl(link.getAttribute('href'));
+        return { rows: rows, next: next && next !== url ? next : '' };
+    }
 
-    
-/* =========================================================
- * 6. СЕТЕВОЙ ЗАПРОС — ИСПРАВЛЕННАЯ ВЕРСИЯ
- * =========================================================
- *
- * ВАЖНО:
- * Не используем request.get().
- *
- * В некоторых сборках Lampa Request.get() вызывает
- * необъявленную функцию clear(), что приводит к ошибке:
- *
- * ReferenceError: clear is not defined
- *
- * Используем request.native(), который поддерживает
- * Android TV и не вызывает проблемный метод get().
- */
+    function collectionUrl(folder, value) {
+        return SITE + '/filter/' + folder + '/' + value + '/';
+    }
 
-function AniStarNetwork() {
+    // AniStar's search expects Windows-1251 in the query string.
+    function searchEncode(value) {
+        return Array.from(value, function (character) {
+            var code = character.charCodeAt(0);
+            if (code >= 0x410 && code <= 0x44f) return '%' + (code - 0x350).toString(16);
+            if (character === 'ё') return '%B8';
+            if (character === 'Ё') return '%A8';
+            return encodeURIComponent(character);
+        }).join('');
+    }
 
-    // Создаём штатный сетевой объект Lampa.
-    var request = new Lampa.Reguest();
+    function catalogStart(state) {
+        if (state.anistarList) return SITE + state.anistarList.path;
+        if (state.anistarRoute) return state.anistarRoute;
+        if (state.query) return 1;
+        return state.genre || (state.year && collectionUrl('year', state.year)) || CATALOG;
+    }
 
+    function sortOptions(state) {
+        var sort = SORT[state.sort] || SORT[0];
+        return {
+            body: form({ dlenewssortby: sort.key, dledirection: sort.direction, set_new_sort: '', set_direction_sort: '' }),
+            auth: true
+        };
+    }
 
-    /*
-     * GET-запрос к AniStar.
-     */
-    this.get = function (url, success, error) {
+    function searchOptions(state, page) {
+        var sort = SORT[state.sort] || SORT[0];
+        return {
+            body: form({
+                do: 'search', subaction: 'search', full_search: 1, search_start: page,
+                result_from: (page - 1) * SEARCH_PAGE_SIZE + 1, titleonly: 3, showposts: 0,
+                sortby: sort.key, resorder: sort.direction, 'catlist[]': HENTAI_CATEGORY_ID
+            }) + '&story=' + searchEncode(state.query),
+            auth: true
+        };
+    }
 
-        // Если задан прокси, используем его.
-        var target = PROXY_URL
-            ? PROXY_URL + encodeURIComponent(url)
-            : url;
+    function rememberGenres(rows, target) {
+        target = target || genreIndex;
+        rows.forEach(function (row) {
+            row.genres.forEach(function (genre) { target.set(genre.url, genre); });
+        });
+    }
 
-
-        /*
-         * Используем native вместо get.
-         *
-         * Аргументы:
-         * 1. URL;
-         * 2. Успешный callback;
-         * 3. Callback ошибки;
-         * 4. POST-данные (false для GET);
-         * 5. Настройки запроса.
-         */
-        request.native(
-
-            target,
-
-            function (data) {
-                if (typeof success === 'function') {
-                    success(data);
-                }
-            },
-
-            function (xhr, status) {
-                console.error(
-                    '[AniStar] Request error:',
-                    xhr,
-                    status
-                );
-
-                if (typeof error === 'function') {
-                    error(xhr, status);
-                }
-            },
-
-            false,
-
-            {
-                dataType: 'text',
-                timeout: 20000
+    function readCatalogPage(cursor, state) {
+        var personal = Boolean(state.anistarList);
+        var url = state.query ? SEARCH_URL : cursor;
+        var options = personal ? { auth: true } : state.query ? searchOptions(state, cursor) : sortOptions(state);
+        return pageDocument(url, options).then(function (doc) {
+            if (personal && !readSession(doc)) throw new Error('Войдите в AniStar в настройках Anistar.');
+            var page = catalogPage(doc, url, !personal);
+            if (state.query) {
+                var next = doc.querySelector('#dle-content #nextlink[onclick]');
+                var match = next && next.getAttribute('onclick').match(/list_submit\((\d+)\)/);
+                page.next = match && Number(match[1]) > cursor ? Number(match[1]) : 0;
             }
+            if (!personal) rememberGenres(page.rows);
+            return page;
+        });
+    }
 
-        );
+    function cacheGenres() {
+        Lampa.Storage.set(GENRE_CACHE, { updated: genresUpdated, items: Array.from(genreIndex.values()) });
+    }
 
-    };
+    function refreshGenres() {
+        if (genreRefresh) return genreRefresh;
+        if (Date.now() - genresUpdated < GENRE_TTL) return Promise.resolve();
+        var visited = new Set();
+        var current = new Map();
 
-
-    /*
-     * POST-запрос. DLE часто отправляет штатную форму поиска именно POST-методом.
-     */
-    this.post = function (url, data, success, error) {
-        var target = PROXY_URL
-            ? PROXY_URL + encodeURIComponent(url)
-            : url;
-
-        request.native(
-            target,
-            function (response) {
-                if (typeof success === 'function') success(response);
-            },
-            function (xhr, status) {
-                console.error('[AniStar] POST request error:', xhr, status);
-                if (typeof error === 'function') error(xhr, status);
-            },
-            data,
-            {
-                dataType: 'text',
-                timeout: 20000
-            }
-        );
-    };
-
-
-    /*
-     * Отмена активных запросов.
-     *
-     * Здесь clear вызывается правильно:
-     * через экземпляр request.
-     */
-    this.clear = function () {
-
-        if (request && typeof request.clear === 'function') {
-            request.clear();
-        }
-
-    };
-
-}
-
-
-
-    /* =========================================================
-     * 7. КОМПОНЕНТ КАТАЛОГА
-     * ========================================================= */
-
-    /*
- * Поиск DLE: сначала отправляем штатную POST-форму, затем при пустой
- * выдаче или ошибке пробуем GET-вариант. Оба варианта используют одни
- * и те же параметры формы и один парсер каталога.
- */
-/*
- * AniStar принимает параметры поиска в кодировке Windows-1251.
- * encodeURIComponent() отправляет UTF-8, из-за чего сайт видел
- * кириллицу как «РњРѕ...». Кодируем строку в байты CP1251 вручную.
- */
-function encodeAniStarQuery(value) {
-    var special = {
-        '\u0402': 0x80, '\u0403': 0x81, '\u201A': 0x82, '\u0453': 0x83,
-        '\u201E': 0x84, '\u2026': 0x85, '\u2020': 0x86, '\u2021': 0x87,
-        '\u20AC': 0x88, '\u2030': 0x89, '\u0409': 0x8A, '\u2039': 0x8B,
-        '\u040A': 0x8C, '\u040C': 0x8D, '\u040B': 0x8E, '\u040F': 0x8F,
-        '\u0452': 0x90, '\u2018': 0x91, '\u2019': 0x92, '\u201C': 0x93,
-        '\u201D': 0x94, '\u2022': 0x95, '\u2013': 0x96, '\u2014': 0x97,
-        '\u2122': 0x99, '\u0459': 0x9A, '\u203A': 0x9B, '\u045A': 0x9C,
-        '\u045C': 0x9D, '\u045B': 0x9E, '\u045F': 0x9F, '\u00A0': 0xA0,
-        '\u040E': 0xA1, '\u045E': 0xA2, '\u0408': 0xA3, '\u0490': 0xA5,
-        '\u0401': 0xA8, '\u0404': 0xAA, '\u0407': 0xAF, '\u0406': 0xB2,
-        '\u0456': 0xB3, '\u0491': 0xB4, '\u0451': 0xB8, '\u0454': 0xBA,
-        '\u0458': 0xBC, '\u0405': 0xBD, '\u0455': 0xBE, '\u0457': 0xBF
-    };
-    var result = '';
-    var text = String(value || '');
-
-    for (var i = 0; i < text.length; i++) {
-        var code = text.charCodeAt(i);
-        var byte;
-
-        if (code === 0x20) {
-            result += '+';
-            continue;
-        }
-        if (code >= 0x41 && code <= 0x5A ||
-            code >= 0x61 && code <= 0x7A ||
-            code >= 0x30 && code <= 0x39 ||
-            code === 0x2D || code === 0x2E || code === 0x5F || code === 0x7E) {
-            result += text.charAt(i);
-            continue;
-        }
-        if (code >= 0x0410 && code <= 0x044F) {
-            byte = code - 0x350;
-        } else if (Object.prototype.hasOwnProperty.call(special, text.charAt(i))) {
-            byte = special[text.charAt(i)];
-        }
-
-        if (typeof byte === 'number') {
-            result += '%' + ('0' + byte.toString(16).toUpperCase()).slice(-2);
-        } else {
-            var encoded = encodeURIComponent(text.charAt(i));
-            result += encoded.replace(/%[0-9a-f]{2}/gi, function (part) {
-                return part.toUpperCase();
+        function scan(url) {
+            if (!url || visited.has(url)) return Promise.resolve();
+            visited.add(url);
+            // This listing only contains AniStar's Hentai category. Its cards
+            // link to the site's /filter/janrs/ pages with the original encoding.
+            return pageDocument(url, sortOptions({ sort: 0 })).then(function (doc) {
+                var page = catalogPage(doc, url, true);
+                rememberGenres(page.rows, current);
+                rememberGenres(page.rows);
+                return scan(page.next);
             });
         }
+
+        genreRefresh = scan(CATALOG).then(function () {
+            genreIndex = current;
+            genresUpdated = Date.now();
+        }).finally(function () {
+            genreRefresh = null;
+            cacheGenres();
+        });
+        return genreRefresh;
     }
 
-    return result;
-}
+    function canWatch() {
+        return Lampa.Utils.canWatchChildren('18+', Lampa.Account.Permit.profile.age);
+    }
 
+    function filtered(row, state) {
+        if (row.card.adult && !canWatch()) return false;
+        if (state.year && row.card.release_date.slice(0, 4) !== String(state.year)) return false;
+        if (state.genre && !row.genres.some(function (genre) { return genre.url === state.genre; })) return false;
+        return true;
+    }
 
-function requestAniStarSearch(network, query, complete, error) {
-    var searchUrl = new URL('/', BASE_URL).origin +
-        '/?do=search&mode=advanced&subaction=search&titleonly=3&story=' +
-        encodeAniStarQuery(query) + '&skin_name=new36';
+    function fillList(state, list, count, component) {
+        if (!list.next || list.cards.length >= count || (component && component.destroyed)) return Promise.resolve();
+        var url = list.next;
+        return readCatalogPage(url, state).then(function (page) {
+            list.visited.add(url);
+            list.next = list.visited.has(page.next) ? '' : page.next;
+            page.rows.forEach(function (row) {
+                if (!list.ids.has(row.card.id) && filtered(row, state)) {
+                    list.ids.add(row.card.id);
+                    list.cards.push(row.card);
+                }
+            });
+            return fillList(state, list, count, component);
+        });
+    }
 
-    // GET с CP1251: POST через объект Lampa кодирует кириллицу как UTF-8,
-    // что на AniStar приводит к искажённому тексту запроса.
-    network.get(searchUrl, function (html) {
-        complete(html, searchUrl, 'GET-CP1251');
-    }, error);
-}
-
-
-function AniStarCatalog(object) {
-
-        var self = this;
-
-        var network = new AniStarNetwork();
-
-        // Штатный скролл Lampa: на Android TV он прокручивает контент
-        // через translate3d, а не через window.scrollIntoView().
-        var scroll = new Lampa.Scroll({ mask: true, over: true });
-
-        var destroyed = false;
-
-        var loading = false;
-
-        var pageUrl = object.page_url || BASE_URL;
-
-        var nextUrl = '';
-
-        var loaded = {};
-
-        var items = [];
-
-
-        /*
-         * Основной контейнер.
-         */
-        var root = $(
-            '<div class="anistar-screen"></div>'
-        );
-
-
-        /*
-         * Сетка карточек.
-         */
-        var grid = $(
-            '<div class="anistar-grid"></div>'
-        );
-
-
-        root.append(grid);
-        scroll.append(root);
-
-        // Поиск открывается поверх каталога через штатные Select/Input Lampa.
-        // Исходная сетка остаётся в DOM, поэтому при возврате сохраняются
-        // уже загруженные страницы, позиция прокрутки и выбранная карточка.
-        var searchMode = false;
-        var searchGrid = null;
-        var savedCatalogFocus = null;
-        var lastCatalogFocus = null;
-        var lastSearchFocus = null;
-        var searchRequest = null;
-
-        function restoreCatalogView() {
-            if (!searchMode) return;
-            searchMode = false;
-
-            if (searchGrid) {
-                searchGrid.remove();
-                searchGrid = null;
-            }
-
-            grid.show();
-
-            try {
-                // Input.edit возвращает управление тому контроллеру,
-                // из которого была открыта клавиатура (в нашем случае Select).
-                // Сам Select к этому моменту уже закрыт, поэтому принудительно
-                // возвращаем активный контроллер каталога.
-                Lampa.Controller.toggle('content', true);
-                Lampa.Controller.collectionSet(root, false, true);
-                var target = savedCatalogFocus && savedCatalogFocus.length &&
-                    savedCatalogFocus.closest('body').length
-                    ? savedCatalogFocus
-                    : (lastCatalogFocus && lastCatalogFocus.length &&
-                        lastCatalogFocus.closest('body').length ? lastCatalogFocus : grid.find('.anistar-card').first());
-                if (target.length) Lampa.Controller.collectionFocus(target[0], root, true);
-            } catch (e) {
-                console.warn('[AniStar] Restore catalog focus:', e);
-            }
+    function loadList(state, success, failure) {
+        if (!state.anistarList && !canWatch()) {
+            success({ results: state.anistarHome ? statusTiles() : [], total_pages: 1 });
+            return;
         }
-
-        function showSearchResults(list, query) {
-            if (destroyed) return;
-
-            if (!searchMode) {
-                savedCatalogFocus = root.find('.anistar-card.focus').first();
-                searchMode = true;
-                grid.hide();
-                searchGrid = $('<div class="anistar-grid anistar-search-grid"></div>');
-                root.append(searchGrid);
+        var list = lists.get(state);
+        if (!list) {
+            list = { next: catalogStart(state), cards: [], ids: new Set(), visited: new Set(), work: Promise.resolve() };
+            lists.set(state, list);
+        }
+        var page = Number(state.page) || 1;
+        var component = state.activity && state.activity.component;
+        list.work = list.work.catch(function () {}).then(function () {
+            return fillList(state, list, page * PAGE_SIZE, component);
+        }).then(function () {
+            if (component && component.destroyed) return;
+            var results = list.cards.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+            if (state.anistarHome && page === 1) results = statusTiles().concat(results);
+            var total = Math.ceil(list.cards.length / PAGE_SIZE);
+            if (list.next) total = Math.max(page + 1, total);
+            success({ page: page, results: results, total_pages: Math.max(total, 1) });
+        }).catch(function (error) {
+            if (component && component.destroyed) return;
+            if (page > 1 && Number(state.page) === page) state.page = page - 1;
+            Lampa.Noty.show(error.message);
+            if (state.anistarHome && page === 1 && !list.cards.length) {
+                success({ page: 1, total_pages: 1, results: statusTiles() });
             } else {
-                searchGrid.empty();
+                failure(error);
             }
+        });
+    }
 
-            if (!list.length) {
-                searchGrid.append(
-                    $('<div class="anistar-more"></div>').text('По запросу «' + query + '» ничего не найдено')
-                );
-            } else {
-                list.forEach(function (item) {
-                    // Поиск использует те же карточки, что и основной каталог.
-                    // Нормализуем поля, потому что Lampa Search отдаёт poster_path,
-                    // а ссылка AniStar может находиться в anistar_url или id.
-                    var cardItem = $.extend({}, item, {
-                        url: item.url || item.anistar_url || item.id || '',
-                        poster: item.poster || item.anistar_poster || item.poster_path || '',
-                        posterFallback: item.posterFallback || '',
-                        title: item.title || item.name || 'Без названия',
-                        name: item.name || item.title || 'Без названия'
+    function pushList(title, options) {
+        Lampa.Activity.push(Object.assign({
+            title: title, component: 'anistar_catalog', source: SOURCE, page: 1, url: ''
+        }, options));
+    }
+
+    function statusTiles() {
+        return STATUS.map(function (entry) {
+            return { id: SOURCE + ':list:' + (entry.id || 'favorites'), title: entry.title, anistarTile: entry };
+        });
+    }
+
+    function openPersonal(entry) {
+        // The page validates the session. A browser may already have a valid session.
+        pushList(entry.title, { anistarList: entry });
+    }
+
+    function catalogComponent(object) {
+        var Native = Lampa.Component.get('category_full');
+        var component = new Native(object);
+        component.use({
+            onlyNext: function (resolve, reject) {
+                var owner = this;
+                loadList(object, function (data) {
+                    owner.total_pages = data.total_pages;
+                    resolve(data);
+                }, reject);
+            },
+            onlyCreateAndAppend: function (data) {
+                var entry = data.anistarTile;
+                var item;
+                if (entry) {
+                    item = Lampa.Maker.make('Register', { title: entry.title, count: '—' }, function (modules) {
+                        return modules.only('Line', 'Callback');
                     });
-
-                    var card = createCard(cardItem);
-                    card.on('hover:focus', function () {
-                        lastSearchFocus = $(this);
-                        scrollCardIntoView(this);
+                    item.use({
+                        onlyEnter: function () { openPersonal(entry); },
+                        onCreate: function () {
+                            $(this.render(true)).addClass('anistar-status-tile').find('.register__counter').hide();
+                        }
                     });
-                    searchGrid.append(card);
-                });
-            }
-
-            try {
-                // После закрытия экранной клавиатуры Lampa может оставить
-                // активным уже скрытый контроллер Select. Возвращаем content
-                // ДО установки коллекции результатов, иначе пульт зависает.
-                Lampa.Controller.toggle('content', true);
-                Lampa.Controller.collectionSet(searchGrid, false, true);
-                var firstResult = searchGrid.find('.anistar-card').first();
-
-                if (firstResult.length) {
-                    lastSearchFocus = firstResult;
-                    Lampa.Controller.collectionFocus(firstResult[0], searchGrid, true);
                 } else {
-                    // Даже пустая выдача должна иметь selector в коллекции,
-                    // иначе Navigator сохраняет старую/пустую коллекцию.
-                    var emptyAction = $('<div class="selector anistar-more"></div>');
-                    emptyAction.text('Ничего не найдено. Нажми OK, чтобы повторить поиск.');
-                    emptyAction.on('hover:enter', function () {
-                        showAniStarFilter();
+                    item = Lampa.Maker.make('Card', data, function (modules) {
+                        return modules.only('Card', 'Style', 'Callback');
                     });
-                    searchGrid.append(emptyAction);
-                    Lampa.Controller.collectionSet(searchGrid, false, true);
-                    Lampa.Controller.collectionFocus(emptyAction[0], searchGrid, true);
-                }
-            } catch (e) {
-                console.warn('[AniStar] Search collection:', e);
-            }
-        }
-
-        function runCatalogSearch(value) {
-            var query = cleanText(value);
-            if (!query) {
-                Lampa.Noty.show('Введи название аниме для поиска.');
-                return;
-            }
-
-            if (searchRequest) searchRequest.clear();
-            searchRequest = new AniStarNetwork();
-
-            Lampa.Noty.show('Ищем на AniStar: ' + query);
-
-            requestAniStarSearch(searchRequest, query, function (html, searchUrl, method) {
-                if (destroyed) return;
-
-                try {
-                    var sourceHtml = String(html || '');
-                    var parsed = parseCatalog(sourceHtml, searchUrl, true);
-                    var debugDoc = new DOMParser().parseFromString(sourceHtml, 'text/html');
-                    var allLinks = debugDoc.querySelectorAll('a[href]');
-                    var animeLikeLinks = [];
-                    var hrefSamples = [];
-
-                    Array.prototype.forEach.call(allLinks, function (link) {
-                        var href = absoluteUrl(link.getAttribute('href'), searchUrl);
-                        if (isAniStarUrl(href) && /\\.html(?:$|[?#])/i.test(href) &&
-                            animeLikeLinks.indexOf(href) < 0) animeLikeLinks.push(href);
-                        if (hrefSamples.length < 8) {
-                            hrefSamples.push(cleanText(link.textContent).slice(0, 45) +
-                                ' → ' + String(link.getAttribute('href') || '').slice(0, 100));
-                        }
-                    });
-
-                    console.log('[AniStar] Catalog search diagnostics:', {
-                        query: query,
-                        method: method,
-                        url: searchUrl,
-                        finalTitle: cleanText(debugDoc.title),
-                        htmlLength: sourceHtml.length,
-                        links: allLinks.length,
-                        parsedTitles: parsed.items.length,
-                        animeLikeLinks: animeLikeLinks.slice(0, 10),
-                        hrefSamples: hrefSamples,
-                        bodyText: cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 700)
-                    });
-
-                    if (!parsed.items.length) {
-                        var bodyExcerpt = cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 180);
-                        Lampa.Noty.show('AniStar (' + method + '): ' + allLinks.length + ' ссылок, ' +
-                            animeLikeLinks.length + ' страниц .html. ' + (bodyExcerpt || 'Ответ пустой'));
-                    }
-
-                    showSearchResults(parsed.items, query);
-                } catch (e) {
-                    console.error('[AniStar] Catalog search parse error:', e);
-                    Lampa.Noty.show('Не удалось обработать результаты поиска AniStar.');
-                }
-            }, function (xhr, status) {
-                if (destroyed) return;
-                console.error('[AniStar] Catalog search request failed:', status || xhr);
-                Lampa.Noty.show('Не удалось выполнить поиск AniStar.');
-            });
-        }
-
-        function showAniStarGenres() {
-            Lampa.Noty.show('Загружаем список жанров AniStar...');
-
-            network.get(BASE_URL, function (html) {
-                if (destroyed) return;
-
-                var doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                var host = new URL(BASE_URL).hostname.toLowerCase();
-
-                function isOfficialGenreLink(link) {
-                    var label = cleanText(link.textContent);
-                    var url = absoluteUrl(link.getAttribute('href'), BASE_URL);
-                    if (!label || !url) return null;
-
-                    try {
-                        var parsed = new URL(url);
-                        var domain = parsed.hostname.toLowerCase();
-                        if (domain !== host && domain !== 'www.' + host) return null;
-                        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-                        if (isAnimeUrl(url)) return null;
-                        if (/^\/(anime|manga|dorama)(\/|$)/i.test(parsed.pathname)) return null;
-                        if (parsed.pathname === '/' || !parsed.pathname || /\.html?$/i.test(parsed.pathname)) return null;
-
-                        return {
-                            title: label,
-                            url: url
-                        };
-                    } catch (e) {
-                        return null;
-                    }
-                }
-
-                // Ищем именно блок «Аниме по жанрам», а не ссылки на жанры
-                // манги, дорам или категории каталога.
-                var headingNodes = doc.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,strong,b,p');
-                var section = null;
-                var sectionLinks = [];
-
-                for (var h = 0; h < headingNodes.length; h++) {
-                    if (cleanText(headingNodes[h].textContent).toLowerCase() !== 'аниме по жанрам') continue;
-
-                    var parent = headingNodes[h];
-                    for (var depth = 0; parent && depth < 5; depth++, parent = parent.parentElement) {
-                        var anchors = parent.querySelectorAll ? parent.querySelectorAll('a[href]') : [];
-                        if (anchors.length < 10 || anchors.length > 35) continue;
-
-                        var candidateItems = [];
-                        Array.prototype.forEach.call(anchors, function (link) {
-                            var item = isOfficialGenreLink(link);
-                            if (item) candidateItems.push(item);
-                        });
-
-                        if (candidateItems.length >= 10) {
-                            section = parent;
-                            sectionLinks = candidateItems;
-                            break;
-                        }
-                    }
-
-                    if (section) break;
-                }
-
-                // Резервный вариант для изменений вёрстки: блок «Жанры»
-                // в верхней части страницы каталога.
-                if (!sectionLinks.length) {
-                    for (var h2 = 0; h2 < headingNodes.length; h2++) {
-                        if (cleanText(headingNodes[h2].textContent).toLowerCase() !== 'жанры') continue;
-
-                        var parent2 = headingNodes[h2];
-                        for (var depth2 = 0; parent2 && depth2 < 5; depth2++, parent2 = parent2.parentElement) {
-                            var anchors2 = parent2.querySelectorAll ? parent2.querySelectorAll('a[href]') : [];
-                            if (anchors2.length < 10 || anchors2.length > 35) continue;
-
-                            var candidateItems2 = [];
-                            Array.prototype.forEach.call(anchors2, function (link) {
-                                var item = isOfficialGenreLink(link);
-                                if (item) candidateItems2.push(item);
-                            });
-
-                            if (candidateItems2.length >= 10) {
-                                sectionLinks = candidateItems2;
-                                break;
+                    item.use({
+                        onCreate: function () {
+                            var year = data.release_date.slice(0, 4);
+                            if (year) {
+                                $(this.render(true)).find('.card__title')
+                                    .after($('<div class="anistar-year"></div>').text(year));
                             }
                         }
-
-                        if (sectionLinks.length) break;
-                    }
+                    });
+                    this.emit('instance', item, data);
                 }
-
-                // Убираем дубликаты по URL, сохраняя порядок на сайте.
-                var seen = {};
-                var items = [];
-                sectionLinks.forEach(function (item) {
-                    var key = normalizeUrl(item.url);
-                    if (!seen[key]) {
-                        seen[key] = true;
-                        items.push(item);
-                    }
-                });
-
-                console.log('[AniStar] Genre menu parsed:', {
-                    htmlLength: String(html || '').length,
-                    pageTitle: cleanText(doc.title),
-                    sectionFound: !!section,
-                    count: items.length,
-                    items: items
-                });
-
-                if (!items.length) {
-                    Lampa.Noty.show('Не удалось найти ссылки в блоке «Аниме по жанрам» на AniStar.');
-                    Lampa.Controller.toggle('content');
-                    return;
-                }
-
-                // Второй список открывается штатным селектором Lampa
-                // поверх каталога — в том же правом меню.
-                Lampa.Select.show({
-                    title: 'Жанры',
-                    items: items,
-                    onBack: function () {
-                        showAniStarFilter();
-                    },
-                    onSelect: function (selected) {
-                        if (!selected || !selected.url) {
-                            Lampa.Controller.toggle('content');
-                            return;
-                        }
-
-                        // Открываем основной каталог AniStar уже по URL жанра.
-                        // Заголовок Activity — ровно название выбранного жанра.
-                        Lampa.Activity.push({
-                            url: '',
-                            title: selected.title,
-                            component: PLUGIN_ID,
-                            page: 1,
-                            page_url: selected.url
-                        });
-                    }
-                });
-            }, function (xhr, status) {
-                if (destroyed) return;
-                console.error('[AniStar] Genres request failed:', status || xhr);
-                Lampa.Noty.show('Не удалось загрузить список жанров AniStar.');
-                Lampa.Controller.toggle('content');
-            });
-        }
-
-        function showAniStarFilter() {
-            if (!Lampa.Select || typeof Lampa.Select.show !== 'function') {
-                Lampa.Noty.show('Меню фильтра недоступно в этой версии Lampa.');
-                return;
+                item.create();
+                this.emit('append', item, data);
             }
+        });
+        return component;
+    }
 
+    function editText(options, callback) {
+        var cancelled = false;
+        var input = Lampa.Input.edit(Object.assign({ nosave: true }, options), function (value) {
+            Promise.resolve().then(function () {
+                callback(cancelled ? null : String(value || ''));
+            });
+        });
+        input.listener.follow('back', function () { cancelled = true; });
+    }
+
+    function optionMenu(title, options, selected, choose, back) {
+        Lampa.Select.show({
+            title: title,
+            items: options.map(function (entry) {
+                return Object.assign({}, entry, { selected: entry.value === selected });
+            }),
+            onSelect: function (entry) {
+                if (entry.noenter) return;
+                choose(entry.value);
+                back();
+            },
+            onBack: back
+        });
+    }
+
+    function showFilter(activity) {
+        var base = activity.anistarFilters || filters;
+        var draft = Object.assign({}, base);
+
+        function render() {
+            if (Lampa.Activity.active() !== activity) return;
+            var genre = genreIndex.get(draft.genre);
             Lampa.Select.show({
                 title: 'Фильтр',
-                items: [{ title: 'Поиск', action: 'search' }, { title: 'Жанры', action: 'genres' }],
-                onBack: function () {
-                    Lampa.Controller.toggle('content');
-                },
-                onSelect: function (selected) {
-                    if (selected && selected.action === 'genres') {
-                        showAniStarGenres();
+                items: [
+                    { title: 'Поиск', subtitle: escapeHtml(draft.query), action: search },
+                    { title: 'Сортировка', subtitle: SORT[draft.sort].title, action: sort },
+                    { title: 'Жанры', subtitle: genre ? escapeHtml(genre.title) : 'Все', action: genres },
+                    { title: 'Год', subtitle: draft.year || 'Любой', action: years },
+                    { title: 'Показать', action: apply },
+                    { title: 'Сбросить', action: reset }
+                ],
+                onSelect: function (entry) { entry.action(); },
+                onBack: function () { Lampa.Controller.toggle('head'); }
+            });
+        }
+
+        function choose(label, key, options) {
+            optionMenu(label, options, draft[key], function (value) { draft[key] = value; }, render);
+        }
+
+        function search() {
+            editText({ title: 'Поиск', value: draft.query, keyboard: 'lampa', layout: 'clarify', align: 'center' },
+                function (value) {
+                    if (value !== null) draft.query = value.trim();
+                    render();
+                });
+        }
+
+        function sort() {
+            choose('Сортировка', 'sort', SORT.map(function (entry, index) {
+                return { title: entry.title, value: index };
+            }));
+        }
+
+        function genres() {
+            var loading = refreshGenres();
+            var firstRow;
+            function showGenres() {
+                var items = Array.from(genreIndex.values()).sort(function (left, right) {
+                    return left.title.localeCompare(right.title, 'ru', { sensitivity: 'base' });
+                }).map(function (entry) {
+                    return { title: escapeHtml(entry.title), value: entry.url };
+                });
+                items.unshift({ title: 'Все', value: '' });
+                if (genreRefresh) items.push({ title: 'Жанры загружаются…', noenter: true });
+                Lampa.Select.show({
+                    title: 'Жанры',
+                    items: items.map(function (item) {
+                        return Object.assign({}, item, { selected: item.value === draft.genre });
+                    }),
+                    onDraw: function (element, item) {
+                        if (item.value === '') firstRow = $(element)[0];
+                    },
+                    onSelect: function (item) {
+                        draft.genre = item.value;
+                        render();
+                    },
+                    onBack: render
+                });
+            }
+            showGenres();
+            if (!genreRefresh) return;
+            loading.then(function () {
+                if (Lampa.Activity.active() === activity && firstRow && firstRow.isConnected &&
+                    typeof Lampa.Select.closeAll === 'function' && Lampa.Select.opened()) {
+                    Lampa.Select.closeAll();
+                    showGenres();
+                }
+            }).catch(function (error) {
+                if (Lampa.Activity.active() === activity) Lampa.Noty.show(error.message);
+            });
+        }
+
+        function years() {
+            var options = [{ title: 'Любой', value: '' }];
+            for (var year = new Date().getFullYear() + 1; year >= 1900; year--) {
+                options.push({ title: String(year), value: String(year) });
+            }
+            choose('Год', 'year', options);
+        }
+
+        function apply() {
+            filters = Object.assign({}, draft);
+            pushList(draft.query ? 'Поиск Anistar' : 'Фильтр Anistar', Object.assign({
+                anistarFilters: filters
+            }, filters));
+        }
+
+        function reset() {
+            draft = { sort: 0, year: '', genre: '', query: '' };
+            render();
+        }
+
+        render();
+    }
+
+    function installFilter() {
+        var button = Lampa.Head.addIcon('<svg><use xlink:href="#sprite-filter"></use></svg>', function () {
+            var activity = Lampa.Activity.active();
+            if (activity && activity.source === SOURCE && !activity.anistarList) showFilter(activity);
+        }).attr({ title: 'Фильтр', 'aria-label': 'Фильтр' });
+
+        function sync(activity) {
+            var visible = Boolean(activity && activity.source === SOURCE && !activity.anistarList &&
+                activity.component === 'anistar_catalog');
+            button.toggleClass('hide', !visible).toggleClass('selector', visible);
+            var search = Lampa.Head.render().find('.open--search').first();
+            if (search.length && button.next()[0] !== search[0]) button.insertBefore(search);
+        }
+        sync(Lampa.Activity.active());
+        Lampa.Listener.follow('activity', function (event) {
+            if (event.type === 'start') sync(event.object);
+            if (event.type === 'destroy') setTimeout(function () { sync(Lampa.Activity.active()); }, 0);
+        });
+    }
+
+    function readSession(doc) {
+        var logout = doc.querySelector('a[href*="action=logout"]');
+        var menu = logout && logout.closest('ul');
+        var profile = menu && menu.querySelector('a[href*="/user/"]');
+        var profileUrl = profile && siteUrl(profile.getAttribute('href'));
+        var logoutUrl = logout && siteUrl(logout.getAttribute('href'));
+        var match = profileUrl && new URL(profileUrl).pathname.match(/^\/user\/([^/]+)\/$/);
+        return match && logoutUrl ? { name: decodeURIComponent(match[1]), logout: logoutUrl } : null;
+    }
+
+    function articleSettings(doc, movie) {
+        var active = nodeText(doc, '.anime_status .status_val');
+        var status = Array.from(doc.querySelectorAll('.anime_status .selected_form [data-value]')).find(function (item) {
+            return active && clean(item.textContent) === active;
+        });
+        var favorite = doc.getElementById('fav-id-' + newsId(movie.url));
+        var favoriteUrl = favorite && siteUrl(favorite.getAttribute('href'));
+        var action = favoriteUrl && new URL(favoriteUrl).searchParams.get('doaction');
+        return { status: status ? Number(status.getAttribute('data-value')) : 0, favorite: action === 'del',
+            favoriteUrl: action === 'add' || action === 'del' ? favoriteUrl : '' };
+    }
+
+    function chooseStatus(movie) {
+        var activity = Lampa.Activity.active();
+        var controller = Lampa.Controller.enabled().name;
+
+        function restore() {
+            if (Lampa.Activity.active() === activity) Lampa.Controller.toggle(controller);
+        }
+
+        pageDocument(movie.url, { auth: true }).then(function (doc) {
+            if (Lampa.Activity.active() !== activity) return;
+            if (!readSession(doc)) {
+                Lampa.Select.show({
+                    title: 'Статусы',
+                    items: [{ title: 'Войдите в AniStar в настройках Anistar.', noenter: true }],
+                    onBack: restore
+                });
+                return;
+            }
+            var current = articleSettings(doc, movie);
+            var pending = false;
+            var items = STATUS.map(function (entry) {
+                return { title: entry.title, entry: entry, checkbox: true,
+                    checked: entry.id ? current.status === entry.id : current.favorite };
+            });
+            var elements = new Map();
+            Lampa.Select.show({
+                title: 'Статусы',
+                items: items,
+                onDraw: function (element, item) { elements.set(item.entry.path, $(element)); },
+                onBack: restore,
+                onCheck: function (item, element) {
+                    var entry = item.entry;
+                    var checked = entry.id ? current.status === entry.id : current.favorite;
+                    var desired = item.checked;
+                    item.checked = checked;
+                    $(element).toggleClass('selectbox-item--checked', checked);
+                    if (pending || desired === checked) return;
+
+                    var update = entry.id
+                        ? request(SITE + '/engine/ajax/statuspost.php', {
+                            body: form({ id: newsId(movie.url), status: desired ? entry.id : 0 }),
+                            headers: { 'X-Requested-With': 'XMLHttpRequest' }, auth: true
+                        })
+                        : current.favoriteUrl && request(current.favoriteUrl, { auth: true });
+                    if (!update) {
+                        Lampa.Noty.show('AniStar не предоставил ссылку для добавления.');
                         return;
                     }
-
-                    if (!Lampa.Input || typeof Lampa.Input.edit !== 'function') {
-                        Lampa.Noty.show('Поле поиска недоступно в этой версии Lampa.');
-                        Lampa.Controller.toggle('content');
-                        return;
-                    }
-
-                    Lampa.Input.edit({
-                        title: 'Поиск по AniStar',
-                        value: '',
-                        free: true,
-                        nosave: true
-                    }, function (newValue) {
-                        runCatalogSearch(newValue);
+                    pending = true;
+                    update.then(function () {
+                        return pageDocument(movie.url, { auth: true });
+                    }).then(function (updated) {
+                        if (!readSession(updated)) throw new Error('Войдите в AniStar в настройках Anistar.');
+                        current = articleSettings(updated, movie);
+                        items.forEach(function (row) {
+                            row.checked = row.entry.id ? row.entry.id === current.status : current.favorite;
+                            var element = elements.get(row.entry.path);
+                            if (element) element.toggleClass('selectbox-item--checked', row.checked);
+                        });
+                        var actual = entry.id ? current.status === entry.id : current.favorite;
+                        if (actual !== desired) {
+                            throw new Error('AniStar не подтвердил изменение статуса.');
+                        }
+                    }).catch(function (error) {
+                        Lampa.Noty.show(error.message);
+                    }).finally(function () {
+                        pending = false;
                     });
                 }
             });
-        }
+        }).catch(function (error) { Lampa.Noty.show(error.message); });
+    }
 
+    function installSettings() {
+        var rows = {};
+        var username = '';
+        var password = '';
+        var busy = false;
 
-        /* =====================================================
-         * 8. ОТРИСОВКА КАРТОЧКИ
-         * ===================================================== */
-
-        function createCard(item) {
-
-            var card = $(
-                '<div class="selector anistar-card"></div>'
-            );
-
-            var poster = $(
-                '<div class="anistar-card__poster"></div>'
-            );
-
-            var title = $(
-                '<div class="anistar-card__title"></div>'
-            );
-
-
-            /*
-             * Добавляем постер.
-             */
-            if (item.poster) {
-
-                var img = $('<img loading="lazy">');
-
-                img.attr('src', item.poster);
-
-                img.attr('alt', item.title);
-
-                img.on('error', function () {
-                    var fallback = item.posterFallback || '';
-                    if (fallback && fallback !== item.poster && !img.data('fallback-tried')) {
-                        img.data('fallback-tried', true);
-                        img.attr('src', fallback);
-                        return;
-                    }
-
-                    $(this).remove();
-                    poster.append(
-                        '<div class="anistar-card__placeholder">▶</div>'
-                    );
-                });
-
-                poster.append(img);
-
-            }
-
-            else {
-
-                poster.append(
-                    '<div class="anistar-card__placeholder">▶</div>'
-                );
-
-            }
-
-
-            // Название.
-            title.text(item.title);
-
-
-            card.append(poster);
-
-            card.append(title);
-
-
-            /*
-             * Открытие страницы тайтла по OK на пульте.
-             */
-            card.on('hover:enter', function () {
-
-                Lampa.Activity.push({
-
-                    url: '',
-
-                    title: item.title,
-
-                    component: 'anistar_detail',
-
-                    page: 1,
-
-                    item: item
-
-                });
-
+        function render() {
+            var values = { login: username, password: password ? '••••••••' : '', profile: session ? session.name : '' };
+            Object.keys(rows).forEach(function (key) {
+                var personal = key === 'profile' || key === 'signout';
+                rows[key].toggleClass('hide', personal !== Boolean(session));
+                rows[key].find('.settings-param__value').text(values[key] || '');
             });
-
-
-            return card;
-
         }
 
+        function focus(key) {
+            var row = rows[key] && rows[key][0];
+            if (!row || !row.isConnected || Lampa.Controller.enabled().name !== 'settings_component') return;
+            Lampa.Controller.collectionSet(row.parentElement, false, true);
+            Lampa.Controller.collectionFocus(row, row.parentElement, true);
+        }
 
-        /* =====================================================
-         * 9. ЗАПОЛНЕНИЕ СЕТКИ
-         * ===================================================== */
-
-        function renderItems(list) {
-
-            list.forEach(function (item) {
-
-                if (!item.url || loaded[item.url]) return;
-
-                loaded[item.url] = true;
-
-                items.push(item);
-
-                var card = createCard(item);
-                card.on('hover:focus', function () {
-                    lastCatalogFocus = $(this);
-                    // Lampa меняет focus-класс, но для произвольной DOM-сетки
-                    // не всегда прокручивает Activity вместе с ним.
-                    // Явно держим сфокусированную карточку в видимой области.
-                    scrollCardIntoView(this);
-                    maybeLoadNext(this);
+        function signIn() {
+            if (busy) return;
+            if (!username || !password) {
+                Lampa.Noty.show('Введите логин и пароль AniStar.');
+                return;
+            }
+            busy = true;
+            pageDocument(CATALOG, { auth: true }).then(function (doc) {
+                var known = readSession(doc);
+                if (known) return known;
+                var login = doc.querySelector('input[name="login_name"]');
+                var loginForm = login && login.closest('form');
+                if (!loginForm || !loginForm.querySelector('[name="login_password"]')) {
+                    throw new Error('AniStar не вернул форму входа.');
+                }
+                var fields = Object.create(null);
+                loginForm.querySelectorAll('input[type="hidden"][name]').forEach(function (input) {
+                    fields[input.name] = input.value;
                 });
-                grid.append(card);
-
+                fields.login_name = username;
+                fields.login_password = password;
+                password = '';
+                var target = siteUrl(loginForm.getAttribute('action') || CATALOG);
+                if (!target || !/^post$/i.test(loginForm.method)) throw new Error('Форма входа AniStar изменилась.');
+                return pageDocument(target, { body: form(fields), auth: true, secret: true }).then(function (signed) {
+                    return pageDocument(CATALOG, { auth: true }).then(function (check) {
+                        if (readSession(check)) return readSession(check);
+                        if (readSession(signed)) throw new Error('Lampa не сохранила сессию AniStar.');
+                        throw new Error('AniStar не подтвердил вход.');
+                    });
+                });
+            }).then(function (signedIn) {
+                session = signedIn;
+                username = '';
+                render();
+                focus('signout');
+                Lampa.Noty.show('Вы вошли в AniStar.');
+            }).catch(function (error) {
+                Lampa.Noty.show(error.message);
+            }).finally(function () {
+                busy = false;
+                password = '';
+                render();
             });
-
         }
 
-
-        /* =====================================================
-         * 10. АВТОПОДГРУЗКА И УПРАВЛЕНИЕ ПУЛЬТОМ
-         * ===================================================== */
-
-        var controller = null;
-        var lastAutoLoadCount = -1;
-
-        function scrollCardIntoView(card) {
-            if (!card) return;
-
-            try {
-                // Lampa.Scroll сам рассчитывает позицию карточки внутри
-                // .scroll__body и на TV двигает её через transform.
-                if (scroll && typeof scroll.update === 'function') {
-                    scroll.update(card);
-                }
-            } catch (e) {
-                console.warn('[AniStar] Scroll update:', e);
-            }
+        function signOut() {
+            if (busy || !session) return;
+            busy = true;
+            pageDocument(session.logout, { auth: true }).then(function (doc) {
+                if (readSession(doc)) throw new Error('AniStar не завершил сеанс.');
+                nativeCookies.clear();
+                session = null;
+                render();
+                focus('login');
+            }).catch(function (error) {
+                Lampa.Noty.show(error.message);
+            }).finally(function () { busy = false; });
         }
 
-        function refreshCollection(keepFocus) {
-            if (!window.Lampa || !Lampa.Controller) return;
-            try {
-                // Сохраняем DOM-элемент до сброса коллекции:
-                // Controller.clear() может снять с него класс focus.
-                var activeGrid = searchMode && searchGrid ? searchGrid : grid;
-                var current = keepFocus
-                    ? activeGrid.find('.anistar-card.focus').first()
-                    : $();
-                if (!current.length) {
-                    current = searchMode ? lastSearchFocus : lastCatalogFocus;
-                }
-                if (!current || !current.length || !activeGrid[0].contains(current[0])) {
-                    current = activeGrid.find('.anistar-card').first();
-                }
-
-                // В коллекцию попадают только видимые элементы: скрытая сетка
-                // каталога не должна перехватывать фокус во время поиска.
-                Lampa.Controller.collectionSet(root, false, true);
-
-                if (current.length && current[0].offsetParent !== null) {
-                    Lampa.Controller.collectionFocus(current[0], root, true);
-                }
-            } catch (e) {
-                console.warn('[AniStar] Collection refresh:', e);
-            }
-        }
-
-        function maybeLoadNext(card) {
-            if (!nextUrl || loading || destroyed) return;
-            var index = grid.children('.anistar-card').index(card);
-            // Начинаем подгружать, когда фокус дошёл до последних 12 карточек.
-            if (index >= 0 && index >= grid.children('.anistar-card').length - 12 &&
-                lastAutoLoadCount !== items.length) {
-                lastAutoLoadCount = items.length;
-                load(nextUrl);
-            }
-        }
-
-        function getNavigator() {
-            // В Lampa Navigator доступен как глобальный объект,
-            // а не во всех сборках как Lampa.Navigator.
-            return window.Navigator || (window.Lampa && Lampa.Navigator) || null;
-        }
-
-        function createController() {
-            if (!window.Lampa || !Lampa.Controller) return;
-
-            controller = {
-                link: this,
-                toggle: function () {
-                    try {
-                        var activeGrid = searchMode && searchGrid ? searchGrid : grid;
-                        var target = searchMode ? lastSearchFocus : lastCatalogFocus;
-
-                        Lampa.Controller.collectionSet(root, false, true);
-
-                        if (!target || !target.length || !activeGrid[0].contains(target[0]) ||
-                            target[0].offsetParent === null) {
-                            target = activeGrid.find('.anistar-card').first();
-                        }
-
-                        if (!target.length) target = activeGrid.find('.selector').first();
-
-                        if (target.length) {
-                            if (searchMode && target.hasClass('anistar-card')) lastSearchFocus = target;
-                            else if (!searchMode && target.hasClass('anistar-card')) lastCatalogFocus = target;
-                            Lampa.Controller.collectionFocus(target[0], root, true);
-                        }
-                    } catch (e) {
-                        console.warn('[AniStar] Controller restore:', e);
+        function row(key, label, action) {
+            Lampa.SettingsApi.addParam({
+                component: SOURCE,
+                param: { name: SOURCE + '_account_' + key, type: action ? 'button' : 'static' },
+                field: { name: label },
+                onChange: action,
+                onRender: function (item) {
+                    rows[key] = item;
+                    if (!action) item.removeClass('selector');
+                    if (!item.find('.settings-param__value').length) {
+                        item.append('<div class="settings-param__value"></div>');
                     }
-                },
-                left: function () {
-                    var nav = getNavigator();
-                    if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
-                    else Lampa.Controller.toggle('menu');
-                },
-                up: function () {
-                    var nav = getNavigator();
-                    if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
-                    else Lampa.Controller.toggle('head');
-                },
-                down: function () {
-                    var nav = getNavigator();
-                    if (nav && nav.move) nav.move('down');
-                },
-                right: function () {
-                    var nav = getNavigator();
-                    if (nav && nav.canmove && nav.canmove('right')) nav.move('right');
-                    else if (!searchMode) showAniStarFilter();
-                },
-                back: function () {
-                    if (searchMode) restoreCatalogView();
-                    else Lampa.Activity.backward();
+                    render();
                 }
+            });
+        }
+
+        Lampa.SettingsApi.addComponent({ component: SOURCE, name: NAME, icon: ICON });
+        Lampa.SettingsApi.addParam({
+            component: SOURCE,
+            param: { name: SOURCE + '_account', type: 'title' },
+            field: { name: 'Аккаунт' }
+        });
+        row('login', 'Логин', function () {
+            if (busy) return;
+            editText({ title: 'Логин', value: username, nomic: true }, function (value) {
+                if (value !== null) username = value.trim();
+                render();
+            });
+        });
+        row('password', 'Пароль', function () {
+            if (busy) return;
+            editText({ title: 'Пароль', value: password, nomic: true }, function (value) {
+                if (value !== null) password = value;
+                render();
+            });
+        });
+        row('signin', 'Выполнить вход', signIn);
+        row('profile', 'Профиль');
+        row('signout', 'Выйти из аккаунта', signOut);
+        Lampa.SettingsApi.addParam({
+            component: SOURCE,
+            param: { name: SOURCE + '_about', type: 'static' },
+            field: { name: 'О плагине', description: 'Версия ' + VERSION }
+        });
+    }
+
+    function labeledValue(scope, label) {
+        var rows = scope.querySelectorAll('.head li');
+        for (var row of rows) {
+            var heading = row.querySelector('b, strong');
+            var name = heading && clean(heading.textContent);
+            if (name && label.test(name)) return clean(row.textContent).slice(name.length).trim();
+        }
+        return '';
+    }
+
+    function readComments(doc) {
+        return Array.from(doc.querySelectorAll('#dle-comments-list .comment')).map(function (comment) {
+            return {
+                author: nodeText(comment, '.autor_nav a[href*="/user/"]'),
+                date: nodeText(comment, '.scomment'),
+                text: nodeText(comment, '[id^="comm-id-"], .coment_text')
             };
-
-            Lampa.Controller.add('content', controller);
-            Lampa.Controller.toggle('content');
-        }
-
-
-        /* =====================================================
-         * 11. ЗАГРУЗКА КАТАЛОГА
-         * ===================================================== */
-
-        function load(url) {
-
-            if (loading || destroyed || !url) return;
-
-            loading = true;
-
-            // Полноэкранный loader нужен только при первом открытии.
-            // При догрузке он перекрывает каталог и мешает навигации пультом.
-            var initialLoad = items.length === 0;
-            if (initialLoad) self.activity.loader(true);
-
-
-            network.get(
-
-                fullVersionUrl(url),
-
-
-                function (html) {
-
-                    if (destroyed) return;
-
-                    loading = false;
-
-                    if (initialLoad) self.activity.loader(false);
-
-
-                    try {
-
-                        var parsed = parseCatalog(
-                            html,
-                            url
-                        );
-
-
-                        if (!parsed.items.length && !items.length) {
-
-                            Lampa.Noty.show(
-                                'HTML получен, но тайтлы не найдены. ' +
-                                'Необходимо проверить разметку AniStar.'
-                            );
-
-                            return;
-
-                        }
-
-
-                        // Отображаем найденные карточки.
-                        renderItems(parsed.items);
-
-
-                        // Сохраняем URL следующей страницы.
-                        nextUrl = parsed.next || '';
-
-                        // Обновляем коллекцию Lampa после добавления карточек.
-                        refreshCollection(true);
-
-
-                        /*
-                         * После загрузки возвращаем фокус
-                         * на первую карточку, если он отсутствует.
-                         */
-                        console.log(
-                            '[AniStar] Loaded:',
-                            parsed.items.length
-                        );
-
-                        console.log(
-                            '[AniStar] Total:',
-                            items.length
-                        );
-
-                    }
-
-                    catch (e) {
-
-                        console.error(
-                            '[AniStar] Parse error:',
-                            e
-                        );
-
-                        Lampa.Noty.show(
-                            'Ошибка обработки каталога AniStar'
-                        );
-
-                    }
-
-                },
-
-
-                function (error) {
-
-                    if (destroyed) return;
-
-                    loading = false;
-
-                    // Разрешаем повторную попытку при следующем достижении края.
-                    lastAutoLoadCount = -1;
-                    if (initialLoad) self.activity.loader(false);
-
-                    console.error(
-                        '[AniStar] Network error:',
-                        error
-                    );
-
-                    Lampa.Noty.show(
-                        'Не удалось загрузить AniStar. ' +
-                        'Проверь подключение или CORS.'
-                    );
-
-                }
-
-            );
-
-        }
-
-
-        /* =====================================================
-         * 12. ЖИЗНЕННЫЙ ЦИКЛ КАТАЛОГА
-         * ===================================================== */
-
-        this.create = function () {
-
-            // Lampa.Scroll должен получить высоту области Activity.
-            // Без minus() на TV viewport не рассчитывается корректно.
-            scroll.minus();
-
-            load(pageUrl);
-
-            return this.render();
-
-        };
-
-
-        this.render = function () {
-            return scroll.render();
-        };
-
-
-        this.start = function () {
-            createController.call(this);
-        };
-
-
-        this.stop = function () {};
-
-
-        this.destroy = function () {
-
-            destroyed = true;
-
-            // Контроллер content общий для Lampa. Следующая Activity сама
-            // зарегистрирует свой обработчик при start(); здесь его не удаляем.
-
-            network.clear();
-
-            scroll.destroy();
-            root.remove();
-
-        };
-
-
-        this.empty = function () {
-
-            self.activity.loader(false);
-
-            self.activity.empty();
-
-        };
-
+        }).filter(function (comment) {
+            return comment.text;
+        });
     }
 
-
-    /* =========================================================
-     * 13. ЭКРАН ИНФОРМАЦИИ О ТАЙТЛЕ
-     * =========================================================
-     *
-     * На данном этапе открываем страницу тайтла
-     * внутри каталога и показываем его постер и ссылку.
-     *
-     * Извлечение описания и списка серий будет следующим
-     * этапом разработки.
-     */
-
-    /*
-     * Удаляем HTML-сущности и экранирование, которые AniStar
-     * использует в JS-массиве потоков.
-     */
-    function decodePlayerText(value) {
-        var text = String(value || '').split('\\/').join('/');
-        var node = document.createElement('textarea');
-        node.innerHTML = text;
-        return node.value;
+    function playerUrl(scope, article) {
+        var frame = scope.querySelector('iframe[src*="videoas_p2p_new.php"], iframe[data-src*="videoas_p2p_new.php"]');
+        var player = frame && urlOf(frame.getAttribute('data-src') || frame.getAttribute('src'), article);
+        return player && player.origin === SITE ? player.href : '';
     }
 
+    function readArticle(doc, card) {
+        var heading = doc.querySelector('#dle-content .news h1');
+        var root = heading ? heading.closest('.news') : doc.querySelector('#dle-content .news');
+        var movie = root && basicCard(root, card.url, card);
+        if (!movie) throw new Error('AniStar не вернул карточку тайтла.');
+        var head = root.querySelector('.head') || root;
+        var description = root.querySelector('.descripts[itemprop="description"], .news_text .descripts');
+        movie.title = escapeHtml(movie.title);
+        movie.tagline = escapeHtml(movie.tagline);
+        movie.original_title = movie.tagline;
+        movie.overview = description ? escapeHtml(clean(description.textContent)) : '';
+        movie.img = movie.poster;
+        movie.genres = [];
+        movie.production_companies = [];
+        movie.production_countries = [];
+        movie.vote_average = 0;
+        movie.anistar = {
+            genres: readLinks(head, '/filter/janrs/'),
+            directors: readLinks(head, '/filter/director/'),
+            authors: readLinks(head, '/filter/author/'),
+            translation: labeledValue(root, /^Озвучка:/i),
+            series: labeledValue(root, /^Серии:/i),
+            released: nodeText(root, '.reason'),
+            player: playerUrl(root, movie.url),
+            comments: readComments(doc)
+        };
+        return movie;
+    }
 
-    /*
-     * Извлекаем только HLS-потоки из Плеера AS.
-     * files_as проверяется вместе с files: у AniStar часть
-     * качеств в основном массиве содержит неочевидные URL.
-     */
-    function parseASPlaylist(html, playerUrl) {
-        html = String(html || '').split('\n').join(' ').split('\r').join(' ');
+    function loadFull(object, success, failure) {
+        var card = object.card || { url: object.url };
+        if (!newsId(card.url)) {
+            failure();
+            return;
+        }
+        var component = object.activity && object.activity.component;
+        pageDocument(card.url, { auth: true }).then(function (doc) {
+            if (component && component.destroyed) return;
+            var movie = readArticle(doc, card);
+            if (movie.adult && !canWatch()) {
+                failure();
+                return;
+            }
+            success({ movie: movie });
+        }).catch(function (error) {
+            if (component && component.destroyed) return;
+            Lampa.Noty.show(error.message);
+            failure(error);
+        });
+    }
 
-        var starts = [];
-        var entryPattern = /title:\s*"([^"]*)",\s*media_id:/g;
-        var match;
+    function openWatch(movie, episode) {
+        Lampa.Activity.push({
+            component: VIEW, source: SOURCE, url: '', title: 'Смотреть · ' + decodeHtml(movie.title),
+            movie: movie, episode: episode || 0, page: 1
+        });
+    }
 
-        while ((match = entryPattern.exec(html))) {
-            starts.push({
-                index: match.index,
-                title: decodePlayerText(match[1])
-            });
+    function fullAction(name, icon, callback, owner) {
+        var button = $('<div class="full-start__button selector button--render anistar-action"></div>');
+        button.append($(icon), $('<span></span>').text(name).css('display', 'block'));
+        button.on('hover:enter', callback);
+        button.on('hover:focus', function () { owner.last = this; });
+        return button;
+    }
+
+    function detailLinks(view, title, entries) {
+        if (!entries.length) return;
+        view.body.find('.full-descr__tags').append(view.tag(title, entries.map(function (entry) {
+            return { id: entry.url, name: escapeHtml(entry.title) };
+        }), function (entry) {
+            pushList(decodeHtml(entry.name), { anistarRoute: entry.id });
+        }));
+    }
+
+    function detailAction(view, title, subtitle, callback) {
+        var item = $('<div class="tag-count selector"><div class="tag-count__name"></div><div class="tag-count__count"></div></div>');
+        item.find('.tag-count__name').text(title);
+        item.find('.tag-count__count').text(subtitle);
+        item.on('hover:enter', callback);
+        item.on('hover:focus', function () { view.last = this; });
+        view.body.find('.full-descr__tags').append(item);
+    }
+
+    function onFull(event) {
+        if (event.type !== 'build') return;
+        var movie = event.data && event.data.movie || event.props && event.props.get('movie');
+        if (!movie || movie.source !== SOURCE || !movie.anistar) return;
+        var details = movie.anistar;
+        var owner = event.item;
+        if (event.name === 'description') {
+            detailLinks(owner, 'Жанр', details.genres);
+            detailLinks(owner, 'Производство', details.directors);
+            detailLinks(owner, 'Автор', details.authors);
+            if (details.series || details.player) {
+                detailAction(owner, 'Серии', details.series, function () { openWatch(movie); });
+            }
+            if (details.comments.length) {
+                detailAction(owner, 'Комментарии', details.comments.length, function () {
+                    Lampa.Activity.push({ component: COMMENTS, source: SOURCE, title: 'Комментарии',
+                        page: 1, movie: movie, url: '' });
+                });
+            }
+            return;
+        }
+        if (event.name !== 'start') return;
+
+        var card = owner.html;
+        var main = card.find('.full-start-new__details, .full-start__details').first();
+        var year = movie.release_date.slice(0, 4);
+        if (main.length) {
+            main.empty().append($('<span></span>').text([year, details.translation].filter(Boolean).join(' • ')));
+        }
+        card.find('.full-start-new__reactions, .full-start-new__rate-line').hide();
+        if (details.released) {
+            var released = $('<div class="anistar-released"></div>').text(details.released);
+            if (main.length) main.after(released);
+            else card.find('.full-start-new__title, .full-start__title').first().after(released);
+        }
+        var buttons = card.find('.buttons--container').first();
+        if (!buttons.length) buttons = card.find('.full-start-new__buttons, .full-start__buttons').first();
+        if (!buttons.length) return;
+
+        var originalPlay = buttons.find('.button--play').first();
+        var playIcon = originalPlay.find('svg')[0];
+        var watch = fullAction('Смотреть', playIcon ? playIcon.outerHTML :
+            '<svg viewBox="0 0 24 24"><path fill="currentColor" d="m8 4 12 8-12 8z"/></svg>', function () {
+            openWatch(movie);
+        }, owner);
+        var favorite = fullAction('Избранное', ICON, function () { chooseStatus(movie); }, owner);
+        var initial = true;
+
+        function buttonsOnly() {
+            buttons.children().not('.anistar-action').remove();
+            if (!watch.parent().length) buttons.append(watch, favorite);
+            if (initial) {
+                initial = false;
+                owner.last = watch[0];
+            }
         }
 
-        var result = [];
+        buttonsOnly();
+        var observer = new MutationObserver(buttonsOnly);
+        observer.observe(buttons[0], { childList: true });
+        owner.use({
+            onlyGroupButtons: buttonsOnly,
+            onDestroy: function () { observer.disconnect(); }
+        });
+    }
 
-        starts.forEach(function (entry, index) {
-            var block = html.substring(
-                entry.index,
-                starts[index + 1] ? starts[index + 1].index : html.length
-            );
-
-            var all = [];
-
-            [
-                /(?:^|[^A-Za-z_])files:\s*\[([\s\S]*?)\]/,
-                /files_as:\s*\[([\s\S]*?)\]/
-            ].forEach(function (pattern) {
-                var found = block.match(pattern);
-                if (!found) return;
-
-                var filePattern = /title:\s*"(\d+)",\s*file:\s*"([^"]+)"/g;
-                var fileMatch;
-
-                while ((fileMatch = filePattern.exec(found[1]))) {
-                    var url = decodePlayerText(fileMatch[2])
-                        .replace(/&amp;/g, '&')
-                        .trim();
-
-                    if (!url) continue;
-
-                    all.push({
-                        quality: parseInt(fileMatch[1], 10),
-                        url: absoluteUrl(url, playerUrl),
-                        hls: /\.m3u8(?:$|\?)/i.test(url)
-                    });
-                }
+    function parsePlaylist(html, base) {
+        var doc = parser.parseFromString(html, 'text/html');
+        var script = Array.from(doc.querySelectorAll('script')).find(function (item) {
+            return /\bplaylst\s*=\s*\[/.test(item.textContent);
+        });
+        if (!script) return [];
+        var text = script.textContent;
+        var translation = nodeText(doc, '#ListDub > span');
+        var dubNames = new Map();
+        doc.querySelectorAll('#ListDub li[id]').forEach(function (entry) {
+            var id = entry.id.match(/\d+/);
+            if (id) dubNames.set(id[0], clean(entry.textContent));
+        });
+        var matches = Array.from(text.matchAll(/\btitle\s*:\s*"([^"]*)"\s*,\s*media_id\s*:/g));
+        return matches.map(function (match, index) {
+            var block = text.slice(match.index, matches[index + 1] && matches[index + 1].index);
+            var title = decodeHtml(match[1]);
+            var number = Number((title.match(/\d+/) || [])[0]) || index + 1;
+            var quality = new Map();
+            Array.from(block.matchAll(/\b(files|files_as|files_mp4)\s*:\s*\[([^\]]*)\]/g)).forEach(function (section) {
+                Array.from(section[2].matchAll(/\btitle\s*:\s*"(\d+)"\s*,\s*file\s*:\s*"([^"]+)"/g)).forEach(function (file) {
+                    var url = urlOf(decodeHtml(file[2]).replace(/\\\//g, '/'), base);
+                    var size = Number(file[1]);
+                    if (!url || !size) return;
+                    var hls = /\.m3u8$/i.test(url.pathname);
+                    var mp4 = /\.mp4$/i.test(url.pathname);
+                    if (!hls && !mp4) return;
+                    var previous = quality.get(size);
+                    if (!previous || (!previous.hls && hls)) quality.set(size, { url: url.href, hls: hls, size: size });
+                });
             });
+            var files = Array.from(quality.values()).sort(function (left, right) { return right.size - left.size; });
+            var dub = (block.match(/\btype_dub\s*:\s*['"](\d+)['"]/) || [])[1] || '';
+            return { number: number, title: title, files: files, dub: dub,
+                translation: dubNames.get(dub) || translation };
+        }).filter(function (entry) { return entry.files.length; }).sort(function (left, right) {
+            return left.number - right.number;
+        });
+    }
 
-            // Для каждого качества предпочитаем настоящий m3u8.
+    function playerItems(movie) {
+        var player = movie.anistar.player;
+        if (!player) return Promise.reject(new Error('В карточке AniStar нет плеера.'));
+        return request(player, { auth: true, headers: { Referer: movie.url } }).then(function (html) {
+            var episodes = parsePlaylist(html, player);
+            if (!episodes.length) throw new Error('AniStar не вернул доступные серии.');
+            return episodes;
+        });
+    }
+
+    function timeline(movie, episode) {
+        if (!Lampa.Timeline || typeof Lampa.Timeline.view !== 'function') return undefined;
+        var id = [movie.id, episode.dub, episode.number].join('/');
+        return Lampa.Timeline.view(Lampa.Utils.hash(id));
+    }
+
+    function play(movie, episode, episodes) {
+        var preferred = String(Lampa.Storage.get('video_quality_default', '1080')).replace(/p$/i, '') + 'p';
+        var activity = Lampa.Activity.active();
+        function media(entry) {
             var qualities = {};
-            all.forEach(function (file) {
-                if (!file.url || !/^https?:/i.test(file.url)) return;
-
-                if (!qualities[file.quality] || (file.hls && !qualities[file.quality].hls)) {
-                    qualities[file.quality] = file;
-                }
-            });
-
-            var available = Object.keys(qualities).map(function (quality) {
-                return qualities[quality];
-            }).sort(function (a, b) {
-                return b.quality - a.quality;
-            });
-
-            if (!available.length) return;
-
-            var numberMatch = entry.title.match(/\d+/);
-            var number = numberMatch ? parseInt(numberMatch[0], 10) : index + 1;
-
-            result.push({
-                number: number,
-                title: entry.title || ('Серия ' + number),
-                files: available
-            });
-        });
-
-        result.sort(function (a, b) {
-            return a.number - b.number;
-        });
-
-        return result;
-    }
-
-
-    function AniStarDetail(object) {
-        var self = this;
-        var network = new AniStarNetwork();
-        var item = object.item || {};
-        var destroyed = false;
-        var loading = false;
-        var episodes = [];
-        var playerHeaders = null;
-        var lastDetailFocus = null;
-        var detailController = null;
-
-        var root = $('<div class="anistar-screen"></div>');
-        var detail = $('<div class="anistar-detail"></div>');
-        var poster = $('<div class="anistar-detail__poster"></div>');
-        var info = $('<div class="anistar-detail__info"></div>');
-        var title = $('<div class="anistar-detail__title"></div>');
-        var description = $('<div class="anistar-detail__description"></div>');
-        var watch = $('<div class="selector anistar-detail__link">Смотреть</div>');
-        var status = $('<div class="anistar-detail__status"></div>');
-        var episodeList = $('<div class="anistar-episodes"></div>');
-
-        title.text(cleanAnimeTitle(item.title || 'Аниме'));
-        description.text('Просмотр доступен через Плеер AS.');
-        status.text('Нажми «Смотреть», чтобы загрузить список серий.');
-
-        // Поддерживаем событие пульта Lampa и обычный click.
-        watch.on('hover:enter click', function () {
-            loadEpisodes();
-        });
-        watch.on('hover:focus', function () {
-            lastDetailFocus = watch;
-        });
-
-        if (item.poster) {
-            var image = $('<img>');
-            image.attr('src', item.poster);
-            poster.append(image);
-        }
-
-        info.append(title);
-        info.append(description);
-        info.append(watch);
-        info.append(status);
-        info.append(episodeList);
-        detail.append(poster);
-        detail.append(info);
-        root.append(detail);
-
-
-        function showError(message) {
-            if (destroyed) return;
-            status.text(message);
-            Lampa.Noty.show(message);
-        }
-
-
-        function getASPlayerUrl(pageHtml) {
-            var html = String(pageHtml || '');
-            var doc = new DOMParser().parseFromString(html, 'text/html');
-            var candidates = [];
-
-            /*
-             * Разметка AniStar меняется: iframe AS не всегда находится
-             * внутри .video_as#vid_2. Поэтому проверяем все iframe,
-             * включая варианты с lazy-load атрибутами.
-             */
-            var frames = doc.querySelectorAll('iframe');
-            Array.prototype.forEach.call(frames, function (frame) {
-                var attrs = [
-                    frame.getAttribute('src'),
-                    frame.getAttribute('data-src'),
-                    frame.getAttribute('data-lazy-src'),
-                    frame.getAttribute('data-original'),
-                    frame.getAttribute('data-iframe'),
-                    frame.getAttribute('data-url'),
-                    frame.getAttribute('data-link'),
-                    frame.getAttribute('data-player')
-                ];
-
-                attrs.forEach(function (value) {
-                    if (value && /videoas_p2p_new\.php/i.test(value)) {
-                        candidates.push(value);
-                    }
-                });
-            });
-
-            /*
-             * Резервный поиск непосредственно в исходном HTML:
-             * помогает, если DOMParser не распознал нестандартную
-             * или отложенно загружаемую разметку iframe.
-             */
-            if (!candidates.length) {
-                var iframePattern = /<iframe\b[^>]*>/gi;
-                var iframeMatch;
-
-                while ((iframeMatch = iframePattern.exec(html))) {
-                    var tag = iframeMatch[0];
-                    var attrPattern = /(?:src|data-src|data-lazy-src|data-original|data-iframe|data-url|data-link|data-player)\s*=\s*(['"])(.*?)\1/ig;
-                    var attrMatch;
-
-                    while ((attrMatch = attrPattern.exec(tag))) {
-                        if (/videoas_p2p_new\.php/i.test(attrMatch[2])) {
-                            candidates.push(attrMatch[2]);
-                        }
-                    }
-                }
-            }
-
-            /*
-             * В некоторых публикациях адрес плеера отличается.
-             * Проверяем iframe внутри известных видеоконтейнеров,
-             * не подхватывая рекламные iframe со всей страницы.
-             */
-            if (!candidates.length) {
-                var videoFrames = doc.querySelectorAll(
-                    '.video_as iframe, #vid_2 iframe, .video-box iframe, ' +
-                    '.video-container iframe, .video-block iframe, ' +
-                    '.player iframe, #player iframe, #video iframe, ' +
-                    '.tabs-box iframe, .tabs-content iframe'
-                );
-
-                Array.prototype.forEach.call(videoFrames, function (frame) {
-                    var attrs = [
-                        frame.getAttribute('src'),
-                        frame.getAttribute('data-src'),
-                        frame.getAttribute('data-lazy-src'),
-                        frame.getAttribute('data-original'),
-                        frame.getAttribute('data-iframe'),
-                        frame.getAttribute('data-url'),
-                        frame.getAttribute('data-link'),
-                        frame.getAttribute('data-player')
-                    ];
-
-                    attrs.forEach(function (value) {
-                        if (!value) return;
-                        var candidate = absoluteUrl(value, item.url);
-                        if (!candidate || /^(?:about:blank|javascript:)/i.test(candidate)) return;
-                        if (/youtube|doubleclick|googlesyndication|yandex\.ru\/metrika/i.test(candidate)) return;
-                        candidates.push(value);
-                    });
-                });
-            }
-
-            /*
-             * Последний резерв: адрес AS может находиться в HTML/скрипте,
-             * не попадая в атрибут iframe после разбора DOM.
-             */
-            if (!candidates.length) {
-                // В некоторых ответах URL iframe приходит как экранированная
-                // строка скрипта или HTML-сущность, поэтому нормализуем копию.
-                var searchable = html
-                    .replace(/\\\\\//g, '/')
-                    .replace(/&amp;/g, '&')
-                    .replace(/&#38;/g, '&')
-                    .replace(/\\\\u0026/gi, '&');
-
-                // Важно: здесь именно \\s (пробельный символ), а не \\\\s.
-                // Ищем URL AS независимо от того, находится он в iframe,
-                // ссылке или JavaScript-переменной.
-                var playerPattern = /[^"'<>\s]*videoas_p2p_new\.php[^"'<>\s]*/ig;
-                var playerMatch;
-
-                while ((playerMatch = playerPattern.exec(searchable))) {
-                    candidates.push(playerMatch[0]);
-                }
-            }
-
-            if (!candidates.length) {
-                console.warn('[AniStar] AS iframe not found. HTML length:', html.length);
-                return '';
-            }
-
-            var src = String(candidates[0])
-                .replace(/&amp;/g, '&')
-                .replace(/&#38;/g, '&')
-                .replace(/\u0026/gi, '&')
-                .trim();
-
-            return absoluteUrl(src, item.url);
-        }
-
-
-        function renderEpisodes() {
-            episodeList.empty();
-
-            if (!episodes.length) {
-                status.text('В Плеере AS не удалось найти доступные серии.');
-                return;
-            }
-
-            status.text('Доступно серий: ' + episodes.length + '. Выбери серию.');
-
-            episodes.forEach(function (episode) {
-                var row = $('<div class="selector anistar-episode"></div>');
-                var best = episode.files[0];
-
-                row.text(
-                    'Серия ' + episode.number +
-                    (episode.title && !/^\s*\d+\s*$/.test(episode.title)
-                        ? ' — ' + episode.title
-                        : '') +
-                    '  ·  ' + best.quality + 'p'
-                );
-
-                row.on('hover:enter', function () {
-                    playEpisode(episode);
-                });
-                row.on('hover:focus', function () {
-                    lastDetailFocus = row;
-                });
-
-                episodeList.append(row);
-            });
-
-            if (window.Lampa && Lampa.Controller) {
-                try {
-                    // Регистрируем весь экран, а не только список серий:
-                    // так пульт сохраняет единый контекст навигации между
-                    // кнопкой «Смотреть» и динамически добавленными сериями.
-                    Lampa.Controller.collectionSet(root, false, true);
-                    var first = episodeList.find('.anistar-episode').first();
-                    if (first.length) {
-                        lastDetailFocus = first;
-                        Lampa.Controller.collectionFocus(first[0], root, true);
-                    }
-                } catch (e) {
-                    console.warn('[AniStar] Episode focus:', e);
-                }
-            }
-        }
-
-
-        function playEpisode(episode) {
-            if (!episode || !episode.files || !episode.files.length) {
-                Lampa.Noty.show('Для этой серии нет доступного видеопотока.');
-                return;
-            }
-
-            if (!window.Lampa || !Lampa.Player || typeof Lampa.Player.play !== 'function') {
-                Lampa.Noty.show('В этой версии Lampa недоступен штатный видеоплеер.');
-                return;
-            }
-
-            var files = {};
-            episode.files.forEach(function (file) {
-                files[file.quality + 'p'] = file.url;
-            });
-
-            var preferred = String(Lampa.Storage.get('video_quality_default', '1080')) + 'p';
-            var selected = files[preferred] || episode.files[0].url;
-
-            var playlist = episodes.map(function (entry) {
-                var entryFiles = {};
-                entry.files.forEach(function (file) {
-                    entryFiles[file.quality + 'p'] = file.url;
-                });
-
-                var quality = String(Lampa.Storage.get('video_quality_default', '1080')) + 'p';
-
-                return {
-                    url: entryFiles[quality] || entry.files[0].url,
-                    quality: entryFiles,
-                    title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + entry.number,
-                    headers: playerHeaders || undefined
-                };
-            });
-
-            var current = {
-                url: selected,
-                quality: files,
-                title: cleanAnimeTitle(item.title || 'Аниме') + ' / Серия ' + episode.number,
-                headers: playerHeaders || undefined,
-                playlist: playlist.length > 1 ? playlist : undefined
+            entry.files.forEach(function (file) { qualities[file.size + 'p'] = file.url; });
+            return {
+                title: decodeHtml(movie.title) + ' / ' + entry.title,
+                url: qualities[preferred] || entry.files[0].url,
+                quality: qualities, headers: { Referer: movie.anistar.player },
+                movie: movie, season: 1, episode: entry.number, timeline: timeline(movie, entry)
             };
+        }
+        var item = media(episode);
+        playerOrigin = { data: item, activity: activity };
+        Lampa.Player.play(item);
+        if (typeof Lampa.Player.playlist === 'function') Lampa.Player.playlist(episodes.map(media));
+    }
 
-            console.log('[AniStar] Play AS episode:', episode.number, selected);
-            Lampa.Player.play(current);
-            if (typeof Lampa.Player.playlist === 'function') {
-                Lampa.Player.playlist(playlist);
-            }
+    function rowComponent(object, mapping) {
+        object.params = Object.assign({}, object.params, { items: { mapping: mapping } });
+        return Lampa.Maker.make('Category', object, function (modules) {
+            return modules.only('Explorer', 'Empty', 'Items');
+        });
+    }
+
+    function appendRow(owner, html) {
+        var row = { render: function (raw) { return raw ? html[0] : html; }, destroy: function () { html.remove(); } };
+        owner.emit('append', row, { params: {} });
+    }
+
+    function watchComponent(object) {
+        var component = rowComponent(object, 'list');
+        var currentDub = '';
+        var groups = new Map();
+
+        function render() {
+            var items = groups.get(currentDub) || [];
+            var header = groups.size > 1 ? [{ header: true }, { choice: true }] : [{ header: true }];
+            component.build({ results: header.concat(items) });
         }
 
-
-        function loadEpisodes() {
-            if (loading || destroyed) return;
-            loading = true;
-
-            if (!item.url) {
-                loading = false;
-                showError('Не найдена ссылка на страницу аниме.');
-                return;
-            }
-
-            // Нормализуем ссылку, полученную из результата поиска.
-            // В карточках каталога url уже абсолютный, но поисковая выдача
-            // может содержать относительный адрес или альтернативное поле id.
-            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
-            if (!articleUrl || !isAnimeUrl(articleUrl)) {
-                loading = false;
-                showError('Некорректная ссылка на страницу аниме.');
-                console.warn('[AniStar] Invalid detail URL:', item);
-                return;
-            }
-
-            network.get(articleUrl, function (pageHtml) {
-                if (destroyed) return;
-
-                var playerUrl = getASPlayerUrl(pageHtml);
-
-                if (!playerUrl) {
-                    var failedDoc = new DOMParser().parseFromString(String(pageHtml || ''), 'text/html');
-                    var failedTitle = cleanText(failedDoc.title || '');
-                    var failedText = cleanText(failedDoc.body && failedDoc.body.textContent || '').slice(0, 240);
-                    console.warn('[AniStar] AS iframe missing on article:', {
-                        requestedUrl: articleUrl,
-                        itemUrl: item.url,
-                        itemId: item.id,
-                        htmlLength: String(pageHtml || '').length,
-                        pageTitle: failedTitle,
-                        bodyText: failedText
+        function translations() {
+            var entries = Array.from(groups.entries(), function (group) {
+                return { title: group[1][0].translation || 'Озвучка ' + group[0], value: group[0] };
+            });
+            var back = function () { Lampa.Controller.toggle('content'); };
+            Lampa.Select.show({
+                title: 'Озвучка',
+                items: entries.map(function (entry) {
+                    return Object.assign({}, entry, { selected: entry.value === currentDub });
+                }),
+                onBack: back,
+                onSelect: function (entry) {
+                    if (entry.value === currentDub) back();
+                    else Lampa.Activity.replace({
+                        component: VIEW, source: SOURCE, title: object.title, url: '', page: 1,
+                        movie: object.movie, anistarDub: entry.value, anistarEpisodes: object.anistarEpisodes
                     });
-                    loading = false;
-                    showError('Не найден iframe AS. Страница: ' + (failedTitle || articleUrl));
+                }
+            });
+        }
+
+        component.use({
+            onCreate: function () {
+                var owner = this;
+                if (object.movie.adult && !canWatch()) {
+                    owner.empty();
                     return;
                 }
-
-                // Поток AS может проверять Referer iframe-страницы.
-                // Сохраняем заголовки для передачи дальше в выбранный Lampa-плеер.
-                var userAgent = '';
-                try {
-                    userAgent = window.navigator && window.navigator.userAgent
-                        ? window.navigator.userAgent
-                        : '';
-                } catch (e) {}
-
-                playerHeaders = {
-                    Referer: playerUrl,
-                    Origin: 'https://anistar.org'
-                };
-                if (userAgent) playerHeaders['User-Agent'] = userAgent;
-
-                network.get(playerUrl, function (playerHtml) {
-                    if (destroyed) return;
-
-                    episodes = parseASPlaylist(playerHtml, playerUrl);
-                    loading = false;
-                    renderEpisodes();
-                }, function () {
-                    loading = false;
-                    showError('Не удалось загрузить данные Плеера AS.');
+                var loading = object.anistarEpisodes ? Promise.resolve(object.anistarEpisodes) : playerItems(object.movie);
+                loading.then(function (result) {
+                    if (owner.destroyed) return;
+                    object.anistarEpisodes = result;
+                    result.forEach(function (entry) {
+                        if (!groups.has(entry.dub)) groups.set(entry.dub, []);
+                        groups.get(entry.dub).push(entry);
+                    });
+                    currentDub = groups.has(object.anistarDub) ? object.anistarDub : groups.keys().next().value;
+                    render();
+                }).catch(function (error) {
+                    if (owner.destroyed) return;
+                    Lampa.Noty.show(error.message);
+                    owner.empty();
                 });
-            }, function () {
-                loading = false;
-                showError('Не удалось загрузить страницу AniStar.');
-            });
-        }
-
-
-        function loadDetailPoster() {
-            var articleUrl = absoluteUrl(item.url || item.id, BASE_URL);
-            if (!articleUrl || !isAnimeUrl(articleUrl)) return;
-
-            network.get(fullVersionUrl(articleUrl), function (pageHtml) {
-                if (destroyed) return;
-                var source = getArticlePoster(pageHtml, articleUrl);
-                if (!source) {
-                    console.warn('[AniStar] Detail poster not found:', articleUrl);
-                    return;
-                }
-                var image = poster.find('img').first();
-                if (!image.length) {
-                    image = $('<img>');
-                    poster.empty().append(image);
-                }
-                image.attr('src', source);
-                item.poster = source;
-                console.log('[AniStar] Detail poster loaded:', source);
-            }, function () {
-                console.warn('[AniStar] Detail poster request failed:', articleUrl);
-            });
-        }
-
-        this.create = function () {
-            // Обновляем обложку независимо от загрузки серий.
-            loadDetailPoster();
-            return this.render();
-        };
-
-        this.render = function () {
-            return root;
-        };
-
-        this.start = function () {
-            if (!window.Lampa || !Lampa.Controller) return;
-
-            function navigator() {
-                return window.Navigator || (window.Lampa && Lampa.Navigator) || null;
-            }
-
-            function activeTarget() {
-                if (lastDetailFocus && lastDetailFocus.length &&
-                    lastDetailFocus.closest('body').length &&
-                    lastDetailFocus[0].offsetParent !== null) {
-                    return lastDetailFocus;
-                }
-
-                var focused = root.find('.selector.focus:visible').first();
-                if (focused.length) return focused;
-
-                var firstEpisode = episodeList.find('.anistar-episode:visible').first();
-                return firstEpisode.length ? firstEpisode : watch;
-            }
-
-            detailController = {
-                link: this,
-                toggle: function () {
-                    try {
-                        Lampa.Controller.collectionSet(root, false, true);
-                        var target = activeTarget();
-                        if (target.length) Lampa.Controller.collectionFocus(target[0], root, true);
-                    } catch (e) {
-                        console.warn('[AniStar] Detail controller restore:', e);
-                    }
-                },
-                left: function () {
-                    var nav = navigator();
-                    if (nav && nav.canmove && nav.canmove('left')) nav.move('left');
-                    else Lampa.Controller.toggle('menu');
-                },
-                right: function () {
-                    var nav = navigator();
-                    if (nav && nav.canmove && nav.canmove('right')) nav.move('right');
-                },
-                up: function () {
-                    var nav = navigator();
-                    if (nav && nav.canmove && nav.canmove('up')) nav.move('up');
-                    else Lampa.Controller.toggle('head');
-                },
-                down: function () {
-                    var nav = navigator();
-                    if (nav && nav.canmove && nav.canmove('down')) nav.move('down');
-                },
-                back: function () {
-                    Lampa.Activity.backward();
-                }
-            };
-
-            try {
-                // У каждого экрана свой обработчик content. При возврате назад
-                // родительская Activity зарегистрирует свой контроллер в start().
-                Lampa.Controller.add('content', detailController);
-                Lampa.Controller.toggle('content', true);
-            } catch (e) {
-                console.warn('[AniStar] Ошибка навигации экрана:', e);
-            }
-        };
-
-        this.stop = function () {};
-
-        this.destroy = function () {
-            destroyed = true;
-            // Не удаляем content: при возврате родительская Activity
-            // зарегистрирует свой контроллер в собственном start().
-            network.clear();
-            root.remove();
-        };
-
-        this.empty = function () {
-            self.activity.loader(false);
-            self.activity.empty();
-        };
-    }
-
-
-    /* =========================================================
-     * 14. ПУНКТ ЛЕВОГО МЕНЮ
-     * ========================================================= */
-
-    function addMenu() {
-
-        var menu = $('.menu .menu__list').eq(0);
-
-        if (!menu.length) {
-
-            console.warn(
-                '[AniStar] Menu not found'
-            );
-
-            return;
-
-        }
-
-
-        // Защита от повторного добавления.
-        if (menu.find('.anistar-menu-item').length) {
-            return;
-        }
-
-
-        var button = $(
-
-            '<li class="menu__item selector anistar-menu-item">' +
-
-                '<div class="menu__ico">' +
-
-                    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
-
-                        '<path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-2 14V8l7 4-7 4Z"/>' +
-
-                    '</svg>' +
-
-                '</div>' +
-
-                '<div class="menu__text">Анистар</div>' +
-
-            '</li>'
-
-        );
-
-
-        button.on('hover:enter', function () {
-
-            Lampa.Activity.push({
-
-                url: '',
-
-                title: 'Анистар',
-
-                component: PLUGIN_ID,
-
-                page: 1,
-
-                page_url: BASE_URL
-
-            });
-
-        });
-
-
-        menu.append(button);
-
-    }
-
-
-    /* =========================================================
-     * 15. ИСТОЧНИК ПОИСКА LAMPA
-     * ========================================================= */
-
-    var searchSourceRegistered = false;
-    var searchNetwork = null;
-
-    function addSearchSource() {
-        if (searchSourceRegistered) return;
-
-        if (!Lampa.Search || typeof Lampa.Search.addSource !== 'function') {
-            console.warn('[AniStar] Lampa.Search.addSource is unavailable');
-            return;
-        }
-
-        searchNetwork = new AniStarNetwork();
-
-        Lampa.Search.addSource({
-            title: 'AniStar',
-
-            params: {
-                lazy: false,
-                align_left: true,
-                card_view: 6,
-                noimage: false,
-                object: {
-                    source: 'anistar'
-                }
             },
-
-            search: function (params, oncomplete) {
-                var query = String(params && params.query || '').trim();
-
-                // Lampa в некоторых сценариях передаёт query уже URL-кодированным.
-                // Нормализуем его и кодируем ровно один раз, включая голосовой ввод.
-                try {
-                    query = decodeURIComponent(query.replace(/\+/g, '%20'));
-                } catch (e) {}
-
-                query = query.trim();
-
-                if (!query) {
-                    oncomplete([]);
-                    return;
-                }
-
-                requestAniStarSearch(searchNetwork, query, function (html, searchUrl, method) {
-                    try {
-                        var parsed = parseCatalog(html, searchUrl, true);
-                        var debugDoc = new DOMParser().parseFromString(String(html || ''), 'text/html');
-                        var debugLinks = debugDoc.querySelectorAll('a[href]');
-                        var debugAnimeLinks = [];
-                        Array.prototype.forEach.call(debugLinks, function (link) {
-                            var href = absoluteUrl(link.getAttribute('href'), searchUrl);
-                            if (isAnimeUrl(href) && debugAnimeLinks.indexOf(href) < 0) {
-                                debugAnimeLinks.push(href);
-                            }
-                        });
-                        console.log('[AniStar] Search diagnostics:', {
-                            query: query,
-                            method: method,
-                            url: searchUrl,
-                            htmlLength: String(html || '').length,
-                            pageTitle: cleanText(debugDoc.title),
-                            links: debugLinks.length,
-                            animeLinks: debugAnimeLinks.length,
-                            samples: debugAnimeLinks.slice(0, 5),
-                            bodyText: cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 500)
-                        });
-                        if (!parsed.items.length && Lampa.Noty && typeof Lampa.Noty.show === 'function') {
-                            var debugBody = cleanText(debugDoc.body && debugDoc.body.textContent).slice(0, 260);
-                            Lampa.Noty.show(
-                                'AniStar ' + method + ': HTML ' + String(html || '').length +
-                                '; ссылок ' + debugLinks.length +
-                                '; тайтлов ' + debugAnimeLinks.length +
-                                '. Текст: ' + (debugBody || 'пусто').slice(0, 220)
-                            );
+            onlyCreateAndAppend: function (entry) {
+                var movie = object.movie;
+                var items = groups.get(currentDub);
+                if (entry.header) {
+                    var header = $('<div class="anistar-watch-header selector"></div>');
+                    if (movie.poster) header.append($('<img alt="">').attr('src', movie.poster));
+                    var info = $('<div class="anistar-watch-info"></div>').appendTo(header);
+                    info.append($('<strong></strong>').text(decodeHtml(movie.title)));
+                    var recent;
+                    items.forEach(function (episode) {
+                        var progress = timeline(movie, episode);
+                        if (progress && progress.time > 0 && (!recent || progress.updated > recent.progress.updated)) {
+                            recent = { progress: progress, episode: episode };
                         }
-                        var results = parsed.items.map(function (item) {
-                            return {
-                                id: item.url,
-                                title: item.title,
-                                name: item.title,
-                                // Не задаём poster_path: Lampa считает его путём TMDB
-                                // и прогоняет через Lampa.Api.img(), ломая внешний URL AniStar.
-                                // Для внешних постеров используем прямые поля poster и img.
-                                poster: item.poster || '',
-                                img: item.poster || '',
-                                source: 'anistar',
-                                anistar_url: item.url,
-                                anistar_poster: item.poster || '',
-                                posterFallback: item.posterFallback || ''
-                            };
-                        });
-
-                        console.log('[AniStar] Search completed:', query, results.length);
-
-                        oncomplete(results.length ? [{
-                            title: 'AniStar',
-                            results: results,
-                            page: 1,
-                            total_pages: 1,
-                            total_results: results.length
-                        }] : []);
+                    });
+                    var target = recent ? recent.episode : items[0];
+                    var start = $('<div class="anistar-watch-button"></div>').text(
+                        (recent && recent.progress.percent < 95 ? 'Продолжить · ' : 'Смотреть · ') + target.title
+                    );
+                    header.on('hover:enter', function () { play(movie, target, items); });
+                    info.append(start);
+                    if (groups.size === 1) {
+                        info.append($('<div class="anistar-watch-button"></div>').text(
+                            items[0].translation || movie.anistar.translation || 'Озвучка'
+                        ));
                     }
-                    catch (e) {
-                        console.error('[AniStar] Search parse error', e);
-                        oncomplete([]);
-                    }
-                }, function (xhr, status) {
-                    console.error('[AniStar] Search request failed:', status || xhr);
-                    oncomplete([]);
-                });
-            },
-
-            onCancel: function () {
-                if (searchNetwork) searchNetwork.clear();
-            },
-
-            onSelect: function (event, done) {
-                var selected = event && (event.item_data || event.element) || {};
-
-                // Закрываем глобальный поиск до открытия новой Activity:
-                // done() переключает Controller на content и не должен
-                // перезаписывать контроллер только что открытого экрана.
-                if (typeof done === 'function') done();
-
-                Lampa.Activity.push({
-                    url: '',
-                    title: selected.title || selected.name || 'AniStar',
-                    component: 'anistar_detail',
-                    page: 1,
-                    item: {
-                        id: selected.anistar_url || selected.id,
-                        url: selected.anistar_url || selected.id,
-                        title: selected.title || selected.name || 'Аниме',
-                        name: selected.title || selected.name || 'Аниме',
-                        poster: selected.anistar_poster || selected.poster || selected.poster_path || ''
-                    }
-                });
+                    appendRow(this, header);
+                    return;
+                }
+                if (entry.choice) {
+                    var label = items[0].translation || movie.anistar.translation || 'Озвучка';
+                    var choice = $('<div class="anistar-episode selector"></div>').text(label);
+                    choice.on('hover:enter', translations);
+                    appendRow(this, choice);
+                    return;
+                }
+                var row = $('<div class="anistar-episode selector"><div></div><small></small></div>');
+                row.find('div').text(entry.title);
+                row.find('small').text(entry.files[0].size + 'p');
+                row.on('hover:enter', function () { play(movie, entry, items); });
+                appendRow(this, row);
+                if (Number(object.episode) === entry.number) this.last = row[0];
             }
         });
-
-        searchSourceRegistered = true;
-
-        console.log('[AniStar] Search source registered');
+        return component;
     }
 
+    function commentsComponent(object) {
+        var component = rowComponent(object, 'list');
+        component.use({
+            onCreate: function () {
+                this.build({ results: object.movie.anistar.comments });
+            },
+            onlyCreateAndAppend: function (entry) {
+                var row = $('<div class="anistar-comment selector"><strong></strong><small></small><p></p></div>');
+                row.find('strong').text(entry.author);
+                row.find('small').text(entry.date);
+                row.find('p').text(entry.text);
+                appendRow(this, row);
+            }
+        });
+        return component;
+    }
 
-    /* =========================================================
-     * 16. РЕГИСТРАЦИЯ КОМПОНЕНТОВ
-     * ========================================================= */
+    function installStyle() {
+        $('<style></style>').text([
+            '.anistar-status-tile{display:flex;align-items:center;min-width:0;min-height:5em;box-sizing:border-box}',
+            '.anistar-year{opacity:.7;margin-top:.2em}',
+            '.anistar-action{gap:.6em}',
+            '.anistar-action svg{width:1.4em;height:1.4em}',
+            '.anistar-released{font-weight:700;margin:.7em 0}',
+            '.anistar-episode,.anistar-comment{border-radius:.35em;background:rgba(255,255,255,.08);padding:1em 1.2em;margin:.45em 0}',
+            '.anistar-episode{display:flex;justify-content:space-between;gap:1em}',
+            '.anistar-watch-header{display:flex;gap:1.4em;align-items:center;padding:.8em 0 1.4em}',
+            '.anistar-watch-header img{width:6em;border-radius:.35em}',
+            '.anistar-watch-info>strong{display:block;font-size:1.45em;margin-bottom:.55em}',
+            '.anistar-watch-button{display:inline-block;padding:.55em .8em;background:rgba(255,255,255,.1);margin:.2em .4em .2em 0;border-radius:.35em}',
+            '.anistar-comment small{display:block;opacity:.65;margin:.4em 0}',
+            '.anistar-comment p{line-height:1.4}',
+            '.anistar-episode.focus,.anistar-comment.focus,.anistar-watch-header.focus .anistar-watch-button{background:#fff;color:#222}'
+        ].join('\n')).appendTo('head');
+    }
 
     function init() {
-
-        if (
-            !window.Lampa ||
-            !Lampa.Component ||
-            !Lampa.Activity ||
-            !Lampa.Reguest
-        ) {
-
-            console.error(
-                '[AniStar] Required Lampa API is unavailable'
-            );
-
-            return;
-
+        if (Lampa.Api.sources[SOURCE]) return;
+        var cached = Lampa.Storage.get(GENRE_CACHE, {});
+        if (cached && Array.isArray(cached.items)) {
+            cached.items.forEach(function (entry) { if (siteUrl(entry.url)) genreIndex.set(entry.url, entry); });
+            genresUpdated = Number(cached.updated) || 0;
         }
-
-
-        // Добавляем CSS.
-        addStyles();
-
-
-        /*
-         * Регистрируем каталог.
-         */
-        if (!Lampa.Component.get(PLUGIN_ID)) {
-
-            Lampa.Component.add(
-                PLUGIN_ID,
-                AniStarCatalog
-            );
-
-        }
-
-
-        /*
-         * Регистрируем страницу тайтла.
-         */
-        if (!Lampa.Component.get('anistar_detail')) {
-
-            Lampa.Component.add(
-                'anistar_detail',
-                AniStarDetail
-            );
-
-        }
-
-
-        // Добавляем пункт меню.
-        addMenu();
-
-        // Регистрируем AniStar как отдельный источник глобального поиска Lampa.
-        addSearchSource();
-
-
-        console.log(
-            '[AniStar] Initialized. Version: ' +
-            PLUGIN_VERSION
-        );
-
+        Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
+        Lampa.Component.add('anistar_catalog', catalogComponent);
+        Lampa.Component.add(VIEW, watchComponent);
+        Lampa.Component.add(COMMENTS, commentsComponent);
+        Lampa.Menu.addButton(ICON, NAME, function () {
+            pushList(NAME, { anistarHome: true });
+        });
+        Lampa.Listener.follow('full', onFull);
+        Lampa.Player.listener.follow('close', function (event) {
+            if (!playerOrigin || event.data !== playerOrigin.data) return;
+            var activity = playerOrigin.activity;
+            playerOrigin = null;
+            if (Lampa.Activity.active() === activity) Lampa.Controller.toggle('content', true);
+        });
+        installStyle();
+        installFilter();
+        installSettings();
     }
 
-
-    /* =========================================================
-     * 17. ЗАПУСК ПОСЛЕ ГОТОВНОСТИ LAMPA
-     * ========================================================= */
-
-    if (window.appready) {
-
-        init();
-
-    }
-
-    else {
-
-        Lampa.Listener.follow(
-            'app',
-
-            function (event) {
-
-                if (event.type === 'ready') {
-
-                    init();
-
-                }
-
-            }
-        );
-
-    }
-
+    if (window.appready) init();
+    else Lampa.Listener.follow('app', function (event) {
+        if (event.type === 'ready') init();
+    });
 })();
-
-
-
-
