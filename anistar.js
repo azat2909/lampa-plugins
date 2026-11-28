@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.30
+ * Версия 0.5.31
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.30';
+    var VERSION = '0.5.31';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -1258,7 +1258,139 @@
         return collect();
     }
 
+    function favoriteSections(component) {
+        function preview(entry) {
+            return favoritePreview(entry, component.activity).then(function (cards) {
+                return { entry: entry, cards: cards };
+            }, function (error) { return { error: error }; });
+        }
+        return preview(FAVORITE_TABS[0]).then(function (first) {
+            if (component.destroyed || (first.error && first.error.message === LOGIN_PROMPT)) return [first];
+            return Promise.all(FAVORITE_TABS.slice(1).map(preview)).then(function (rest) { return [first].concat(rest); });
+        });
+    }
+
+    function favoritesMessage(failed) {
+        var empty = $('<div class="empty anistar-favorites-message"><div class="empty__title"></div></div>');
+        if (!failed) {
+            empty.find('.empty__title').text('Список пуст');
+            return empty;
+        }
+        var login = failed.error.message === LOGIN_PROMPT;
+        empty.find('.empty__title').text(failed.error.message || 'Не удалось загрузить Избранное.');
+        $('<div class="full-start__button selector"></div>').text(login ? 'Открыть настройки' : 'Обновить')
+            .on('hover:enter', login ? openAccountSettings : function () {
+                bookmarkPages.clear();
+                Lampa.Activity.replace(listState('Избранное', { component: FAVORITES }), true);
+            }).appendTo(empty);
+        return empty;
+    }
+
     function favoritesComponent(object) {
+        var maker = Lampa.Maker;
+        if (object.anistarUseTemplate || !maker || typeof maker.make !== 'function' || typeof maker.module !== 'function' ||
+            (typeof maker.list === 'function' && maker.list().indexOf('Main') === -1)) return new favoritesTemplateComponent(object);
+        try {
+            var modules = maker.module('Card');
+            var main = maker.make('Main', object);
+            if (modules && modules.MASK && typeof modules.remove === 'function' && main && typeof main.use === 'function' &&
+                typeof main.build === 'function' && typeof main.start === 'function' && main.scroll && typeof main.scroll.append === 'function') {
+                // Favorite and Plugins register menu entries during card creation.
+                return nativeFavorites(object, main, modules.remove(modules.MASK.base, 'Menu', 'Favorite', 'Plugins'));
+            }
+        } catch (error) {}
+        return new favoritesTemplateComponent(object);
+    }
+
+    function nativeFavorites(object, main, cardMask) {
+        var origin = SITE;
+        var hideMissing = hideUncovered();
+        var version = bookmarkRevision;
+        var start = main.start;
+        var empty;
+        var useTemplate = false;
+        var reloading = false;
+
+        main.updateCatalogSettings = function () {
+            if (main.destroyed || !ownsScreen(object, main) ||
+                (!useTemplate && version === bookmarkRevision && origin === SITE && hideMissing === hideUncovered())) return false;
+            if (reloading) return true;
+            reloading = true;
+            Promise.resolve().then(function () {
+                reloading = false;
+                if (!main.destroyed && ownsScreen(object, main)) {
+                    Lampa.Activity.replace(listState('Избранное', { component: FAVORITES, anistarUseTemplate: useTemplate }), true);
+                }
+            });
+            return true;
+        };
+        main.start = function () {
+            if (!main.updateCatalogSettings()) start.apply(main, arguments);
+        };
+
+        function fallback() {
+            useTemplate = true;
+            main.activity.loader(false);
+            main.updateCatalogSettings();
+        }
+
+        main.use({
+            onCreate: function () {
+                $(main.render(true)).addClass('anistar-favorites-native');
+                favoriteSections(main).then(function (results) {
+                    if (main.destroyed) return;
+                    version = bookmarkRevision;
+                    var available = results.filter(function (result) { return result.cards && result.cards.length; });
+                    var failed = results.find(function (result) { return result.error; });
+                    if (!available.length) {
+                        empty = favoritesMessage(failed);
+                        main.scroll.append(empty[0]);
+                        main.activity.loader(false);
+                        main.activity.toggle();
+                        return;
+                    }
+                    main.build(available.map(function (result) {
+                        return { title: result.entry.title, source: SOURCE, anistarList: result.entry, total_pages: 2,
+                            results: result.cards.map(function (card) {
+                                return Object.assign({}, card, { poster: card.posterFallback || card.poster,
+                                    anistarCard: card, params: { module: cardMask } });
+                            }) };
+                    }));
+                    if (!main.items || main.items.length !== available.length || main.items.some(function (line) {
+                        return !line.items || !line.items.length;
+                    })) fallback();
+                    else if (failed && ownsScreen(object, main)) Lampa.Noty.show(failed.error.message);
+                }).catch(function () { if (!main.destroyed) fallback(); });
+            },
+            onNext: function (resolve, reject) { reject(); },
+            onController: function (controller) {
+                if (!empty) return;
+                controller.toggle = function () {
+                    Lampa.Controller.collectionSet(empty, false, true);
+                    var button = empty.find('.selector')[0];
+                    if (button) Lampa.Controller.collectionFocus(button, empty, true);
+                };
+            },
+            onInstance: function (line, row) {
+                line.use({
+                    onlyMore: function () { openFavoriteList(row.anistarList); },
+                    onInstance: function (item, data) {
+                        var card = data.anistarCard;
+                        item.use({
+                            onlyEnter: function () { openCatalogTitle(card); },
+                            onlyLong: function () { chooseStatus(card); },
+                            onCreate: function () {
+                                if (hideMissing && this.img) this.img.onerror = fallback;
+                            }
+                        });
+                    }
+                });
+            }
+        });
+        return main;
+    }
+
+    function favoritesTemplateComponent(object) {
         var component = this;
         var scroll = new Lampa.Scroll({ mask: true, over: true, scroll_by_item: true });
         var body = $('<div class="anistar-favorites"></div>');
@@ -1306,6 +1438,8 @@
                     }
                     focus();
                 } : null);
+                if (data.vote_average > 0) $('<div class="card__vote"></div>')
+                    .text(data.vote_average >= 10 ? '10' : data.vote_average.toFixed(1)).appendTo(item.find('.card__view'));
                 append(item);
             });
             var more = catalogTemplate('more', '.card-more__title',
@@ -1316,29 +1450,7 @@
             append(more);
         }
 
-        function notice(message, label, action) {
-            var empty = $('<div class="empty anistar-favorites-message"><div class="empty__title"></div></div>').appendTo(body);
-            empty.find('.empty__title').text(message);
-            if (label) {
-                var button = $('<div class="full-start__button selector"></div>').text(label).appendTo(empty);
-                button.on('hover:enter', action);
-            }
-        }
-
-        function preview(entry) {
-            return favoritePreview(entry, component.activity).then(function (cards) {
-                return { entry: entry, cards: cards };
-            }, function (error) { return { error: error }; });
-        }
-
-        function showEmpty() {
-            if (!failed) notice('Список пуст');
-            else if (failed.error.message === LOGIN_PROMPT) notice(LOGIN_PROMPT, 'Открыть настройки', openAccountSettings);
-            else notice(failed.error.message || 'Не удалось загрузить Избранное.', 'Обновить', function () {
-                bookmarkPages.clear();
-                Lampa.Activity.replace(listState('Избранное', { component: FAVORITES }), true);
-            });
-        }
+        function showEmpty() { body.append(favoritesMessage(failed)); }
 
         function finish(results) {
             if (component.destroyed) return;
@@ -1355,10 +1467,7 @@
         this.create = function () {
             scroll.minus();
             component.activity.loader(true);
-            preview(FAVORITE_TABS[0]).then(function (first) {
-                if (component.destroyed || (first.error && first.error.message === LOGIN_PROMPT)) return [first];
-                return Promise.all(FAVORITE_TABS.slice(1).map(preview)).then(function (rest) { return [first].concat(rest); });
-            }).then(finish);
+            favoriteSections(component).then(finish);
         };
         this.render = function (raw) { return raw ? scroll.render()[0] : scroll.render(); };
         this.updateCatalogSettings = function () {
@@ -2848,6 +2957,7 @@
             '.anistar-favorites-rail{padding:0 1.5em 1em}',
             '.anistar-favorites-more{display:block;width:12.75em}',
             '.anistar-favorites-more .card-more__box{padding-bottom:150%}',
+            '.anistar-favorites-native .items-line__head .items-line__more{display:none}',
             '.anistar-favorites-message{min-height:72vh;box-sizing:border-box;align-items:center;gap:1.2em;padding:1.5em}',
             '.anistar-favorites-message .empty__title{font-size:2.4em}',
             '.anistar-favorites-message .full-start__button{padding:.8em 1.25em}',
