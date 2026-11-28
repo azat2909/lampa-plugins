@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.28
+ * Версия 0.5.29
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.28';
+    var VERSION = '0.5.29';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -1245,92 +1245,20 @@
         return false;
     }
 
-    function favoritePreview(entry) {
-        var state = listState(entry.title, { anistarList: entry });
+    function favoritePreview(entry, activity) {
+        var state = listState(entry.title, { anistarList: entry, activity: activity });
         var list = getList(state);
-        return fillList(state, list, 2).then(function () { return list.cards.slice(0, MAX_PAGE_SIZE); });
-    }
-
-    function loadFavoriteRows(object, success, failure) {
-        var component = object.activity && object.activity.component;
-        var modules = Lampa.Maker.module('Card');
-        var mask = modules.remove(modules.MASK.base, 'Menu');
-        var error;
-        Promise.all(FAVORITE_TABS.map(function (entry) {
-            return favoritePreview(entry).then(function (cards) {
-                if (!cards.length) return null;
-                return { title: entry.title, source: SOURCE, anistarList: entry, total_pages: 2,
-                    results: cards.map(function (card) {
-                        return Object.assign({}, card, { poster: card.posterFallback || card.poster,
-                            anistarCard: card, params: { module: mask } });
-                    }) };
-            }).catch(function (reason) { error = error || reason; return null; });
-        })).then(function (rows) {
-            if (component && component.destroyed) return;
-            var available = rows.filter(Boolean);
-            if (available.length) success(available);
-            else {
-                if (ownsScreen(object, component)) Lampa.Noty.show(error ? error.message : 'В Избранном пока нет тайтлов.');
-                failure();
-            }
-        });
+        function collect() {
+            var cursor = list.next;
+            return fillList(state, list, 2).then(function () {
+                if (!list.cards.length && list.next && list.next !== cursor && !activity.component.destroyed) return collect();
+                return list.cards.slice(0, MAX_PAGE_SIZE);
+            });
+        }
+        return collect();
     }
 
     function favoritesComponent(object) {
-        var Native = typeof Lampa.Component.get === 'function' && Lampa.Component.get('category');
-        if (typeof Native !== 'function' || !Lampa.Maker || typeof Lampa.Maker.module !== 'function' ||
-            signedOut() || (!session && (!loginName() || !loginPassword()))) return new favoritesFallback(object);
-        var cardModules = Lampa.Maker.module('Card');
-        if (!cardModules || !cardModules.MASK || typeof cardModules.remove !== 'function') return new favoritesFallback(object);
-        var component = new Native(object);
-        if (!component || typeof component.use !== 'function' || typeof component.start !== 'function') return new favoritesFallback(object);
-
-        var origin = SITE;
-        var hideMissing = hideUncovered();
-        var version = bookmarkRevision;
-        var reloading = false;
-        var start = component.start;
-        component.updateCatalogSettings = function () {
-            if (component.destroyed || !ownsScreen(object, component) ||
-                (version === bookmarkRevision && origin === SITE && hideMissing === hideUncovered())) return false;
-            if (reloading) return true;
-            reloading = true;
-            Promise.resolve().then(function () {
-                reloading = false;
-                if (!component.destroyed && ownsScreen(object, component)) Lampa.Activity.replace(listState('Избранное', { component: FAVORITES }), true);
-            });
-            return true;
-        };
-        component.start = function () {
-            if (!component.updateCatalogSettings()) start.apply(component, arguments);
-        };
-        component.use({
-            onBuild: function () { version = bookmarkRevision; },
-            onInstance: function (line, row) {
-                line.use({
-                    onlyMore: function () { openFavoriteList(row.anistarList); },
-                    onInstance: function (item, data) {
-                        var card = data.anistarCard;
-                        item.use({
-                            onlyEnter: function () { openCatalogTitle(card); },
-                            onCreate: function () {
-                                var item = this;
-                                var root = $(item.render(true));
-                                root.on('hover:long', function () { chooseStatus(card); });
-                                if (hideMissing && item.img) item.img.onerror = function () {
-                                    clearTimeout(item.img_timer);
-                                    root.addClass('hide').removeClass('selector');
-                                };
-                            }
-                        });
-                    }
-                });
-            }
-        });
-        return component;
-    }
-
-    function favoritesFallback(object) {
         var component = this;
         var scroll = new Lampa.Scroll({ mask: true, over: true, scroll_by_item: true });
         var body = $('<div class="anistar-favorites"></div>');
@@ -1341,6 +1269,7 @@
         var origin = SITE;
         var hideMissing = hideUncovered();
         var version = bookmarkRevision;
+        var failed;
         scroll.append(body);
 
         function focus() {
@@ -1350,7 +1279,7 @@
             if (target) Lampa.Controller.collectionFocus(target, body, true);
         }
 
-        function row(entry) {
+        function row(entry, preview) {
             var line = catalogTemplate('items_line', '.items-line__body',
                 '<div class="items-line"><div class="items-line__head"><div class="items-line__title"></div></div><div class="items-line__body"></div></div>').appendTo(body);
             line.find('.items-line__title').text(entry.title);
@@ -1363,33 +1292,66 @@
             rail.append(cards);
             line.find('.items-line__body').append(rail.render());
 
-            return favoritePreview(entry).then(function (preview) {
-                if (component.destroyed) return;
-                preview.forEach(function (data) {
-                    var item = catalogCard(data, hideMissing ? function (missing) { missing.remove(); focus(); } : null);
-                    item.on('hover:focus', function () {
-                        focused = this;
-                        rail.update(item);
-                        scroll.update(line);
-                    }).appendTo(cards);
-                });
-            }, function (error) { return error.message; });
+            preview.forEach(function (data) {
+                var item = catalogCard(data, hideMissing ? function (missing) {
+                    missing.remove();
+                    if (!cards.children().length) {
+                        line.remove();
+                        if (!body.children('.items-line').length && !body.find('.anistar-favorites-message').length) showEmpty();
+                    }
+                    focus();
+                } : null);
+                item.on('hover:focus', function () {
+                    focused = this;
+                    rail.update(item);
+                    scroll.update(line);
+                }).appendTo(cards);
+            });
+        }
+
+        function notice(message, label, action) {
+            var empty = $('<div class="empty anistar-favorites-message"><div class="empty__title"></div></div>').appendTo(body);
+            empty.find('.empty__title').text(message);
+            if (label) {
+                var button = $('<div class="full-start__button selector"></div>').text(label).appendTo(empty);
+                button.on('hover:enter', action);
+            }
+        }
+
+        function preview(entry) {
+            return favoritePreview(entry, component.activity).then(function (cards) {
+                return { entry: entry, cards: cards };
+            }, function (error) { return { error: error }; });
+        }
+
+        function showEmpty() {
+            if (!failed) notice('Список пуст');
+            else if (failed.error.message === LOGIN_PROMPT) notice(LOGIN_PROMPT, 'Открыть настройки', openAccountSettings);
+            else notice(failed.error.message || 'Не удалось загрузить Избранное.', 'Обновить', function () {
+                bookmarkPages.clear();
+                Lampa.Activity.replace(listState('Избранное', { component: FAVORITES }), true);
+            });
+        }
+
+        function finish(results) {
+            if (component.destroyed) return;
+            version = bookmarkRevision;
+            var available = results.filter(function (result) { return result.cards && result.cards.length; });
+            failed = results.find(function (result) { return result.error; });
+            available.forEach(function (result) { row(result.entry, result.cards); });
+            if (!available.length) showEmpty();
+            else if (failed && ownsScreen(object, component)) Lampa.Noty.show(failed.error.message);
+            component.activity.loader(false);
+            focus();
         }
 
         this.create = function () {
             scroll.minus();
             component.activity.loader(true);
-            Promise.all(FAVORITE_TABS.map(row)).then(function (errors) {
-                if (component.destroyed) return;
-                version = bookmarkRevision;
-                var error = errors.find(Boolean);
-                if (error === LOGIN_PROMPT) {
-                    var login = $('<div class="full-start__button selector anistar-favorite-login"></div>').text(LOGIN_PROMPT).prependTo(body);
-                    login.on('hover:enter', openAccountSettings);
-                } else if (error && ownsScreen(object, component)) Lampa.Noty.show(error);
-                component.activity.loader(false);
-                focus();
-            });
+            preview(FAVORITE_TABS[0]).then(function (first) {
+                if (component.destroyed || (first.error && first.error.message === LOGIN_PROMPT)) return [first];
+                return Promise.all(FAVORITE_TABS.slice(1).map(preview)).then(function (rest) { return [first].concat(rest); });
+            }).then(finish);
         };
         this.render = function (raw) { return raw ? scroll.render()[0] : scroll.render(); };
         this.updateCatalogSettings = function () {
@@ -2861,6 +2823,9 @@
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
             '.anistar-favorites-rail{padding:0 1.5em 1em}',
+            '.anistar-favorites-message{min-height:72vh;box-sizing:border-box;align-items:center;gap:1.2em;padding:1.5em}',
+            '.anistar-favorites-message .empty__title{font-size:2.4em}',
+            '.anistar-favorites-message .full-start__button{padding:.8em 1.25em}',
             '.anistar-favorite-login{width:fit-content;margin:0 1.5em 1.4em;padding:.8em 1.25em}',
             '.anistar-full-card .full-start-new__tagline,.anistar-full-card .full--tagline{margin-bottom:.55em}',
             '.anistar-full-card .anistar-full-rates{margin:.35em 0 .55em;flex-wrap:wrap;row-gap:.35em}',
@@ -2887,7 +2852,7 @@
         SITE = configuredOrigin(Lampa.Storage.get(SITE_KEY, '')) || DEFAULT_SITE;
         restoreAccount();
         initGenres();
-        Lampa.Api.sources[SOURCE] = { category: loadFavoriteRows, list: loadList, full: loadFull, clear: function () {} };
+        Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add('anistar_catalog', catalogComponent);
         Lampa.Component.add(FAVORITES, favoritesComponent);
         Lampa.Component.add(VIEW, watchComponent);
