@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.29
+ * Версия 0.5.30
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.29';
+    var VERSION = '0.5.30';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -1283,30 +1283,37 @@
             var line = catalogTemplate('items_line', '.items-line__body',
                 '<div class="items-line"><div class="items-line__head"><div class="items-line__title"></div></div><div class="items-line__body"></div></div>').appendTo(body);
             line.find('.items-line__title').text(entry.title);
-            var more = $('<div class="items-line__more selector">Ещё</div>').appendTo(line.find('.items-line__head'));
-            more.on('hover:enter', function () { openFavoriteList(entry); });
-            more.on('hover:focus', function () { focused = this; scroll.update(line); });
             var rail = new Lampa.Scroll({ horizontal: true, step: 300 });
             rails.push(rail);
             var cards = $('<div class="mapping--line anistar-favorites-rail"></div>');
             rail.append(cards);
             line.find('.items-line__body').append(rail.render());
 
-            preview.forEach(function (data) {
-                var item = catalogCard(data, hideMissing ? function (missing) {
-                    missing.remove();
-                    if (!cards.children().length) {
-                        line.remove();
-                        if (!body.children('.items-line').length && !body.find('.anistar-favorites-message').length) showEmpty();
-                    }
-                    focus();
-                } : null);
+            function append(item) {
                 item.on('hover:focus', function () {
                     focused = this;
                     rail.update(item);
                     scroll.update(line);
                 }).appendTo(cards);
+            }
+
+            preview.forEach(function (data) {
+                var item = catalogCard(data, hideMissing ? function (missing) {
+                    missing.remove();
+                    if (!cards.children('.card').length) {
+                        line.remove();
+                        if (!body.children('.items-line').length && !body.find('.anistar-favorites-message').length) showEmpty();
+                    }
+                    focus();
+                } : null);
+                append(item);
             });
+            var more = catalogTemplate('more', '.card-more__title',
+                '<div class="card-more selector"><div class="card-more__box"><div class="card-more__title"></div></div></div>');
+            more.addClass('anistar-favorites-more selector');
+            more.find('.card-more__title').text('Ещё');
+            more.on('hover:enter', function () { openFavoriteList(entry); });
+            append(more);
         }
 
         function notice(message, label, action) {
@@ -1551,9 +1558,12 @@
         });
     }
 
-    function genreOptions(section) {
+    function genreOptions(section, selected) {
         var locale = section === 'hentai' ? 'en' : 'ru';
-        var items = Array.from(genreDirectories[section].values()).sort(function (left, right) {
+        var entries = new Map(genreDirectories[section]);
+        var current = genreIndex.get(selected);
+        if (current) entries.set(normalizeGenre(current.title), current);
+        var items = Array.from(entries.values()).sort(function (left, right) {
             return left.title.localeCompare(right.title, locale, { sensitivity: 'base', ignorePunctuation: true });
         }).map(function (entry) {
             return { title: escapeHtml(entry.title), value: entry.url };
@@ -1634,11 +1644,11 @@
         }
 
         function genres() {
-            if (genreDirectories[section].size) choose('Жанры', 'genre', genreOptions(section));
+            if (genreDirectories[section].size || genreIndex.has(draft.genre)) choose('Жанры', 'genre', genreOptions(section, draft.genre));
             else refreshGenres(section).then(function () {
                 if (Lampa.Activity.active() !== activity) return;
                 if (!genreDirectories[section].size) Lampa.Noty.show('Не удалось загрузить жанры AniStar.');
-                choose('Жанры', 'genre', genreOptions(section));
+                choose('Жанры', 'genre', genreOptions(section, draft.genre));
             });
         }
 
@@ -2242,12 +2252,21 @@
         return button;
     }
 
-    function detailLinks(view, title, entries) {
+    function openDetailGenre(entry, section) {
+        var url = siteUrl(entry.id);
+        if (!url) return;
+        var title = decodeHtml(entry.name);
+        genreIndex.set(url, { url: url, title: title });
+        var filters = Object.assign({}, defaultFilters, { genre: url });
+        openList(title, Object.assign({ anistarSection: section, anistarFilters: filters }, filters));
+    }
+
+    function detailLinks(view, title, entries, select) {
         if (!entries.length) return;
         if (!view.body || typeof view.tag !== 'function') return;
         var group = view.tag(title, entries.map(function (entry) {
             return { id: entry.url, name: escapeHtml(entry.title) };
-        }), function (entry) {
+        }), select || function (entry) {
             openList(decodeHtml(entry.name), { anistarRoute: entry.id });
         });
         $(group).on('hover:focus', function () { view.last = this; });
@@ -2353,7 +2372,9 @@
         if (event.type !== 'build') return;
         var owner = event.item;
         if (event.name === 'description') {
-            detailLinks(owner, 'Жанр', details.genres);
+            detailLinks(owner, 'Жанр', details.genres, function (entry) {
+                openDetailGenre(entry, movie.anistarHentai ? 'hentai' : 'anime');
+            });
             detailLinks(owner, 'Производство', details.directors);
             detailLinks(owner, 'Автор', details.authors);
             if (details.comments.length && (!Lampa.Maker || typeof Lampa.Maker.make !== 'function')) {
@@ -2822,7 +2843,11 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
+            '.anistar-favorites .items-line__head{padding-left:1.5em;padding-right:1.5em}',
+            '.anistar-favorites .items-line__body .scroll__content{padding-left:0;padding-right:0}',
             '.anistar-favorites-rail{padding:0 1.5em 1em}',
+            '.anistar-favorites-more{display:block;width:12.75em}',
+            '.anistar-favorites-more .card-more__box{padding-bottom:150%}',
             '.anistar-favorites-message{min-height:72vh;box-sizing:border-box;align-items:center;gap:1.2em;padding:1.5em}',
             '.anistar-favorites-message .empty__title{font-size:2.4em}',
             '.anistar-favorites-message .full-start__button{padding:.8em 1.25em}',
