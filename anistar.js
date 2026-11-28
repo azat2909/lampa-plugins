@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.21
+ * Версия 0.5.22
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.21';
+    var VERSION = '0.5.22';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -471,6 +471,42 @@
         return /^\d{4}$/.test(year || '') ? year : '';
     }
 
+    function articleRating(node) {
+        var values = node.querySelectorAll('[itemprop="ratingValue"], [data-rating-value]');
+        for (var index = 0; index < values.length; index++) {
+            var field = values[index];
+            var raw = clean(field.getAttribute('content') || field.getAttribute('data-rating-value') || field.textContent);
+            if (!/^\d+(?:[.,]\d+)?$/.test(raw)) continue;
+            var value = Number(raw.replace(',', '.'));
+            if (value > 0 && value <= 10) return value;
+        }
+        var rating = nodeText(node, '.rating, .ratingtypeplusminus, .ratingtypeplusminus2');
+        var score = rating.match(/(\d+(?:[.,]\d+)?)\s*\/\s*10/);
+        var number = score ? Number(score[1].replace(',', '.')) : 0;
+        return number > 0 && number <= 10 ? number : 0;
+    }
+
+    function articleAge(node, fallback) {
+        var genres = node.querySelector('.head') || node;
+        if (hasCategory(node, /^(?:\/anime)?\/hentai\/?$/i) ||
+            titleGenres(genres).some(function (genre) {
+                return normalizeGenre(genre.title) === 'хентай' || /^\/filter\/janrs\/(?:хентай|hentai)$/.test(genrePath(genre.url));
+            })) return 18;
+        if (fallback && fallback.adult) return Math.max(18, fallback.anistarAge || 0);
+
+        var marks = node.querySelectorAll('[itemprop="contentRating"], [data-age], [data-age-rating], .age-rating, .age-limit');
+        for (var index = 0; index < marks.length; index++) {
+            var field = marks[index];
+            var raw = clean(field.getAttribute('content') || field.getAttribute('data-age-rating') || field.getAttribute('data-age') || field.textContent);
+            var mark = raw.match(/^(\d{1,2})\s*(?:\+|лет)?$/i);
+            if (mark && Number(mark[1]) <= 21) return Number(mark[1]);
+        }
+        var label = clean(genres.textContent).match(/(?:Возраст(?:ное ограничение|ной рейтинг)?|Для зрителей)\s*:?\s*(?:от\s+)?(\d{1,2})(?!\d)/i);
+        if (label && Number(label[1]) <= 21) return Number(label[1]);
+        if (!fallback) return null;
+        return fallback.anistarAge != null ? fallback.anistarAge : (fallback.restrict || null);
+    }
+
     function basicCard(node, article, fallback) {
         var id = newsId(article);
         var joinedTitle = usableTitle(nodeText(node, '.title_left h1, .title_left > a, h1, h2')) || (fallback && fallback.title);
@@ -481,7 +517,7 @@
         var year = (fallback && cardYear(fallback)) || articleYear(node) || catalogYears.get(id) || '';
         var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
         var poster = posterUrl(image, article);
-        var isAdult = hasCategory(node, /^\/hentai\/?$/i) || Boolean(fallback && fallback.adult);
+        var age = articleAge(node, fallback);
         return {
             id: SOURCE + ':' + id,
             source: SOURCE,
@@ -492,14 +528,15 @@
             release_year: year,
             release_date: /^\d{4}$/.test(year) ? year + '-01-01' : '',
             poster: poster || (fallback && fallback.poster) || '',
-            adult: isAdult,
+            adult: age >= 18,
+            vote_average: articleRating(node) || (fallback && fallback.vote_average) || 0,
             anistarReleased: releaseNote(node) || (fallback && fallback.anistarReleased) || '',
-            restrict: isAdult ? 18 : 0
+            anistarAge: age,
+            restrict: age || 0
         };
     }
 
-    function catalogMetrics(node) {
-        var score = nodeText(node, '.rating').match(/(\d+(?:[.,]\d+)?)\s*\/\s*10/);
+    function catalogMetrics(node, rating) {
         var time = node.querySelector('time[datetime]');
         var dateIcon = node.querySelector('.date-icon');
         var date = (time && time.getAttribute('datetime')) || nodeText(node, '.date, .news_date, .date-icon') ||
@@ -522,7 +559,7 @@
             ['data-count-views', 'data-views', 'content']);
         var comments = counter('.comm_num, .news-comments, a[href*="#comment"], [data-comments], [itemprop="commentCount"]',
             ['data-comments', 'content']);
-        return { rating: Number(nodeText(node, '[itemprop="ratingValue"]').replace(',', '.')) || (score ? Number(score[1].replace(',', '.')) : 0), date: Number.isFinite(stamp) ? stamp : 0,
+        return { rating: rating, date: Number.isFinite(stamp) ? stamp : 0,
             news_read: views, comm_num: comments };
     }
 
@@ -541,7 +578,7 @@
             if (!title) return;
             var card = basicCard(node, article, { title: title, poster: posterUrl(image, article) });
             if (!card) return;
-            card.anistarSort = catalogMetrics(node);
+            card.anistarSort = catalogMetrics(node, card.vote_average);
             card.posterFallback = card.poster;
             card.poster = SITE + '/uploads/posters/' + id + '/original.jpg';
             rows.set(id, { card: card, genres: titleGenres(node.querySelector('.head') || node), categories: cardCategories(node) });
@@ -588,7 +625,7 @@
             var card = link && basicCard(node, siteUrl(link.getAttribute('href'), url));
             if (!card || seen.has(card.id)) return;
             seen.add(card.id);
-            card.anistarSort = catalogMetrics(node);
+            card.anistarSort = catalogMetrics(node, card.vote_average);
             if (animeCatalog) {
                 card.posterFallback = card.poster;
                 card.poster = SITE + '/uploads/posters/' + newsId(card.url) + '/original.jpg';
@@ -728,8 +765,9 @@
                 var nextPage = match ? Number(match[1]) : linked;
                 page.next = nextPage > cursor ? nextPage : 0;
             }
-            if (/^\/hentai(?:\/|$)/i.test(sitePath(address))) page.rows.forEach(function (row) {
+            if (/^(?:\/anime)?\/hentai(?:\/|$)/i.test(sitePath(address))) page.rows.forEach(function (row) {
                 row.card.adult = true;
+                row.card.anistarAge = 18;
                 row.card.restrict = 18;
             });
             if (yearCatalog(state)) page.rows.forEach(function (row) {
@@ -1869,9 +1907,6 @@
         movie.genres = [];
         movie.production_companies = [];
         movie.production_countries = [];
-        var rating = nodeText(root, '.ratingtypeplusminus, .rating');
-        var score = rating.match(/(\d+(?:[.,]\d+)?)\s*\/\s*10/);
-        movie.vote_average = score ? Number(score[1].replace(',', '.')) : 0;
         movie.anistar = {
             genres: titleGenres(head),
             directors: readLinks(head, '/filter/director/'),
@@ -1996,6 +2031,40 @@
         });
     }
 
+    function renderFullRatings(card, details, movie) {
+        var vote = movie.vote_average;
+        var age = movie.anistarAge;
+        var line = card.find('.full-start-new__rate-line, .full-start__rate-line').first();
+        if (!line.length && details.length && (vote || age != null)) {
+            line = $('<div class="full-start-new__rate-line"></div>');
+            details.before(line);
+        }
+        if (!line.length) return;
+        line.addClass('anistar-full-rates').toggleClass('hide', !vote && age == null);
+
+        var rating = line.find('.rate--tmdb').first();
+        if (vote && !rating.length) {
+            rating = $('<div class="full-start__rate rate--tmdb"><div></div><div class="source--name"></div></div>');
+            line.prepend(rating);
+        }
+        rating.toggleClass('hide', !vote);
+        if (vote) {
+            var score = rating.children().not('.source--name').first();
+            if (!score.length) score = $('<div></div>').prependTo(rating);
+            score.text(vote >= 10 ? '10' : vote.toFixed(1));
+            var source = rating.find('.source--name').first();
+            if (!source.length) source = $('<div class="source--name"></div>').appendTo(rating);
+            source.text('AniStar');
+        }
+
+        var restriction = line.find('.full-start__pg').first();
+        if (age != null && !restriction.length) {
+            restriction = $('<div class="full-start__pg"></div>');
+            line.append(restriction);
+        }
+        restriction.toggleClass('hide', age == null).text(age == null ? '' : age + '+');
+    }
+
     function onFull(event) {
         var movie = event.data && event.data.movie || event.props && event.props.get('movie');
         if (!movie || movie.source !== SOURCE || !movie.anistar) return;
@@ -2034,6 +2103,7 @@
 
         function currentCard() { return $(typeof owner.render === 'function' && owner.render(true) || owner.html); }
         var card = currentCard();
+        card.addClass('anistar-full-card');
         var main = card.find('.full-start-new__details, .full-start__details').first();
         var title = card.find('.full-start-new__title, .full-start__title').first();
         if (!main.length && title.length) {
@@ -2053,15 +2123,14 @@
         }
         var genreText = details.genres.map(function (genre) { return genre.title; }).join(' | ');
         if (main.length) {
-            main.empty();
+            main.addClass('anistar-full-details').empty();
             [details.series && 'Серии: ' + details.series, details.translation, genreText].filter(Boolean).forEach(function (value, index) {
                 if (index) main.append($('<span class="full-start-new__split">●</span>'));
                 main.append($('<span></span>').text(value));
             });
         }
         card.find('.full-start-new__reactions').hide();
-        var ratingBox = card.find('.full-start__rate.rate--tmdb');
-        ratingBox.toggleClass('hide', !movie.vote_average).find('.source--name').text(NAME);
+        renderFullRatings(card, main, movie);
         function syncReleaseNote() { renderReleaseNote(currentCard(), movie); }
         syncReleaseNote();
         if (!details.released && !movie.anistarReleased && !details.availableRelease) {
@@ -2491,7 +2560,11 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
-            '.anistar-released{display:block;padding:.55em 0;color:inherit;text-align:left;font-size:1.3em;font-weight:800;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
+            '.anistar-full-card .full-start-new__tagline,.anistar-full-card .full--tagline{margin-bottom:.55em}',
+            '.anistar-full-card .anistar-full-rates{margin:.35em 0 .55em;flex-wrap:wrap;row-gap:.35em}',
+            '.anistar-full-card .anistar-full-rates:not(.hide){display:flex;align-items:center}',
+            '.anistar-full-card .anistar-full-details{margin-top:0;margin-bottom:.9em;line-height:1.35}',
+            '.anistar-released{display:block;padding:.4em 0;color:inherit;text-align:left;font-size:1.3em;font-weight:800;line-height:1.3;white-space:normal;overflow-wrap:break-word}',
             '.anistar-settings-row .settings-param__value{margin-top:.45em;overflow-wrap:anywhere}',
             '.anistar-search-keyboard.settings-input{position:fixed;inset:0;width:100%;height:100%;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;transform:none;background:#202024;backdrop-filter:none}',
             '.anistar-search-keyboard .settings-input__content{position:relative;top:auto;right:auto;bottom:auto;left:auto;margin:0;transform:none;max-width:94vw;max-height:94vh;background:transparent;box-shadow:none}',
