@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.25
+ * Версия 0.5.26
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.25';
+    var VERSION = '0.5.26';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -39,6 +39,7 @@
         { title: 'В планах', path: '/status-anime/3/', id: 3 },
         { title: 'Брошено', path: '/status-anime/4/', id: 4 }
     ];
+    var FAVORITE_TABS = STATUS.filter(function (entry) { return entry.id !== 1; });
     var SORT = [
         ['По дате', 'date'],
         ['По популярности', 'rating'],
@@ -72,6 +73,7 @@
     var loginWork;
     var nativeCookies = new Map();
     var bookmarkPages = new Map();
+    var bookmarkRevision = 0;
     var watchPlaylists = new WeakMap();
     var sortPlans = new WeakMap();
     var publicNotes = new Map();
@@ -179,6 +181,7 @@
     function setSession(account) {
         session = account;
         bookmarkPages.clear();
+        bookmarkRevision += 1;
         persistAccount();
     }
 
@@ -1017,17 +1020,17 @@
         return list;
     }
 
-    function fillList(state, list, remaining) {
+    function fillList(state, list, remaining, source) {
+        source = source || list;
         var shown = list.shown || 0;
-        if (!list.next || !remaining || list.cards.length - shown >= PAGE_SIZE ||
+        if (!source.next || !remaining || list.cards.length - shown >= PAGE_SIZE ||
             (state.activity && state.activity.component.destroyed)) return Promise.resolve();
-        var cursor = list.next;
-        var onGenrePage = Boolean(list.genreSource);
-        var source = list.genreSource || state;
-        return readCatalogPage(cursor, source).then(function (page) {
+        var cursor = source.next;
+        var onGenrePage = source !== list;
+        return readCatalogPage(cursor, source.state || state).then(function (page) {
             list.localSort = list.localSort || page.localSort;
             list.visited.add(cursor);
-            list.next = list.visited.has(page.next) ? '' : page.next;
+            source.next = list.visited.has(page.next) ? '' : page.next;
             page.rows.forEach(function (row) {
                 if (list.ids.has(row.card.id) || !filtered(row, state, onGenrePage)) return;
                 var poster = row.card.posterFallback === undefined ? row.card.poster : row.card.posterFallback;
@@ -1038,56 +1041,50 @@
                 }
                 list.ids.add(row.card.id);
                 list.cards.push(row.card);
+                source.added = true;
             });
-            return fillList(state, list, remaining - 1);
+            if (list.added && list.genreSource && list.genreSource.added && (state.sortApplied || state.anistarHome)) list.localSort = true;
+            return fillList(state, list, remaining - 1, source);
         }, function (error) {
             if (list.cards.length === shown) throw error;
         });
     }
 
-    function fillCombined(state, list) {
+    function fillBatch(state, list) {
         var genre = state.genre || (routeIsGenre(state.anistarRoute) && state.anistarRoute);
-        if (!genre || !yearCatalog(state)) return fillList(state, list, state.query && genre ? 8 : 5);
-        function scanGenre() {
-            var yearNext = list.next;
-            var yearSort = list.localSort;
-            list.genreSource = Object.assign({}, state, { genre: '', year: '', anistarRoute: genre });
-            list.next = siteUrl(genre);
-            list.localSort = false;
-            function resumeYear() {
-                list.genreSource = null;
-                list.next = yearNext;
-                list.localSort = yearSort;
-            }
-            return fillList(state, list, 8).then(function () {
-                if (!list.cards.length && yearNext && !list.visited.has(yearNext)) resumeYear();
-            }, function (error) {
-                resumeYear();
-                if (!list.visited.size) throw error;
+        var filteredList = state.query || state.year || genre || state.sortApplied || state.anistarRoute;
+        if (!genre || !yearCatalog(state)) return fillList(state, list, filteredList ? 8 : 5);
+        if (!list.genreSource) list.genreSource = {
+            next: siteUrl(genre), state: Object.assign({}, state, { genre: '', year: '', anistarRoute: genre })
+        };
+        function scanGenre() { return fillList(state, list, 8, list.genreSource); }
+        return fillList(state, list, 6).then(scanGenre, function (error) {
+            if (!list.genreSource.next) throw error;
+            return scanGenre().then(function () {
+                if (list.cards.length === (list.shown || 0) && !list.genreSource.next) throw error;
             });
-        }
-        return fillList(state, list, 6).then(function () {
-            if (!list.cards.length) return scanGenre();
-        }, scanGenre);
+        });
     }
+
+    function hasMorePages(list) { return Boolean(list.next || (list.genreSource && list.genreSource.next)); }
 
     function emptyMessage(list) {
         if (list.restricted) return 'Тайтлы 18+ скрыты настройками профиля Lampa.';
-        return list.next ? 'На первых страницах AniStar совпадений нет. Уточните фильтр.' : 'Тайтлы не найдены.';
+        return hasMorePages(list) ? 'На проверенных страницах AniStar совпадений нет. Уточните фильтр.' : 'Тайтлы не найдены.';
     }
 
     function loadList(state, success, failure) {
         var list = getList(state);
         var page = Number(state.page) || 1;
         var start = list.shown || 0;
-        var work = page === 1 ? (list.cards.length ? Promise.resolve() : fillCombined(state, list)) : fillList(state, list, 5);
+        var work = page === 1 && list.cards.length ? Promise.resolve() : fillBatch(state, list);
         work.then(function () {
             if (state.activity && state.activity.component.destroyed) return;
             list.shown = Math.min(start + MAX_PAGE_SIZE, list.cards.length);
             var results = list.cards.slice(start, list.shown);
             if (list.localSort) results.sort(compareCards.bind(null, state));
             success({ page: page, results: results, sortOrder: list.localSort ? list.cards.slice(0, list.shown).sort(compareCards.bind(null, state)) : null,
-                total_pages: page + (list.next || list.shown < list.cards.length ? 1 : 0),
+                total_pages: page + (hasMorePages(list) || list.shown < list.cards.length ? 1 : 0),
                 message: emptyMessage(list) });
         }).catch(function (error) {
             if (state.activity && state.activity.component.destroyed) return;
@@ -1114,7 +1111,7 @@
         origin.anistarLoading = true;
         Lampa.Controller.toggle('content');
         origin.activity.loader(true);
-        settle(fillCombined(state, list).then(function () {
+        settle(fillBatch(state, list).then(function () {
             if (Lampa.Activity.active() !== origin) return;
             if (!list.cards.length) Lampa.Noty.show(emptyMessage(list));
             else {
@@ -1134,9 +1131,11 @@
         });
     }
 
-    function openPersonal(entry) {
-        bookmarkPages.delete(SITE + entry.path);
-        openList(entry.title, { anistarList: entry });
+    function openFavorites(entry, replace) {
+        bookmarkPages.clear();
+        var state = listState('Избранное', { anistarList: entry || FAVORITE_TABS[0] });
+        if (replace) Lampa.Activity.replace(state, true);
+        else Lampa.Activity.push(state);
     }
 
     function catalogTemplate(name, required, fallback) {
@@ -1170,6 +1169,9 @@
         object.page = 1;
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250, end_ratio: 2 });
         var grid = $('<div class="mapping--grid cols--6"></div>');
+        var personal = object.anistarList;
+        var view = personal ? $('<div class="anistar-favorites-page"></div>') : grid;
+        var selectedTab;
         var ids = new Set();
         var itemsById = new Map();
         var focused = null;
@@ -1180,15 +1182,31 @@
         var hideMissing = hideUncovered();
         var catalogOrigin = SITE;
         var preferredGenre = object.anistarHome ? homeGenreUrl() : '';
+        var bookmarksVersion = bookmarkRevision;
         var settingsUpdateQueued = false;
         var failedCoverPages = 2;
-        scroll.append(grid);
+        if (personal) {
+            var tabs = $('<div class="navigation-tabs anistar-favorite-tabs"></div>').appendTo(view);
+            FAVORITE_TABS.forEach(function (entry) {
+                var tab = $('<div class="navigation-tabs__button selector"></div>').text(entry.title).appendTo(tabs);
+                if (entry.path === personal.path) {
+                    tab.addClass('active').attr('aria-current', 'true');
+                    selectedTab = tab[0];
+                }
+                tab.on('hover:focus', function () { focused = this; scroll.update(tab); });
+                tab.on('hover:enter', function () {
+                    if (entry.path !== personal.path || (!loading && !itemsById.size)) openFavorites(entry, true);
+                });
+            });
+            view.append(grid);
+        }
+        scroll.append(view);
 
         function refreshFocus() {
             if (!running || destroyed || Lampa.Controller.enabled().name !== 'content') return;
-            Lampa.Controller.collectionSet(grid, false, true);
-            var target = focused && grid[0].contains(focused) ? focused : grid.find('.selector')[0];
-            if (target) Lampa.Controller.collectionFocus(target, grid, true);
+            Lampa.Controller.collectionSet(view, false, true);
+            var target = focused && view[0].contains(focused) ? focused : selectedTab || view.find('.selector')[0];
+            if (target) Lampa.Controller.collectionFocus(target, view, true);
         }
 
         function append(data) {
@@ -1238,6 +1256,7 @@
             if (initial) component.activity.loader(true);
             loadList(object, function (page) {
                 if (destroyed) return;
+                if (personal && initial) bookmarksVersion = bookmarkRevision;
                 total = page.total_pages;
                 page.results.forEach(append);
                 if (page.sortOrder) page.sortOrder.forEach(function (card) {
@@ -1252,7 +1271,12 @@
                 loading = false;
                 if (destroyed) return;
                 if (initial) component.activity.loader(false);
-                if (running && ownsScreen(object, component)) Lampa.Noty.show(error.message || 'Список недоступен.');
+                if (personal && initial && error.message === LOGIN_PROMPT) {
+                    var button = $('<div class="full-start__button selector anistar-favorite-login"></div>').text(LOGIN_PROMPT).appendTo(view);
+                    button.on('hover:enter', openAccountSettings);
+                    button.on('hover:focus', function () { focused = this; scroll.update(button); });
+                    refreshFocus();
+                } else if (running && ownsScreen(object, component)) Lampa.Noty.show(error.message || 'Список недоступен.');
             });
         }
 
@@ -1283,8 +1307,9 @@
         this.updateCatalogSettings = function () {
             if (!ownsScreen(object, component) || destroyed) return false;
             var genreChanged = object.anistarHome && preferredGenre !== homeGenreUrl();
-            var siteChanged = object.anistarHome && catalogOrigin !== SITE;
-            if (!genreChanged && !siteChanged && hideMissing === hideUncovered()) return false;
+            var siteChanged = (object.anistarHome || personal) && catalogOrigin !== SITE;
+            var bookmarksChanged = personal && bookmarksVersion !== bookmarkRevision;
+            if (!genreChanged && !siteChanged && !bookmarksChanged && hideMissing === hideUncovered()) return false;
             if (settingsUpdateQueued) return true;
             settingsUpdateQueued = true;
             Promise.resolve().then(function () {
@@ -1297,6 +1322,8 @@
                         filters.genre = currentGenre;
                     }
                     Lampa.Activity.replace(homeState(filters), true);
+                } else if (personal) {
+                    openFavorites(personal, true);
                 } else if (typeof component.activity.refresh === 'function') {
                     component.activity.refresh();
                 }
@@ -1324,7 +1351,7 @@
             destroyed = true;
             component.destroyed = true;
             scroll.destroy();
-            grid.remove();
+            view.remove();
         };
     }
 
@@ -1396,7 +1423,7 @@
                 title: 'Фильтр',
                 items: [
                     { title: 'Поиск', subtitle: escapeHtml(draft.query), action: search },
-                    { title: 'Закладки', action: bookmarks },
+                    { title: 'Избранное', action: openFavorites },
                     { title: 'Сортировка', subtitle: SORT[draft.sort].title, action: sort },
                     { title: 'Жанры', subtitle: genre ? escapeHtml(genre.title) : 'Все', action: genres },
                     { title: 'Год', subtitle: draft.year || 'Любой', action: years },
@@ -1430,15 +1457,6 @@
                     }
                 });
             $('.settings-input').last().addClass('anistar-search-keyboard');
-        }
-
-        function bookmarks() {
-            Lampa.Select.show({
-                title: 'Закладки',
-                items: STATUS.map(function (entry) { return { title: entry.title, entry: entry }; }),
-                onSelect: function (item) { openPersonal(item.entry); },
-                onBack: render
-            });
         }
 
         function sort() {
@@ -1681,6 +1699,7 @@
                         if (actual !== desired) {
                             throw new Error('AniStar не подтвердил изменение статуса.');
                         }
+                        bookmarkRevision += 1;
                     }).catch(function (error) {
                         Lampa.Noty.show(error.message);
                     }), function () {
@@ -2635,6 +2654,11 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
+            '.anistar-favorite-tabs{display:flex;flex-wrap:wrap;gap:.25em;margin:0 1em 1em;padding:.4em;background:rgba(255,255,255,.08);border-radius:.5em}',
+            '.anistar-favorite-tabs .navigation-tabs__button{flex:1 0 auto;text-align:center;padding:.6em;border-radius:.3em}',
+            '.anistar-favorite-tabs .navigation-tabs__button.active{background:rgba(255,255,255,.35)}',
+            '.anistar-favorite-tabs .navigation-tabs__button.focus{background:#fff;color:#000}',
+            '.anistar-favorite-login{width:fit-content;margin:0 1.5em;padding:.8em 1.25em}',
             '.anistar-full-card .full-start-new__tagline,.anistar-full-card .full--tagline{margin-bottom:.55em}',
             '.anistar-full-card .anistar-full-rates{margin:.35em 0 .55em;flex-wrap:wrap;row-gap:.35em}',
             '.anistar-full-card .anistar-full-rates:not(.hide){display:flex;align-items:center}',
