@@ -1,25 +1,27 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.26
+ * Версия 0.5.27
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.26';
+    var VERSION = '0.5.27';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
     var previousSite = DEFAULT_SITE;
     var SITE_KEY = 'anistar_site_url';
-    var HOME_GENRE = 'anistar_home_genre';
+    var HOME_SECTION = 'anistar_home_section';
     var HIDE_UNCOVERED = 'anistar_hide_uncovered';
     var ANIME_PATH = '/anime/';
-    var CATALOG_PATH = /^\/anime(?:\/page\/(\d+))?\/?$/i;
+    var HOME_SECTIONS = [{ title: 'Аниме', value: 'anime' }, { title: 'Хентай', value: 'hentai' }];
+    var CATALOG_PATH = /^\/(anime|hentai)(?:\/page\/(\d+))?\/?$/i;
     var LEGACY_CARD = '.shortstory, .base, .news, .item, .anime-item, .movie-item, article, li';
     var VIEW = 'anistar_watch';
     var COMMENTS = 'anistar_comments';
+    var FAVORITES = 'anistar_favorites';
     var PAGE_SIZE = 20;
     var MAX_PAGE_SIZE = 25;
     var SEARCH_PAGE_SIZE = 10;
@@ -29,7 +31,7 @@
     var ACCOUNT_PASSWORD = 'anistar_password';
     var ACCOUNT_KEY = 'anistar_account_v1';
     var ACCOUNT_SIGNED_OUT = 'anistar_signed_out';
-    var GENRE_CACHE = 'anistar_anime_genres_v1';
+    var GENRE_CACHE = 'anistar_genres_v2';
     var LOGIN_PROMPT = 'Войдите в аккаунт в настройках Anistar';
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2l2.9 6.1 6.7.9-4.8 4.8 1.1 6.7-5.9-3.2-5.9 3.2 1.1-6.7L2.4 9l6.7-.9z"/></svg>';
     var STATUS = [
@@ -59,14 +61,14 @@
         ['Пародии','parodies'], ['Повседневность','everyday-life'], ['Приключения','adventures'],
         ['Романтика','romance'], ['Сёдзе','shoujo'], ['Сёнен','senen'], ['Сёнен-ай','senen-ay'],
         ['Спорт','sports'], ['Триллер','horror'], ['Ужасы','horor'], ['Фантастика','fantasy'],
-        ['Фэнтези','fentezi'], ['Хентай','hentai'], ['Школа','school'], ['Эччи','echchi-erotic']
+        ['Фэнтези','fentezi'], ['Школа','school'], ['Эччи','echchi-erotic']
     ];
     var parser = new DOMParser();
     var genreIndex = new Map();
     var lists = new WeakMap();
     var defaultFilters = { sort: 0, year: '', genre: '', query: '' };
-    var activeGenre;
-    var genreRefresh;
+    var genreDirectories = { anime: new Map(), hentai: new Map() };
+    var genreRefresh = {};
     var tizenDesktopSession;
     var playerOrigin;
     var session;
@@ -565,13 +567,18 @@
         return number > 0 && number <= 10 ? number : 0;
     }
 
-    function articleAge(node, fallback) {
+    function articleIsHentai(node, fallback) {
         var genres = node.querySelector('.head') || node;
-        if (hasCategory(node, /^(?:\/anime)?\/hentai\/?$/i) ||
+        return Boolean((fallback && fallback.anistarHentai) || hasCategory(node, /^(?:\/anime)?\/hentai\/?$/i) ||
             titleGenres(genres).some(function (genre) {
                 return normalizeGenre(genre.title) === 'хентай' || /^\/filter\/janrs\/(?:хентай|hentai)$/.test(genrePath(genre.url));
-            })) return 18;
+            }));
+    }
+
+    function articleAge(node, fallback, hentai) {
+        if (hentai) return 18;
         if (fallback && fallback.adult) return Math.max(18, fallback.anistarAge || 0);
+        var genres = node.querySelector('.head') || node;
 
         var marks = node.querySelectorAll('[itemprop="contentRating"], [data-age], [data-age-rating], .age-rating, .age-limit');
         for (var index = 0; index < marks.length; index++) {
@@ -596,7 +603,8 @@
         var year = (fallback && cardYear(fallback)) || articleYear(node) || catalogYears.get(id) || '';
         var image = node.querySelector('img.main-img, img[itemprop="image"], .news_avatar img');
         var poster = posterUrl(image, article);
-        var age = articleAge(node, fallback);
+        var hentai = articleIsHentai(node, fallback);
+        var age = articleAge(node, fallback, hentai);
         return {
             id: SOURCE + ':' + id,
             source: SOURCE,
@@ -607,6 +615,7 @@
             release_year: year,
             release_date: /^\d{4}$/.test(year) ? year + '-01-01' : '',
             poster: poster || (fallback && fallback.poster) || '',
+            anistarHentai: hentai,
             adult: age >= 18,
             vote_average: articleRating(node) || (fallback && fallback.vote_average) || 0,
             anistarReleased: releaseNote(node) || (fallback && fallback.anistarReleased) || '',
@@ -665,26 +674,26 @@
         return Array.from(rows.values());
     }
 
-    function animePageNumber(url) {
+    function catalogPageNumber(url, section) {
         var address = siteUrl(url);
         if (!address) return 0;
         var page = new URL(address);
         var match = page.pathname.match(CATALOG_PATH);
-        if (match) return Number(match[1] || 1);
-        if (page.pathname !== '/index.php' || page.searchParams.get('do') !== 'cat' || page.searchParams.get('category') !== 'anime') return 0;
+        if (match) return match[1].toLowerCase() === section ? Number(match[2] || 1) : 0;
+        if (page.pathname !== '/index.php' || page.searchParams.get('do') !== 'cat' || page.searchParams.get('category') !== section) return 0;
         var number = page.searchParams.get('cstart') || '1';
         return /^\d+$/.test(number) ? Number(number) : 0;
     }
 
-    function nextAnimePage(doc, url) {
-        var current = animePageNumber(url);
+    function nextSectionPage(doc, url, section) {
+        var current = catalogPageNumber(url, section);
         var best = Infinity;
         Array.prototype.forEach.call(doc.querySelectorAll('a[href]'), function (link) {
             var href = siteUrl(link.getAttribute('href'), url);
-            var page = animePageNumber(href);
+            var page = catalogPageNumber(href, section);
             if (page > current && page < best) best = page;
         });
-        return best < Infinity ? SITE + ANIME_PATH + 'page/' + best + '/' : '';
+        return best < Infinity ? sectionUrl(section) + 'page/' + best + '/' : '';
     }
 
     function cardCategories(node) {
@@ -694,8 +703,8 @@
     }
 
     function catalogPage(doc, url, personal) {
-        var animeCatalog = Boolean(animePageNumber(url));
-        var root = doc.querySelector('#dle-content') || ((animeCatalog || personal || doc.querySelector('.news, .shortstory')) && doc);
+        var section = catalogPageNumber(url, 'anime') ? 'anime' : catalogPageNumber(url, 'hentai') ? 'hentai' : '';
+        var root = doc.querySelector('#dle-content') || ((section || personal || doc.querySelector('.news, .shortstory')) && doc);
         if (!root) throw new Error('AniStar не вернул каталог.');
         var rows = [];
         var seen = new Set();
@@ -705,7 +714,7 @@
             if (!card || seen.has(card.id)) return;
             seen.add(card.id);
             card.anistarSort = catalogMetrics(node, card.vote_average);
-            if (animeCatalog) {
+            if (section === 'anime') {
                 card.posterFallback = card.poster;
                 card.poster = SITE + '/uploads/posters/' + newsId(card.url) + '/original.jpg';
             }
@@ -714,14 +723,20 @@
         });
         if (!rows.length) rows = legacyCatalogRows(root, url);
         rows.forEach(function (row) {
+            if (section === 'hentai') {
+                row.card.anistarHentai = true;
+                row.card.adult = true;
+                row.card.anistarAge = 18;
+                row.card.restrict = 18;
+            }
             if (row.card.release_year) catalogYears.set(newsId(row.card.url), row.card.release_year);
             if (row.card.anistarReleased) articleNotes.set(newsId(row.card.url), row.card.anistarReleased);
         });
         var link = root.querySelector('.pagenav .r a[href], a[rel~="next"]');
         var next = link && siteUrl(link.getAttribute('href'), url);
-        if (animeCatalog) {
-            var nextPage = animePageNumber(next);
-            next = nextPage > animePageNumber(url) ? SITE + ANIME_PATH + 'page/' + nextPage + '/' : nextAnimePage(doc, url);
+        if (section) {
+            var nextPage = catalogPageNumber(next, section);
+            next = nextPage > catalogPageNumber(url, section) ? sectionUrl(section) + 'page/' + nextPage + '/' : nextSectionPage(doc, url, section);
         }
         return { rows: rows, next: next && next !== url ? next : '' };
     }
@@ -755,7 +770,7 @@
         if (state.query) return 1;
         if (yearCatalog(state)) return yearUrl(state.year);
         if (state.anistarRoute) return siteUrl(state.anistarRoute);
-        return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || SITE + ANIME_PATH;
+        return (state.year && yearUrl(state.year)) || (state.genre && siteUrl(state.genre)) || sectionUrl(state.anistarSection);
     }
 
     function sortForm(doc, address) {
@@ -782,9 +797,14 @@
     }
 
     function rememberGenres(rows) {
+        var changed = false;
         rows.forEach(function (row) {
-            row.genres.forEach(function (genre) { genreIndex.set(genre.url, genre); });
+            row.genres.forEach(function (genre) {
+                genreIndex.set(genre.url, genre);
+                if (row.card.anistarHentai && storeGenre('hentai', genre)) changed = true;
+            });
         });
+        if (changed) saveGenres('hentai');
     }
 
     function readBookmarkPage(url) {
@@ -845,6 +865,7 @@
                 page.next = nextPage > cursor ? nextPage : 0;
             }
             if (/^(?:\/anime)?\/hentai(?:\/|$)/i.test(sitePath(address))) page.rows.forEach(function (row) {
+                row.card.anistarHentai = true;
                 row.card.adult = true;
                 row.card.anistarAge = 18;
                 row.card.restrict = 18;
@@ -920,11 +941,6 @@
 
     function readGenreDirectory(doc) {
         var links = [];
-        Array.prototype.forEach.call(doc.querySelectorAll('.news .head, .shortstory .head'), function (head) {
-            titleGenres(head).forEach(function (entry) {
-                if (!links.some(function (genre) { return genre.url === entry.url; })) links.push(entry);
-            });
-        });
         Array.prototype.forEach.call(doc.querySelectorAll('.cat_anime.hid_ul'), function (section) {
             if (nodeText(section, '.tit_sp').toLowerCase() !== 'аниме по жанрам') return;
             Array.prototype.forEach.call(section.querySelectorAll('a[href]'), function (link) {
@@ -938,32 +954,58 @@
         return links;
     }
 
+    function storeGenre(section, entry) {
+        var url = entry && siteUrl(entry.url);
+        if (!url || !entry.title || normalizeGenre(entry.title) === 'хентай' ||
+            (section === 'hentai' && !/^\/filter\/janrs\/[^/]+\/?$/i.test(sitePath(url)))) return false;
+        var key = normalizeGenre(entry.title);
+        var genres = genreDirectories[section];
+        if (genres.has(key)) return false;
+        var option = { url: url, title: entry.title };
+        genres.set(key, option);
+        genreIndex.set(url, option);
+        return true;
+    }
+
+    function saveGenres(section) {
+        Lampa.Storage.set(hostStorageKey(GENRE_CACHE + '_' + section), { items: Array.from(genreDirectories[section].values()) });
+    }
+
     function initGenres() {
-        GENRES.forEach(function (entry) {
-            var url = SITE + '/' + entry[1] + '/';
-            genreIndex.set(url, { url: url, title: entry[0] });
+        HOME_SECTIONS.forEach(function (section) {
+            var cached = Lampa.Storage.get(hostStorageKey(GENRE_CACHE + '_' + section.value), {});
+            if (cached && Array.isArray(cached.items)) cached.items.forEach(function (entry) { storeGenre(section.value, entry); });
         });
-        var cached = Lampa.Storage.get(hostStorageKey(GENRE_CACHE), {});
-        if (cached && Array.isArray(cached.items)) cached.items.forEach(function (entry) {
-            var url = siteUrl(entry.url);
-            if (url && !genreIndex.has(url)) genreIndex.set(url, { url: url, title: entry.title });
+        if (!genreDirectories.anime.size) GENRES.forEach(function (entry) {
+            storeGenre('anime', { url: SITE + '/' + entry[1] + '/', title: entry[0] });
         });
     }
 
-    function refreshGenres() {
-        if (!genreRefresh) {
+    function refreshGenres(section) {
+        if (!genreRefresh[section]) {
             var origin = SITE;
-            genreRefresh = desktopDocument(SITE + '/filter/janrs/', { plainGet: true }).then(function (doc) {
+            function discover(address, remaining) {
+                if (!address || !remaining || origin !== SITE) return Promise.resolve();
+                return desktopDocument(address, { plainGet: true }).then(function (doc) {
+                    if (origin !== SITE) return;
+                    var page = catalogPage(doc, address);
+                    rememberGenres(page.rows);
+                    return discover(page.next, remaining - 1);
+                });
+            }
+            var seed = section === 'hentai' ? discover(sectionUrl(section), 5) : desktopDocument(sectionUrl(section), { plainGet: true }).then(function (doc) {
                 if (origin !== SITE) return;
                 var genres = readGenreDirectory(doc);
                 if (!genres.length) throw new Error('AniStar не вернул справочник жанров.');
-                genres.forEach(function (genre) { genreIndex.set(genre.url, genre); });
-                Lampa.Storage.set(hostStorageKey(GENRE_CACHE), { items: Array.from(genreIndex.values()) });
-            }).catch(function () {
-                // Results already loaded and the previous session are still available as a fallback.
+                genreDirectories.anime.clear();
+                genres.forEach(function (genre) { storeGenre('anime', genre); });
+                saveGenres('anime');
+            });
+            genreRefresh[section] = seed.catch(function () {
+                if (origin === SITE) delete genreRefresh[section];
             });
         }
-        return genreRefresh;
+        return genreRefresh[section];
     }
 
     function canWatch() {
@@ -1002,6 +1044,7 @@
     }
 
     function filtered(row, state, onGenrePage) {
+        if (state.anistarSection && Boolean(row.card.anistarHentai) !== (state.anistarSection === 'hentai')) return false;
         if (state.year && row.card.release_year && row.card.release_year !== String(state.year)) return false;
         if (state.year && (onGenrePage || !yearCatalog(state)) && !row.card.release_year) return false;
         if (onGenrePage && (!routeIsGenre(state.anistarRoute) || !state.genre || genrePath(state.genre) === genrePath(state.anistarRoute))) return true;
@@ -1131,9 +1174,13 @@
         });
     }
 
-    function openFavorites(entry, replace) {
+    function openFavorites() {
         bookmarkPages.clear();
-        var state = listState('Избранное', { anistarList: entry || FAVORITE_TABS[0] });
+        Lampa.Activity.push(listState('Избранное', { component: FAVORITES }));
+    }
+
+    function openFavoriteList(entry, replace) {
+        var state = listState(entry.title, { anistarList: entry });
         if (replace) Lampa.Activity.replace(state, true);
         else Lampa.Activity.push(state);
     }
@@ -1164,14 +1211,142 @@
         else item.append(age);
     }
 
+    function catalogCard(data, onUnavailable) {
+        var item = catalogTemplate('card', '.card__img',
+            '<div class="card selector"><div class="card__view"><img class="card__img"></div><div class="card__title"></div><div class="card__age"></div></div>');
+        item.addClass('card--loaded selector');
+        var image = item.find('.card__img').attr('alt', '').attr('loading', 'lazy');
+        var fallback = data.posterFallback;
+        image.on('error', function () {
+            var alternate = fallback;
+            fallback = '';
+            if (alternate && alternate !== image.attr('src') && (!onUnavailable || hasCover(alternate))) image.attr('src', alternate);
+            else if (onUnavailable) onUnavailable(item);
+            else image.off('error').attr('src', './img/img_broken.svg');
+        }).attr('src', data.poster || './img/img_broken.svg');
+        item.find('.card__title').first().text(data.title);
+        renderCatalogYear(item, data);
+        item.on('hover:long', function () { chooseStatus(data); });
+        item.on('hover:enter', function () {
+            Lampa.Activity.push({ component: 'full', method: 'movie', source: SOURCE, card: data, id: data.id, url: '' });
+        });
+        return item;
+    }
+
+    function moveCatalogFocus(direction, fallback) {
+        var navigator = window.Navigator && typeof window.Navigator.canmove === 'function' ? window.Navigator : Lampa.Navigator;
+        if (navigator && typeof navigator.canmove === 'function' && navigator.canmove(direction)) {
+            navigator.move(direction);
+            return true;
+        }
+        if (fallback) Lampa.Controller.toggle(fallback);
+        return false;
+    }
+
+    function favoritesComponent(object) {
+        var component = this;
+        var scroll = new Lampa.Scroll({ mask: true, over: true, scroll_by_item: true });
+        var body = $('<div class="anistar-favorites"></div>');
+        var rails = [];
+        var focused;
+        var running = false;
+        var reloading = false;
+        var origin = SITE;
+        var hideMissing = hideUncovered();
+        var version = bookmarkRevision;
+        scroll.append(body);
+
+        function focus() {
+            if (!running || component.destroyed || Lampa.Controller.enabled().name !== 'content') return;
+            Lampa.Controller.collectionSet(body, false, true);
+            var target = focused && body[0].contains(focused) ? focused : (body.find('.card.selector')[0] || body.find('.selector')[0]);
+            if (target) Lampa.Controller.collectionFocus(target, body, true);
+        }
+
+        function row(entry) {
+            var line = catalogTemplate('items_line', '.items-line__body',
+                '<div class="items-line"><div class="items-line__head"><div class="items-line__title"></div></div><div class="items-line__body"></div></div>').appendTo(body);
+            line.find('.items-line__title').text(entry.title);
+            var more = $('<div class="items-line__more selector">Ещё</div>').appendTo(line.find('.items-line__head'));
+            more.on('hover:enter', function () { openFavoriteList(entry); });
+            more.on('hover:focus', function () { focused = this; scroll.update(line); });
+            var rail = new Lampa.Scroll({ horizontal: true, step: 300 });
+            rails.push(rail);
+            var cards = $('<div class="mapping--line anistar-favorites-rail"></div>');
+            rail.append(cards);
+            line.find('.items-line__body').append(rail.render());
+
+            var state = listState(entry.title, { anistarList: entry });
+            var list = getList(state);
+            return fillList(state, list, 2).then(function () {
+                if (component.destroyed) return;
+                list.cards.slice(0, 12).forEach(function (data) {
+                    var item = catalogCard(data, hideMissing ? function (missing) { missing.remove(); focus(); } : null);
+                    item.on('hover:focus', function () {
+                        focused = this;
+                        rail.update(item);
+                        scroll.update(line);
+                    }).appendTo(cards);
+                });
+            }, function (error) { return error.message; });
+        }
+
+        this.create = function () {
+            scroll.minus();
+            component.activity.loader(true);
+            Promise.all(FAVORITE_TABS.map(row)).then(function (errors) {
+                if (component.destroyed) return;
+                version = bookmarkRevision;
+                var error = errors.find(Boolean);
+                if (error === LOGIN_PROMPT) {
+                    var login = $('<div class="full-start__button selector anistar-favorite-login"></div>').text(LOGIN_PROMPT).prependTo(body);
+                    login.on('hover:enter', openAccountSettings);
+                } else if (error && ownsScreen(object, component)) Lampa.Noty.show(error);
+                component.activity.loader(false);
+                focus();
+            });
+        };
+        this.render = function (raw) { return raw ? scroll.render()[0] : scroll.render(); };
+        this.updateCatalogSettings = function () {
+            if (component.destroyed || !ownsScreen(object, component) ||
+                (version === bookmarkRevision && origin === SITE && hideMissing === hideUncovered())) return false;
+            if (reloading) return true;
+            reloading = true;
+            Promise.resolve().then(function () {
+                if (component.destroyed || !ownsScreen(object, component)) { reloading = false; return; }
+                Lampa.Activity.replace(listState('Избранное', { component: FAVORITES }), true);
+            });
+            return true;
+        };
+        this.start = function () {
+            running = true;
+            if (this.updateCatalogSettings()) return;
+            Lampa.Controller.add('content', {
+                link: component, toggle: focus,
+                left: function () { moveCatalogFocus('left', 'menu'); },
+                up: function () { moveCatalogFocus('up', 'head'); },
+                down: function () { moveCatalogFocus('down'); },
+                right: function () { moveCatalogFocus('right'); },
+                back: function () { Lampa.Activity.backward(); }
+            });
+            Lampa.Controller.toggle('content');
+        };
+        this.pause = this.stop = function () { running = false; };
+        this.destroy = function () {
+            component.destroyed = true;
+            rails.forEach(function (rail) { rail.destroy(); });
+            scroll.destroy();
+            body.remove();
+        };
+    }
+
     function catalogComponent(object) {
         var component = this;
         object.page = 1;
         var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250, end_ratio: 2 });
         var grid = $('<div class="mapping--grid cols--6"></div>');
         var personal = object.anistarList;
-        var view = personal ? $('<div class="anistar-favorites-page"></div>') : grid;
-        var selectedTab;
+        var view = personal ? $('<div class="anistar-favorites-list"></div>').append(grid) : grid;
         var ids = new Set();
         var itemsById = new Map();
         var focused = null;
@@ -1181,66 +1356,31 @@
         var destroyed = false;
         var hideMissing = hideUncovered();
         var catalogOrigin = SITE;
-        var preferredGenre = object.anistarHome ? homeGenreUrl() : '';
+        var preferredSection = object.anistarHome ? homeSection() : '';
         var bookmarksVersion = bookmarkRevision;
         var settingsUpdateQueued = false;
         var failedCoverPages = 2;
-        if (personal) {
-            var tabs = $('<div class="navigation-tabs anistar-favorite-tabs"></div>').appendTo(view);
-            FAVORITE_TABS.forEach(function (entry) {
-                var tab = $('<div class="navigation-tabs__button selector"></div>').text(entry.title).appendTo(tabs);
-                if (entry.path === personal.path) {
-                    tab.addClass('active').attr('aria-current', 'true');
-                    selectedTab = tab[0];
-                }
-                tab.on('hover:focus', function () { focused = this; scroll.update(tab); });
-                tab.on('hover:enter', function () {
-                    if (entry.path !== personal.path || (!loading && !itemsById.size)) openFavorites(entry, true);
-                });
-            });
-            view.append(grid);
-        }
         scroll.append(view);
 
         function refreshFocus() {
             if (!running || destroyed || Lampa.Controller.enabled().name !== 'content') return;
             Lampa.Controller.collectionSet(view, false, true);
-            var target = focused && view[0].contains(focused) ? focused : selectedTab || view.find('.selector')[0];
+            var target = focused && view[0].contains(focused) ? focused : view.find('.selector')[0];
             if (target) Lampa.Controller.collectionFocus(target, view, true);
         }
 
         function append(data) {
             if (ids.has(data.id)) return;
             ids.add(data.id);
-            var item = catalogTemplate('card', '.card__img',
-                '<div class="card selector"><div class="card__view"><img class="card__img"></div><div class="card__title"></div><div class="card__age"></div></div>');
-            item.addClass('card--loaded selector');
-            var image = item.find('.card__img').attr('alt', '').attr('loading', 'lazy');
-            var fallback = data.posterFallback;
-            image.on('error', function () {
-                var alternate = fallback;
-                fallback = '';
-                if (alternate && alternate !== image.attr('src') && (!hideMissing || hasCover(alternate))) {
-                    image.attr('src', alternate);
-                } else if (hideMissing) {
-                    if (focused === item[0]) focused = null;
-                    itemsById.delete(data.id);
-                    item.remove();
-                    refreshFocus();
-                    if (!itemsById.size && failedCoverPages > 0 && next()) failedCoverPages -= 1;
-                } else {
-                    image.off('error').attr('src', './img/img_broken.svg');
-                }
-            }).attr('src', data.poster || './img/img_broken.svg');
-            item.find('.card__title').first().text(data.title);
-            renderCatalogYear(item, data);
+            var item = catalogCard(data, hideMissing ? function (missing) {
+                if (focused === missing[0]) focused = null;
+                itemsById.delete(data.id);
+                missing.remove();
+                refreshFocus();
+                if (!itemsById.size && failedCoverPages > 0 && next()) failedCoverPages -= 1;
+            } : null);
             item.appendTo(grid);
             itemsById.set(data.id, item);
-            item.on('hover:long', function () { chooseStatus(data); });
-            item.on('hover:enter', function () {
-                Lampa.Activity.push({ component: 'full', method: 'movie', source: SOURCE,
-                    card: data, id: data.id, url: '' });
-            });
             item.on('hover:focus', function () {
                 focused = this;
                 scroll.update(item);
@@ -1287,18 +1427,8 @@
             return true;
         }
 
-        function move(direction, fallback) {
-            var navigator = window.Navigator && typeof window.Navigator.canmove === 'function' ? window.Navigator : Lampa.Navigator;
-            if (navigator && typeof navigator.canmove === 'function' && navigator.canmove(direction)) {
-                navigator.move(direction);
-                return true;
-            }
-            if (fallback) Lampa.Controller.toggle(fallback);
-            return false;
-        }
-
         this.create = function () {
-            if (object.anistarHome) refreshGenres();
+            if (object.anistarHome) refreshGenres(object.anistarSection || homeSection());
             scroll.minus();
             scroll.onEnd = next;
             load(true);
@@ -1306,24 +1436,19 @@
         this.render = function (raw) { return raw ? scroll.render()[0] : scroll.render(); };
         this.updateCatalogSettings = function () {
             if (!ownsScreen(object, component) || destroyed) return false;
-            var genreChanged = object.anistarHome && preferredGenre !== homeGenreUrl();
+            var sectionChanged = object.anistarHome && preferredSection !== homeSection();
             var siteChanged = (object.anistarHome || personal) && catalogOrigin !== SITE;
             var bookmarksChanged = personal && bookmarksVersion !== bookmarkRevision;
-            if (!genreChanged && !siteChanged && !bookmarksChanged && hideMissing === hideUncovered()) return false;
+            if (!sectionChanged && !siteChanged && !bookmarksChanged && hideMissing === hideUncovered()) return false;
             if (settingsUpdateQueued) return true;
             settingsUpdateQueued = true;
             Promise.resolve().then(function () {
                 settingsUpdateQueued = false;
                 if (destroyed || !ownsScreen(object, component)) return;
                 if (object.anistarHome) {
-                    var currentGenre = homeGenreUrl();
-                    var filters = Object.assign({}, object.anistarFilters || defaultFilters);
-                    if ((catalogOrigin === SITE && preferredGenre !== currentGenre) || (catalogOrigin !== SITE && activeGenre === undefined)) {
-                        filters.genre = currentGenre;
-                    }
-                    Lampa.Activity.replace(homeState(filters), true);
+                    Lampa.Activity.replace(homeState(sectionChanged || siteChanged ? null : object.anistarFilters), true);
                 } else if (personal) {
-                    openFavorites(personal, true);
+                    openFavoriteList(personal, true);
                 } else if (typeof component.activity.refresh === 'function') {
                     component.activity.refresh();
                 }
@@ -1336,11 +1461,11 @@
             Lampa.Controller.add('content', {
                 link: component,
                 toggle: refreshFocus,
-                left: function () { move('left', 'menu'); },
-                up: function () { move('up', 'head'); },
-                down: function () { if (!move('down')) next(); },
+                left: function () { moveCatalogFocus('left', 'menu'); },
+                up: function () { moveCatalogFocus('up', 'head'); },
+                down: function () { if (!moveCatalogFocus('down')) next(); },
                 right: function () {
-                    if (!move('right') && !object.anistarList) showFilter(object);
+                    if (!moveCatalogFocus('right') && !object.anistarList) showFilter(object);
                 },
                 back: function () { Lampa.Activity.backward(); }
             });
@@ -1379,13 +1504,8 @@
         });
     }
 
-    function genreOptions() {
-        var known = new Map();
-        genreIndex.forEach(function (entry) {
-            var key = entry.title.toLowerCase().replace(/ё/g, 'е');
-            if (!known.has(key)) known.set(key, entry);
-        });
-        var items = Array.from(known.values()).sort(function (left, right) {
+    function genreOptions(section) {
+        var items = Array.from(genreDirectories[section].values()).sort(function (left, right) {
             return left.title.localeCompare(right.title, 'ru', { sensitivity: 'base' });
         }).map(function (entry) {
             return { title: escapeHtml(entry.title), value: entry.url };
@@ -1394,27 +1514,27 @@
         return items;
     }
 
-    function homeGenre() {
-        var saved = Lampa.Storage.get(hostStorageKey(HOME_GENRE), null);
-        var url = saved && siteUrl(saved.url);
-        if (!url || !saved.title) return null;
-        if (!genreIndex.has(url)) genreIndex.set(url, { url: url, title: saved.title });
-        return genreIndex.get(url);
-    }
+    function homeSection() { return Lampa.Storage.get(HOME_SECTION, 'anime') === 'hentai' ? 'hentai' : 'anime'; }
 
-    function homeGenreUrl() { return (homeGenre() || {}).url || ''; }
+    function sectionUrl(section) { return SITE + (section === 'hentai' ? '/hentai/' : ANIME_PATH); }
 
     function homeState(filters) {
-        var genre = activeGenre === undefined ? homeGenreUrl() : activeGenre;
-        var values = Object.assign({}, defaultFilters, { genre: genre }, filters);
+        var values = Object.assign({}, defaultFilters, filters);
         values.genre = siteUrl(values.genre);
-        return listState(NAME, Object.assign({ anistarHome: true, anistarFilters: values }, values));
+        return listState(NAME, Object.assign({ anistarHome: true, anistarSection: homeSection(), anistarFilters: values }, values));
+    }
+
+    function openHome() {
+        var active = Lampa.Activity.active();
+        if (active && active.component === 'anistar_catalog' && active.anistarHome) Lampa.Activity.replace(homeState(), true);
+        else Lampa.Activity.push(homeState());
     }
 
     function showFilter(activity) {
         var base = activity.anistarFilters || defaultFilters;
         var draft = Object.assign({}, activity.anistarFilterDraft || base);
         var controller = Lampa.Controller.enabled().name;
+        var section = activity.anistarSection || homeSection();
 
         function render() {
             if (Lampa.Activity.active() !== activity) return;
@@ -1466,7 +1586,12 @@
         }
 
         function genres() {
-            choose('Жанры', 'genre', genreOptions());
+            if (genreDirectories[section].size) choose('Жанры', 'genre', genreOptions(section));
+            else refreshGenres(section).then(function () {
+                if (Lampa.Activity.active() !== activity) return;
+                if (!genreDirectories[section].size) Lampa.Noty.show('Не удалось загрузить жанры AniStar.');
+                choose('Жанры', 'genre', genreOptions(section));
+            });
         }
 
         function years() {
@@ -1481,7 +1606,6 @@
             if (Lampa.Activity.active() !== activity || activity.anistarLoading) return;
             var route = activity.anistarRoute;
             if (routeIsGenre(route) && draft.genre !== base.genre) route = '';
-            if (!route && draft.genre !== base.genre) activeGenre = draft.genre;
             if (!draft.query && !draft.genre && !draft.year && !draft.sortApplied && !route) {
                 Lampa.Activity.replace(homeState(), true);
                 return;
@@ -1492,13 +1616,12 @@
                 return;
             }
             openList(draft.query ? 'Поиск · ' + draft.query : route ? activity.title : 'Каталог AniStar', Object.assign({
-                anistarResults: true, anistarRoute: route, anistarFilters: draft
+                anistarResults: true, anistarRoute: route, anistarSection: activity.anistarSection, anistarFilters: draft
             }, draft));
         }
 
         function reset() {
             if (Lampa.Activity.active() !== activity) return;
-            activeGenre = undefined;
             Lampa.Activity.replace(homeState(), true);
         }
 
@@ -1719,7 +1842,8 @@
         var busy = false;
 
         function render() {
-            var values = { login: loginName(), password: loginPassword() ? '********' : '', profile: session ? session.name : '', home: (homeGenre() || {}).title || 'Все', address: SITE };
+            var values = { login: loginName(), password: loginPassword() ? '********' : '', profile: session ? session.name : '',
+                home: homeSection() === 'hentai' ? 'Хентай' : 'Аниме', address: SITE };
             Object.keys(rows).forEach(function (key) {
                 var personal = key === 'profile' || key === 'signout';
                 rows[key].toggleClass('hide', key !== 'address' && key !== 'home' && personal !== Boolean(session));
@@ -1806,14 +1930,9 @@
             component: SOURCE, param: { name: SOURCE + '_more', type: 'title' }, field: { name: 'Еще' }
         });
         row('home', 'Главная страница по умолчанию', function () {
-            var selected = homeGenre();
-            refreshGenres();
             function restore() { Lampa.Controller.toggle('settings_component'); focus('home'); }
-            optionMenu('Главная страница по умолчанию', genreOptions(), selected ? selected.url : '', function (value) {
-                if (value !== (selected ? selected.url : '')) {
-                    Lampa.Storage.set(hostStorageKey(HOME_GENRE), genreIndex.get(value) || null);
-                    activeGenre = undefined;
-                }
+            optionMenu('Главная страница по умолчанию', HOME_SECTIONS, homeSection(), function (value) {
+                Lampa.Storage.set(HOME_SECTION, value);
                 render();
                 restore();
             }, restore);
@@ -1826,7 +1945,7 @@
         });
         function refreshCatalogAfterSettings() {
             var active = Lampa.Activity.active();
-            var component = active && active.component === 'anistar_catalog' && active.activity && active.activity.component;
+            var component = active && (active.component === 'anistar_catalog' || active.component === FAVORITES) && active.activity && active.activity.component;
             if (component && component.updateCatalogSettings) component.updateCatalogSettings();
         }
         if (Lampa.Settings && Lampa.Settings.listener) Lampa.Settings.listener.follow('close', refreshCatalogAfterSettings);
@@ -1845,7 +1964,6 @@
                 if (address === SITE) return;
                 previousSite = SITE;
                 SITE = address;
-                if (activeGenre !== undefined) activeGenre = siteUrl(activeGenre);
                 session = null;
                 loginWork = null;
                 nativeCookies.clear();
@@ -1856,9 +1974,11 @@
                 publicNotes.clear();
                 catalogYears.clear();
                 articleNotes.clear();
-                genreRefresh = null;
+                genreRefresh = {};
                 tizenDesktopSession = null;
                 genreIndex.clear();
+                genreDirectories.anime.clear();
+                genreDirectories.hentai.clear();
                 Lampa.Storage.set(SITE_KEY, address === DEFAULT_SITE ? '' : address);
                 restoreAccount();
                 initGenres();
@@ -2654,11 +2774,8 @@
             '.anistar-action{gap:.6em}',
             '.anistar-action svg{width:1.4em;height:1.4em}',
             '.mapping--grid .anistar-card-year{display:block}',
-            '.anistar-favorite-tabs{display:flex;flex-wrap:wrap;gap:.25em;margin:0 1em 1em;padding:.4em;background:rgba(255,255,255,.08);border-radius:.5em}',
-            '.anistar-favorite-tabs .navigation-tabs__button{flex:1 0 auto;text-align:center;padding:.6em;border-radius:.3em}',
-            '.anistar-favorite-tabs .navigation-tabs__button.active{background:rgba(255,255,255,.35)}',
-            '.anistar-favorite-tabs .navigation-tabs__button.focus{background:#fff;color:#000}',
-            '.anistar-favorite-login{width:fit-content;margin:0 1.5em;padding:.8em 1.25em}',
+            '.anistar-favorites-rail{padding:0 1.5em 1em}',
+            '.anistar-favorite-login{width:fit-content;margin:0 1.5em 1.4em;padding:.8em 1.25em}',
             '.anistar-full-card .full-start-new__tagline,.anistar-full-card .full--tagline{margin-bottom:.55em}',
             '.anistar-full-card .anistar-full-rates{margin:.35em 0 .55em;flex-wrap:wrap;row-gap:.35em}',
             '.anistar-full-card .anistar-full-rates:not(.hide){display:flex;align-items:center}',
@@ -2686,11 +2803,10 @@
         initGenres();
         Lampa.Api.sources[SOURCE] = { list: loadList, full: loadFull, clear: function () {} };
         Lampa.Component.add('anistar_catalog', catalogComponent);
+        Lampa.Component.add(FAVORITES, favoritesComponent);
         Lampa.Component.add(VIEW, watchComponent);
         Lampa.Component.add(COMMENTS, commentsComponent);
-        Lampa.Menu.addButton(ICON, NAME, function () {
-            Lampa.Activity.push(homeState());
-        });
+        Lampa.Menu.addButton(ICON, NAME, openHome);
         Lampa.Listener.follow('full', onFull);
         Lampa.Player.listener.follow('close', function (event) {
             if (!playerOrigin || event.data !== playerOrigin.data) return;
