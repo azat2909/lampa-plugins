@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.22
+ * Версия 0.5.23
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.22';
+    var VERSION = '0.5.23';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -65,6 +65,7 @@
     var defaultFilters = { sort: 0, year: '', genre: '', query: '' };
     var activeGenre;
     var genreRefresh;
+    var tizenDesktopSession;
     var playerOrigin;
     var session;
     var loginWork;
@@ -250,8 +251,12 @@
             }
 
             var jar = options.cookieJar || (options.auth ? nativeCookies : null);
-            if (native && jar && jar.size) {
-                headers.Cookie = Array.from(jar, function (entry) { return entry.join('='); }).join('; ');
+            if (native) {
+                var cookies = options.desktopSkin ? new Map(jar || []) : jar;
+                if (options.desktopSkin) cookies.set('dle_skin', 'new36');
+                if (cookies && cookies.size) {
+                    headers.Cookie = Array.from(cookies, function (entry) { return entry.join('='); }).join('; ');
+                }
             }
             if (body !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
             var settings = { dataType: options.binary && native ? 'base64' : 'text', timeout: timeout };
@@ -390,15 +395,55 @@
 
     function desktopRequestOptions(options) {
         if (!android()) return options;
-        return Object.assign({}, options, { plainGet: false,
+        return Object.assign({}, options, { plainGet: false, desktopSkin: true,
             headers: Object.assign({}, options.headers, { 'User-Agent': DESKTOP_AGENT }) });
     }
 
+    function isCompactLayout(doc) {
+        return Boolean(doc.querySelector('link[href*="/templates/smartphone/"], script[src*="/templates/smartphone/"]'));
+    }
+
+    function requireDesktopLayout(doc) {
+        if (isCompactLayout(doc)) throw new Error('AniStar вернул мобильную версию. Не удалось открыть полную версию сайта.');
+        return doc;
+    }
+
+    function ensureTizenDesktop() {
+        if (tizenDesktopSession) return tizenDesktopSession;
+        // AniStar's “Полная версия сайта” link sets the desktop cookie for this origin.
+        var pending = pageDocument(SITE + '/?action_skin_change=1&skin_name=new36', { auth: true }).then(requireDesktopLayout);
+        tizenDesktopSession = pending;
+        pending.catch(function () {
+            if (tizenDesktopSession === pending) tizenDesktopSession = null;
+        });
+        return pending;
+    }
+
+    function tizenCatalogDocument(url, options) {
+        var origin = SITE;
+        var authenticated = Object.assign({}, options, { plainGet: false, auth: true });
+        var sessionReady = ensureTizenDesktop();
+        function load(address) {
+            if (origin !== SITE) throw new Error('Адрес AniStar изменился.');
+            return pageDocument(address, authenticated);
+        }
+        return sessionReady.then(function () {
+            return load(url);
+        }).then(function (doc) {
+            if (!isCompactLayout(doc)) return doc;
+            if (tizenDesktopSession === sessionReady) tizenDesktopSession = null;
+            return ensureTizenDesktop().then(function () { return load(freshUrl(url)); }).then(requireDesktopLayout);
+        });
+    }
+
     function catalogDocument(url, options) {
+        if (tizen() && !android()) return tizenCatalogDocument(url, options);
         var desktop = desktopRequestOptions(options);
         var document = pageDocument(url, desktop);
         if (desktop === options) return document;
-        return document.catch(function () { return pageDocument(url, options); });
+        return document.then(requireDesktopLayout).catch(function () {
+            return pageDocument(url, options).then(requireDesktopLayout);
+        });
     }
 
     function readLinks(scope, prefix) {
@@ -814,7 +859,7 @@
                     return local(baseline);
                 }
                 return pageDocument(fields.url, sortOptions(sort, fields, plan.jar)).then(function (response) {
-                    return sortedGet().catch(function () { return response; });
+                    return sortedGet().catch(function () { return requireDesktopLayout(response); });
                 }).then(function (sorted) {
                     var page = read(sorted, address);
                     if (sortApplied(sorted, sort) && page.rows.length && browserOrder(page) !== browserOrder(baseline)) {
@@ -874,7 +919,7 @@
     function refreshGenres() {
         if (!genreRefresh) {
             var origin = SITE;
-            genreRefresh = pageDocument(desktopUrl(SITE + '/filter/janrs/'), { plainGet: true }).then(function (doc) {
+            genreRefresh = catalogDocument(desktopUrl(SITE + '/filter/janrs/'), { plainGet: true }).then(function (doc) {
                 if (origin !== SITE) return;
                 var genres = readGenreDirectory(doc);
                 if (!genres.length) throw new Error('AniStar не вернул справочник жанров.');
@@ -1764,6 +1809,7 @@
                 catalogYears.clear();
                 articleNotes.clear();
                 genreRefresh = null;
+                tizenDesktopSession = null;
                 genreIndex.clear();
                 Lampa.Storage.set(SITE_KEY, address === DEFAULT_SITE ? '' : address);
                 restoreAccount();
