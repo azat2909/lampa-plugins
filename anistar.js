@@ -1,13 +1,13 @@
 /*!
  * Anistar для Lampa
- * Версия 0.5.24
+ * Версия 0.5.25
  */
 (function () {
     'use strict';
 
     var SOURCE = 'anistar';
     var NAME = 'Anistar';
-    var VERSION = '0.5.24';
+    var VERSION = '0.5.25';
     var DEFAULT_SITE = 'https://anistar.org';
     var DESKTOP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     var SITE = DEFAULT_SITE;
@@ -137,7 +137,8 @@
     function desktopUrl(value) {
         var url = new URL(siteUrl(value));
         // Keep pre-encoded Windows-1251 query values intact.
-        return url.searchParams.has('skin_name') ? url.href : url.href + (url.search ? '&' : '?') + 'skin_name=new36';
+        if (/[?&]skin_name=/i.test(url.search)) return url.href.replace(/([?&])skin_name=[^&]*/gi, '$1skin_name=new36');
+        return url.href + (url.search ? '&' : '?') + 'skin_name=new36';
     }
 
     function sitePath(value) {
@@ -329,7 +330,7 @@
         if (!name || !password) return Promise.reject(new Error(LOGIN_PROMPT));
         var origin = SITE;
         var url = SITE + ANIME_PATH;
-        var home = catalogDocument(freshUrl(url), { auth: true });
+        var home = desktopDocument(freshUrl(url), { auth: true });
         loginWork = home.then(function (page) {
             var known = readSession(page);
             if (known && known.name.toLowerCase() === name.toLowerCase()) return known;
@@ -345,7 +346,7 @@
             fields.login_name = name;
             fields.login_password = password;
             return desktopRequest(desktopUrl(target), { body: form(fields), auth: true, headers: { Referer: url } }).then(function () {
-                return catalogDocument(freshUrl(url), { auth: true });
+                return desktopDocument(freshUrl(url), { auth: true });
             }).then(function (verified) {
                 var account = readSession(verified);
                 if (!account || account.name.toLowerCase() !== name.toLowerCase()) throw new Error('AniStar не подтвердил вход. Проверьте логин и пароль.');
@@ -366,7 +367,7 @@
 
     function accountDocument(url) {
         var origin = SITE;
-        function get() { return catalogDocument(freshUrl(url), { auth: true }); }
+        function get() { return desktopDocument(freshUrl(url), { auth: true }); }
         if (signedOut() || (!session && (!loginName() || !loginPassword()))) return Promise.reject(new Error(LOGIN_PROMPT));
         return get().then(function (doc) {
             if (signedOut()) throw new Error(LOGIN_PROMPT);
@@ -385,7 +386,7 @@
     }
 
     function logoutAccount() {
-        return desktopRequest(session.logout, { auth: true }, pageDocument).then(requireDesktopLayout).then(function (doc) {
+        return desktopRequest(desktopUrl(session.logout), { auth: true }, pageDocument).then(requireDesktopLayout).then(function (doc) {
             if (readSession(doc)) throw new Error('AniStar не завершил сеанс.');
             Lampa.Storage.set(hostStorageKey(ACCOUNT_SIGNED_OUT), true);
             nativeCookies.clear();
@@ -414,7 +415,7 @@
     }
 
     function isCompactLayout(doc) {
-        return Boolean(doc.querySelector('link[href*="/templates/smartphone/"], script[src*="/templates/smartphone/"]'));
+        return Boolean(doc.querySelector('link[href*="templates/smartphone/"], script[src*="templates/smartphone/"]'));
     }
 
     function requireDesktopLayout(doc) {
@@ -448,7 +449,7 @@
         });
     }
 
-    function tizenCatalogDocument(url, options) {
+    function tizenDesktopDocument(url, options) {
         var origin = SITE;
         var authenticated = tizenDesktopOptions(options);
         var sessionReady = ensureTizenDesktop();
@@ -465,12 +466,13 @@
         });
     }
 
-    function catalogDocument(url, options) {
-        if (tizen() && !android()) return tizenCatalogDocument(url, options);
+    function desktopDocument(url, options) {
+        url = desktopUrl(url);
+        if (tizen() && !android()) return tizenDesktopDocument(url, options);
         var desktop = desktopRequestOptions(options);
-        var document = pageDocument(url, desktop);
+        var document = pageDocument(url, desktop).then(requireDesktopLayout);
         if (desktop === options) return document;
-        return document.then(requireDesktopLayout).catch(function () {
+        return document.catch(function () {
             return pageDocument(url, options).then(requireDesktopLayout);
         });
     }
@@ -762,7 +764,7 @@
             fields[input.name] = input.value;
         });
         if (!url || !fields.set_new_sort || !fields.set_direction_sort) return null;
-        return { url: url, fields: fields };
+        return { url: desktopUrl(url), fields: fields };
     }
 
     function sortOptions(sort, formData, jar) {
@@ -771,7 +773,7 @@
     }
 
     function searchUrl(state, page) {
-        var url = SITE + SEARCH_PATH + searchEncode(state.query) + '&skin_name=new36';
+        var url = SITE + SEARCH_PATH + searchEncode(state.query);
         if (page === 1) return url;
         return url + '&' + form({ search_start: page, result_from: (page - 1) * SEARCH_PAGE_SIZE + 1 });
     }
@@ -819,7 +821,7 @@
 
     function readCatalogPage(cursor, state) {
         if (state.anistarList) return readBookmarkPage(siteUrl(cursor));
-        var url = state.query ? searchUrl(state, cursor) : desktopUrl(cursor);
+        var url = state.query ? searchUrl(state, cursor) : cursor;
         var sorting = Boolean(!state.query && (state.sortApplied || state.anistarHome));
         var sort = SORT[state.sort] || SORT[0];
         var plan;
@@ -828,7 +830,7 @@
             sortPlans.set(state, plan);
         }
         var backup = yearCatalog(state) && cursor === yearUrl(state.year) ?
-            desktopUrl(SITE + '/index.php?' + form({ do: 'xfsearch', xf: state.year, type: 'year', r: 'anime' })) : '';
+            SITE + '/index.php?' + form({ do: 'xfsearch', xf: state.year, type: 'year', r: 'anime' }) : '';
 
         function read(doc, address) {
             var page = catalogPage(doc, address, Boolean(state.query));
@@ -855,8 +857,8 @@
         }
 
         function fetchPage(address) {
-            function ordinary() { return catalogDocument(address, { plainGet: true }); }
-            function sortedGet() { return catalogDocument(freshUrl(address), { auth: true, cookieJar: plan.jar }); }
+            function ordinary() { return desktopDocument(address, { plainGet: true }); }
+            function sortedGet() { return desktopDocument(freshUrl(address), { auth: true, cookieJar: plan.jar }); }
             function browserOrder(page) {
                 return page.rows.map(function (row) { return row.card.id; }).join(',');
             }
@@ -948,7 +950,7 @@
     function refreshGenres() {
         if (!genreRefresh) {
             var origin = SITE;
-            genreRefresh = catalogDocument(desktopUrl(SITE + '/filter/janrs/'), { plainGet: true }).then(function (doc) {
+            genreRefresh = desktopDocument(SITE + '/filter/janrs/', { plainGet: true }).then(function (doc) {
                 if (origin !== SITE) return;
                 var genres = readGenreDirectory(doc);
                 if (!genres.length) throw new Error('AniStar не вернул справочник жанров.');
@@ -1949,11 +1951,11 @@
         function extract(doc) {
             return releaseNote(doc.querySelector('#dle-content') || doc);
         }
-        var pending = catalogDocument(address, { plainGet: true }).then(function (doc) {
+        var pending = desktopDocument(address, { plainGet: true }).then(function (doc) {
             var note = extract(doc);
             if (note) return note;
-            return catalogDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract);
-        }, function () { return catalogDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract); });
+            return desktopDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract);
+        }, function () { return desktopDocument(explicitDesktopUrl(address), { plainGet: true }).then(extract); });
         publicNotes.set(address, pending);
         pending.then(function () {}, function () {
             if (publicNotes.get(address) === pending) publicNotes.delete(address);
@@ -2004,7 +2006,7 @@
         }
         var component = object.activity && object.activity.component;
         var options = session ? { auth: true } : { plainGet: true };
-        catalogDocument(desktopUrl(card.url), options).then(function (doc) {
+        desktopDocument(card.url, options).then(function (doc) {
             return readArticle(doc, card);
         }).then(function (movie) {
             if (component && component.destroyed) return;
